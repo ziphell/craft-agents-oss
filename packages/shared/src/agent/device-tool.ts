@@ -15,18 +15,20 @@ export interface DeviceToolInfo {
   id: string
   /** Display name (hostname), also accepted when unique. */
   name: string
+  /** The person's own name for this device, set on the hub. Accepted like `name` in calls. */
+  alias?: string
   platform: string | null
   /** App version the device advertised, when it sent one. Diagnostics only — never a gate. */
   version: string | null
-  /** Directories this device allows remote shell/file access inside. */
-  workspaceRoots: string[]
+  /** Folders this connection authorized for this server. */
+  allowedRoots: string[]
+  /** Where a call that omits `cwd` starts — a fixed, always-usable directory (not a granted extra). */
+  defaultRoot?: string
   /** A client from this device is connected right now. */
   online: boolean
   /** The device-side switch: it has allowed this server to use its capabilities. */
   deviceAllows: boolean
-  /** The hub-side switch: this server's agent may use the device. Persisted on the hub. */
-  hubUses: boolean
-  /** `online && deviceAllows && hubUses` — the only state that makes the device usable. */
+  /** `online && deviceAllows` — the only state that makes the device usable. */
   available: boolean
   /** Last time a client from this device connected. Useful for offline rows. */
   lastSeenAt?: number
@@ -49,7 +51,7 @@ export interface DeviceToolInfo {
 
 export interface DeviceExecArgs {
   command: string
-  /** Must be inside one of the device's workspace roots when given. */
+  /** Must be inside one of the folders the device authorized for this hub when given. */
   cwd?: string
   /** Default 60s, capped by the device. */
   timeoutMs?: number
@@ -70,7 +72,7 @@ export type DeviceFsOp = 'read' | 'write' | 'edit' | 'list' | 'stat' | 'glob' | 
 
 export interface DeviceFsArgs {
   op: DeviceFsOp
-  /** Absolute path on the device (must be inside a workspace root). */
+  /** Absolute path on the device (must be inside a folder it authorized for this hub). */
   path?: string
   /** `write` */
   content?: string

@@ -244,6 +244,14 @@ interface OutboundRuntimeConfigUpdateResult {
   errorMessage?: string;
 }
 interface OutboundSessionIdUpdate { type: 'session_id_update'; sessionId: string }
+/**
+ * The aborted run has fully unwound: its trailing `message_end` / `agent_end`
+ * have been forwarded, so no further event from that run can arrive. The host
+ * waits for this before it starts the next turn — otherwise the aborted run's
+ * `agent_end` lands in the *new* turn's event queue and closes it before the
+ * model answers (hit by "send now" on a queued message).
+ */
+interface OutboundAbortSettled { type: 'abort_settled' }
 interface OutboundError { type: 'error'; message: string; code?: string; id?: string }
 
 type OutboundMessage =
@@ -259,6 +267,7 @@ type OutboundMessage =
   | OutboundSetAutoCompactionResult
   | OutboundRuntimeConfigUpdateResult
   | OutboundSessionIdUpdate
+  | OutboundAbortSettled
   | OutboundError;
 
 // ============================================================
@@ -337,6 +346,40 @@ function send(msg: OutboundMessage): void {
 function debugLog(message: string): void {
   // Write debug messages to stderr so they don't interfere with JSONL protocol
   process.stderr.write(`[pi-server] ${message}\n`);
+}
+
+// ============================================================
+// Abort handshake
+// ============================================================
+
+// Upper bound on how long the host may be held back after an abort when the SDK
+// never reports the aborted run's `agent_end` (e.g. it threw instead).
+const ABORT_SETTLE_FALLBACK_MS = 2_000;
+
+// True from the moment an abort is accepted until the aborted run's trailing
+// events (message_end error + agent_end) have been forwarded to the host.
+let abortSettlePending = false;
+let abortSettleTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Whether an SDK run is streaming right now (agent_start … agent_end). Used to
+// tell "nothing to unwind" apart from "the agent_end just hasn't been
+// dispatched yet" — settling on the latter would let the stale event through.
+let abortRunActive = false;
+
+/**
+ * Tell the host the aborted run is fully unwound, so it can start the next turn.
+ * Idempotent: whichever of agent_end / abort() returning / the fallback timer
+ * gets here first wins.
+ */
+function settleAbort(why: string): void {
+  if (!abortSettlePending) return;
+  abortSettlePending = false;
+  if (abortSettleTimer) {
+    clearTimeout(abortSettleTimer);
+    abortSettleTimer = null;
+  }
+  debugLog(`Abort settled (${why})`);
+  send({ type: 'abort_settled' });
 }
 
 /** Find the most recent .jsonl session file in a directory. */
@@ -1256,6 +1299,20 @@ function extractToolExecutionMetadata(args: Record<string, unknown> | undefined)
 function handleSessionEvent(event: AgentSessionEvent): void {
   let forwardedEvent: OutboundAgentEvent = event;
 
+  // Track run boundaries for the abort handshake (see abortRunActive). Mid-run
+  // events count as "live" too, so a run whose agent_start we somehow missed is
+  // still waited for instead of being declared finished.
+  if (event.type === 'agent_end') {
+    abortRunActive = false;
+  } else if (
+    event.type === 'agent_start' ||
+    event.type === 'turn_start' ||
+    event.type === 'message_start' ||
+    event.type === 'tool_execution_start'
+  ) {
+    abortRunActive = true;
+  }
+
   // Log API errors for debugging and attach provider-native turn anchor for branch cutoffs.
   if (event.type === 'message_end') {
     const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string } | undefined;
@@ -1382,6 +1439,13 @@ function handleSessionEvent(event: AgentSessionEvent): void {
 
   // Forward all events to main process
   send({ type: 'event', event: forwardedEvent });
+
+  // The aborted run ends here. Report it *after* the agent_end has been
+  // forwarded so the host sees the two in order — it starts the next turn only
+  // once this event is behind it.
+  if (abortSettlePending && forwardedEvent.type === 'agent_end') {
+    settleAbort('agent_end');
+  }
 }
 
 // ============================================================
@@ -1541,12 +1605,32 @@ function handleCancelEphemeralQuery(
 
 async function handleAbort(): Promise<void> {
   compactionEpoch++;
-  if (piSession) {
+
+  // Arm the handshake BEFORE aborting: the SDK dispatches the aborted run's
+  // `agent_end` inside `abort()`, and the host must not be told "settled" until
+  // that event has been forwarded (see settleAbort).
+  abortSettlePending = true;
+  if (abortSettleTimer) clearTimeout(abortSettleTimer);
+  abortSettleTimer = setTimeout(
+    () => settleAbort('fallback timeout'),
+    ABORT_SETTLE_FALLBACK_MS,
+  );
+
+  if (!abortRunActive) {
+    // Nothing is streaming: no trailing events exist, so don't make the host wait.
+    settleAbort('no run in flight');
+  } else if (piSession) {
     try {
       await piSession.abort();
     } catch (error) {
       debugLog(`Abort failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+
+    // The SDK clears abortRunActive by emitting the aborted run's `agent_end`.
+    // Still true here means that dispatch is pending, so keep waiting for it
+    // (the fallback timer eventually releases the host); already false means
+    // `settleAbort('agent_end')` has run and this is a no-op.
+    if (!abortRunActive) settleAbort('run ended');
   }
 
   // Reject all pending pre-tool-use requests

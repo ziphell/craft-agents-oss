@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync } from 'fs';
 import { randomUUID } from 'node:crypto';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, isAbsolute, resolve } from 'path';
 import { getCredentialManager } from '../credentials/index.ts';
 import { getOrCreateLatestSession, type SessionConfig } from '../sessions/index.ts';
 import {
@@ -3285,14 +3285,30 @@ export function getServerConfig(): ServerConfig {
  * Auto-generates a stable auth token on first enable if none exists.
  * Server Mode and remote windows are independent: this machine keeps serving while a window
  * connects elsewhere, so saving server config leaves the remote connection untouched.
+ *
+ * The Web UI gets its own password the first time Server Mode is enabled. Session cookies are
+ * signed with a key derived from that password and the server token, so changing either one ends
+ * existing browser sessions — no separate secret is stored.
  */
 export function setServerConfig(serverConfig: ServerConfig): void {
   const config = loadStoredConfig();
   if (!config) return;
 
-  // Generate a stable token when first enabled (or if token is missing)
+  const previous = config.serverConfig;
+  // The server token is not part of the settings form any more, so an omitted value means "keep
+  // the stored token" — including while Server Mode is being turned off. Only a first enable with
+  // no token at all mints one.
+  if (!serverConfig.token) {
+    serverConfig.token = previous?.token;
+  }
   if (serverConfig.enabled && !serverConfig.token) {
     serverConfig.token = randomUUID();
+  }
+
+  if (serverConfig.enabled && !serverConfig.webuiPassword) {
+    // The renderer offers "regenerate", never an empty field: an omitted value means "keep the
+    // stored password", not "clear it".
+    serverConfig.webuiPassword = previous?.webuiPassword || randomUUID();
   }
 
   config.serverConfig = serverConfig;
@@ -3312,6 +3328,30 @@ function isRemoteConnection(value: unknown): value is RemoteConnection {
 }
 
 /**
+ * Folders one connection may reach through the device link.
+ *
+ * Only absolute paths survive: a relative one would mean something different on the machine that
+ * runs the command, and the hub cannot supply one anyway. Duplicates are dropped so the same
+ * folder added twice (or differing only by case on Windows) is listed once.
+ */
+function normalizeAllowedRoots(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const value = entry.trim();
+    if (!value || !isAbsolute(value)) continue;
+    const absolute = resolve(value);
+    const key = process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push(absolute);
+  }
+  return roots;
+}
+
+/**
  * Read the saved connections, folding the old single-hub shape (`serverUrl`/`token`/`enabled`)
  * into one entry so an install that predates the list keeps its server. The legacy id is derived
  * from the URL so it stays stable until {@link migrateLegacyRemoteWorkspaces} persists a real one.
@@ -3325,7 +3365,20 @@ function normalizeClientConfig(raw: unknown): ClientConfig {
   };
 
   const connections: RemoteConnection[] = Array.isArray(stored.connections)
-    ? stored.connections.filter(isRemoteConnection).map(connection => ({ ...connection }))
+    ? stored.connections.filter(isRemoteConnection).map(connection => {
+        const next = { ...connection } as RemoteConnection & { deviceAccess?: boolean };
+        // `deviceAccess` was the client-side switch before it was folded into the folder list. It
+        // is back as `deviceUseEnabled`: a saved "off" keeps the connection and its folders but
+        // stops offering this machine, so authorization can be turned back on later.
+        if (next.deviceAccess === false) next.deviceUseEnabled = false;
+        delete next.deviceAccess;
+        // Only the non-default is persisted; absent means "authorized".
+        if (next.deviceUseEnabled !== false) delete next.deviceUseEnabled;
+        const allowedRoots = normalizeAllowedRoots(next.allowedRoots);
+        if (allowedRoots && allowedRoots.length > 0) next.allowedRoots = allowedRoots;
+        else delete next.allowedRoots;
+        return next;
+      })
     : [];
 
   if (typeof stored.serverUrl === 'string' && stored.serverUrl.trim()) {
@@ -3375,6 +3428,7 @@ export function saveRemoteConnection(connection: RemoteConnection): RemoteConnec
     throw new Error(`That address is already saved as "${sameUrl.name}"`);
   }
   const previous = config.connections.find(existing => existing.id === connection.id);
+  const allowedRoots = normalizeAllowedRoots(connection.allowedRoots);
   const saved: RemoteConnection = {
     ...connection,
     name: connection.name.trim() || connectionNameFromUrl(connection.url),
@@ -3383,9 +3437,15 @@ export function saveRemoteConnection(connection: RemoteConnection): RemoteConnec
       : {}),
     // An edit that only renames or rotates a token must not silently revoke (or grant) device
     // access. The field is written only when the caller actually sends a boolean.
-    ...(connection.deviceAccess === undefined && previous?.deviceAccess !== undefined
-      ? { deviceAccess: previous.deviceAccess }
-      : {}),
+    // Same for the folders: omitting the field keeps the saved list, while an explicit `[]`
+    // (the form after removing every folder) clears it.
+    ...(allowedRoots !== undefined
+      ? { allowedRoots }
+      : previous?.allowedRoots !== undefined ? { allowedRoots: previous.allowedRoots } : {}),
+    // Omitted keeps the saved authorization; an explicit boolean is what the form sends.
+    ...(typeof connection.deviceUseEnabled === 'boolean'
+      ? { deviceUseEnabled: connection.deviceUseEnabled }
+      : previous?.deviceUseEnabled !== undefined ? { deviceUseEnabled: previous.deviceUseEnabled } : {}),
   };
   config.connections = [...config.connections.filter(existing => existing.id !== saved.id), saved];
   setClientConfig(config);

@@ -17,8 +17,8 @@
  *   CRAFT_IS_PACKAGED          — 'true' for production (default: false)
  *   CRAFT_VERSION              — app version (default: 0.0.0-dev)
  *   CRAFT_DEBUG                — 'true' for debug logging
- *   CRAFT_WEBUI_DIR            — path to built web UI assets (enables web UI on RPC port)
- *   CRAFT_WEBUI_PASSWORD       — optional shorter password for web login (falls back to CRAFT_SERVER_TOKEN)
+ *   CRAFT_WEBUI_DIR            — path to built web UI assets (no bundle → protocol routes only)
+ *   CRAFT_WEBUI_PASSWORD       — Web UI login password (generated and printed when unset)
  *   CRAFT_WEBUI_SECURE_COOKIE  — optional true/false override for the session cookie Secure flag
  *   CRAFT_WEBUI_WS_URL         — optional browser-facing ws:// or wss:// URL returned by /api/config
  *   CRAFT_MESSAGING_WA_WORKER  — absolute path to worker.cjs (default: packages/messaging-whatsapp-worker/dist/worker.cjs)
@@ -31,7 +31,7 @@ import { version as packageVersion } from '../package.json'
 import { enableDebug } from '@craft-agent/shared/utils/debug'
 import { getBundledAssetsDir } from '@craft-agent/shared/utils'
 import { bootstrapServer, startHealthHttpServer, generateServerToken } from '@craft-agent/server-core/bootstrap'
-import { validateSession, createWebuiHandler, nodeHttpAdapter } from '@craft-agent/server-core/webui'
+import { validateSession, deriveWebuiSessionKey, createWebuiHandler, nodeHttpAdapter } from '@craft-agent/server-core/webui'
 import type { WebuiHandler } from '@craft-agent/server-core/webui'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { getWorkspaces } from '@craft-agent/shared/config'
@@ -44,6 +44,7 @@ if (process.argv.includes('--generate-token')) {
   process.exit(0)
 }
 import type { WsRpcTlsOptions } from '@craft-agent/server-core/transport'
+import { ServerTokenRegistry, bearerToken } from '@craft-agent/server-core/transport'
 import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient, cleanupProjectFilesWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
 import { initModelRefreshService, setFetcherPlatform } from '@craft-agent/server-core/model-fetchers'
@@ -112,11 +113,19 @@ if (tlsCertPath || tlsKeyPath) {
   }
 }
 
+const serverToken = process.env.CRAFT_SERVER_TOKEN
+
 // Web UI configuration
 const webuiDir = process.env.CRAFT_WEBUI_DIR || undefined
+// The Web UI is served whenever this process is a hub. Its password is its own credential, but
+// sessions are signed with a key derived from it and CRAFT_SERVER_TOKEN — so changing either one
+// ends browser sessions.
+const webuiPassword = process.env.CRAFT_WEBUI_PASSWORD || generateServerToken()
+// One key for both the HTTP handler and the WebSocket upgrade; empty until a token is present,
+// in which case bootstrap refuses to start anyway.
+const webuiSessionKey = serverToken ? deriveWebuiSessionKey(serverToken, webuiPassword) : ''
 const webuiSecureCookies = parseOptionalBooleanEnv('CRAFT_WEBUI_SECURE_COOKIE', process.env.CRAFT_WEBUI_SECURE_COOKIE)
 const webuiWsUrl = parseOptionalWebSocketUrl('CRAFT_WEBUI_WS_URL', process.env.CRAFT_WEBUI_WS_URL)
-const serverToken = process.env.CRAFT_SERVER_TOKEN
 
 // ---------------------------------------------------------------------------
 // Create WebUI handler early so it can be embedded in the WsRpcServer.
@@ -126,15 +135,16 @@ const serverToken = process.env.CRAFT_SERVER_TOKEN
 
 let webuiHandler: WebuiHandler | null = null
 let webuiNodeHandler: ReturnType<typeof nodeHttpAdapter> | undefined
+/** Filled by bootstrapServer; read by the export endpoint's bearer check in the meantime. */
+const tokens = new ServerTokenRegistry()
 
 // Health check is injected lazily — the session manager isn't ready until
 // after bootstrap completes, but the handler captures the closure.
 let healthCheckFn: (() => { status: string }) | null = null
 
 /**
- * The HTTP handler exists because this process **is** a hub, not because the page bundle was
- * found. Without assets it still serves the protocol routes (auth, config, exports) and 404s the
- * rest — a headless deployment may have no UI and still hand out a design export.
+ * The HTTP handler exists whenever this process is a hub: it serves the Web UI and the protocol
+ * routes (export downloads). Without a bundle the page is absent but the routes still answer.
  */
 if (serverToken) {
   const rpcPort = parseInt(process.env.CRAFT_RPC_PORT ?? '9100', 10)
@@ -144,8 +154,17 @@ if (serverToken) {
     webuiDir,
     // Served same-origin so the web UI's editor sits behind the session cookie.
     drawioDir: getBundledAssetsDir('drawio') ?? undefined,
-    secret: serverToken,
-    password: process.env.CRAFT_WEBUI_PASSWORD || undefined,
+    password: webuiPassword,
+    // The token this hub hands to other machines also logs a browser in, and is half of the
+    // session signing key.
+    serverToken,
+    // Export downloads also accept a hub credential, for a native client that holds no cookie.
+    // A device token is not one: it may answer capability calls and nothing else.
+    authorizeBearer: (header) => {
+      const token = bearerToken(header)
+      const grant = token ? tokens.validate(token) : null
+      return grant !== null && grant.scope !== 'device'
+    },
     secureCookies: webuiSecureCookies,
     publicWsUrl: webuiWsUrl,
     wsProtocol: rpcProtocol,
@@ -176,14 +195,11 @@ const instance = await (async () => {
       bundledAssetsRoot,
       serverVersion: process.env.CRAFT_VERSION ?? packageVersion,
       tls,
-      // Session cookies are a protocol credential: accept them whenever this hub has a token,
-      // whether or not a page bundle was found.
-      validateSessionCookie: serverToken
-        ? async (cookieHeader) => {
-            const session = await validateSession(cookieHeader, serverToken)
-            return session !== null
-          }
-        : undefined,
+      // Session cookies are a Web UI credential, verified with the key derived from this hub's
+      // token and Web UI password.
+      validateSessionCookie: async (cookieHeader) =>
+        (await validateSession(cookieHeader, webuiSessionKey)) !== null,
+      tokenRegistry: tokens,
       // Embed the WebUI HTTP handler on the WS server's port
       httpHandler: webuiNodeHandler,
       applyPlatformToSubsystems: (platform) => {
@@ -322,8 +338,13 @@ const healthServer = await startHealthHttpServer({
 const serverProto = instance.protocol === 'wss' ? 'https' : 'http'
 console.log(`CRAFT_SERVER_URL=${instance.protocol}://${instance.host}:${instance.port}`)
 console.log(`CRAFT_SERVER_TOKEN=${instance.token}`)
-if (webuiHandler) {
+if (webuiDir && webuiHandler) {
   console.log(`CRAFT_WEBUI_URL=${serverProto}://0.0.0.0:${instance.port}`)
+  // Printed only when this process minted it, and it is not the server token: the two are
+  // separate credentials, so logging one never leaks the other.
+  if (!process.env.CRAFT_WEBUI_PASSWORD) {
+    console.log(`CRAFT_WEBUI_PASSWORD=${webuiPassword}`)
+  }
 }
 
 // A network bind without TLS sends the token in cleartext. That is a valid setup when the

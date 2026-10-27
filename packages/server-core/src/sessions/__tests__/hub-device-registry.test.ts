@@ -17,17 +17,15 @@ afterEach(() => {
 })
 
 describe('HubDeviceRegistry', () => {
-  it('creates a record on first connect and keeps hubUses across reloads', () => {
+  it('creates a record on first connect and keeps it across reloads', () => {
     const file = tempFile()
     const first = new HubDeviceRegistry(file)
-    const created = first.ensure({
+    first.ensure({
       deviceId: 'd1',
       name: 'Office',
       platform: 'darwin',
       version: '1.0.0',
     })
-    expect(created.hubUses).toBe(false)
-    first.setUse('d1', true)
     first.flush()
 
     const reloaded = new HubDeviceRegistry(file).get('d1')
@@ -36,7 +34,6 @@ describe('HubDeviceRegistry', () => {
       name: 'Office',
       platform: 'darwin',
       version: '1.0.0',
-      hubUses: true,
     })
   })
 
@@ -54,13 +51,31 @@ describe('HubDeviceRegistry', () => {
     expect(new HubDeviceRegistry(file).list()).toEqual([])
   })
 
-  it('does not reset hubUses when the same device connects again', () => {
+  it('refreshes metadata when the same device connects again', () => {
     const registry = new HubDeviceRegistry(null)
     registry.ensure({ deviceId: 'd1', name: 'Office' })
-    registry.setUse('d1', true)
 
     const again = registry.ensure({ deviceId: 'd1', name: 'Office renamed', version: '1.1.0' })
-    expect(again.hubUses).toBe(true)
     expect(again.name).toBe('Office renamed')
+  })
+
+  it('persists an alias across reloads and keeps it when the device reconnects', () => {
+    const file = tempFile()
+    const first = new HubDeviceRegistry(file)
+    first.ensure({ deviceId: 'd1', name: 'Office' })
+    first.setAlias('d1', '  Studio Mac  ')
+    first.flush()
+
+    const reloaded = new HubDeviceRegistry(file)
+    expect(reloaded.get('d1')?.alias).toBe('Studio Mac')
+    // A reconnect refreshes the advertised metadata, never the person's own name.
+    expect(reloaded.ensure({ deviceId: 'd1', name: 'Office-2' }).alias).toBe('Studio Mac')
+  })
+
+  it('clears an alias when set to blank', () => {
+    const registry = new HubDeviceRegistry(null)
+    registry.ensure({ deviceId: 'd1', name: 'Office' })
+    registry.setAlias('d1', 'Studio')
+    expect(registry.setAlias('d1', '   ')?.alias).toBeUndefined()
   })
 })

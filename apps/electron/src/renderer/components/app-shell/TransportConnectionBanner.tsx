@@ -65,6 +65,8 @@ export function getFailureReason(state: TransportConnectionState): string {
   const err = state.lastError
   if (err) {
     if (err.kind === 'auth') return i18n.t('transport.authFailed')
+    // The hub answered and refused: the credential is valid but may not open windows here.
+    if (err.kind === 'scope') return i18n.t('transport.remoteControlDenied')
     if (err.kind === 'protocol') return i18n.t('transport.protocolMismatch')
     if (err.kind === 'timeout') return i18n.t('transport.timeout', { url: state.url })
     if (err.kind === 'network') return i18n.t('transport.networkError', { url: state.url })

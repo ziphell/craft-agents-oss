@@ -6,9 +6,8 @@
  * per `deviceId`, created the first time any client from that device connects, kept while it is
  * offline, and removed only when someone forgets it.
  *
- * `hubUses` is the hub-side half of the device relationship: "my agent may use this machine".
- * The device-side half (`deviceAccess`) lives in the client's saved-server config. Neither side can
- * grant the other's permission.
+ * A paired link is the whole consent: the device's own folder list is what it lends, and the hub
+ * keeps no additional switch of its own.
  *
  * The file is deliberately separate from `config.json`: a connection updates `lastSeenAt`, and
  * rewriting the main config on every connect would churn a file that everything else watches.
@@ -22,13 +21,13 @@ export interface HubDeviceRecord {
   /** Stable client device id (`clientInfo.deviceId`). */
   deviceId: string
   name: string
+  /** The person's own name for this device, used when naming it to the agent. */
+  alias?: string
   platform: string | null
   version: string | null
   firstSeenAt: number
   /** Last time a client from this device connected. While online this is refreshed lazily. */
   lastSeenAt: number
-  /** Hub-side switch: this server's agent may use the device. Default false. */
-  hubUses: boolean
 }
 
 export interface HubDeviceIdentity {
@@ -67,10 +66,7 @@ export class HubDeviceRegistry {
     return this.records.get(deviceId)
   }
 
-  /**
-   * Create the record on first sight, refresh its metadata on every later connection, and keep
-   * `hubUses` exactly as the person left it.
-   */
+  /** Create the record on first sight and refresh its metadata on every later connection. */
   ensure(input: HubDeviceIdentity): HubDeviceRecord {
     this.load()
     const now = Date.now()
@@ -105,7 +101,6 @@ export class HubDeviceRegistry {
       version: input.version ?? null,
       firstSeenAt: now,
       lastSeenAt: now,
-      hubUses: false,
     }
     this.records.set(record.deviceId, record)
     // First sight is the point of the record. Write it now rather than in a second, so a crash
@@ -114,13 +109,18 @@ export class HubDeviceRegistry {
     return record
   }
 
-  /** Set the hub-side switch. Returns null when the device is unknown. */
-  setUse(deviceId: string, use: boolean): HubDeviceRecord | null {
+  /**
+   * Set the person's own name for a device. A blank alias removes it, leaving the hostname.
+   * Returns null when the device is unknown.
+   */
+  setAlias(deviceId: string, alias: string | null): HubDeviceRecord | null {
     this.load()
     const record = this.records.get(deviceId)
     if (!record) return null
-    if (record.hubUses !== use) {
-      record.hubUses = use
+    const next = alias?.trim() || undefined
+    if (record.alias !== next) {
+      if (next) record.alias = next
+      else delete record.alias
       this.flush()
     }
     return record
@@ -164,11 +164,11 @@ export class HubDeviceRegistry {
         this.records.set(value.deviceId, {
           deviceId: value.deviceId,
           name: typeof value.name === 'string' && value.name.trim() ? value.name : value.deviceId,
+          ...(typeof value.alias === 'string' && value.alias.trim() ? { alias: value.alias.trim() } : {}),
           platform: typeof value.platform === 'string' ? value.platform : null,
           version: typeof value.version === 'string' ? value.version : null,
           firstSeenAt,
           lastSeenAt,
-          hubUses: value.hubUses === true,
         })
       }
     } catch (error) {

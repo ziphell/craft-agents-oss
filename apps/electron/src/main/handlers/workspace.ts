@@ -1,5 +1,6 @@
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { RpcServer } from '@craft-agent/server-core/transport'
+import type { WsRpcClientOptions } from '../../transport/client'
 import type { HandlerDeps } from './handler-deps'
 
 export const GUI_HANDLED_CHANNELS = [
@@ -18,13 +19,21 @@ export const GUI_HANDLED_CHANNELS = [
  * workspace-context RPC handlers (for example sessions:export) can resolve it.
  * opts.requestTimeout overrides the 30s default — session transfers pull whole
  * bundles as one response frame and need more headroom over WAN.
+ * opts.clientInfo identifies this install, which a device token's first use needs: the hub binds
+ * the slot to that `deviceId`.
  * Returns the connected client or null + error message.
  */
-export async function connectToRemote(url: string, token: string, workspaceId?: string, opts?: { requestTimeout?: number }) {
+export async function connectToRemote(
+  url: string,
+  token: string,
+  workspaceId?: string,
+  opts?: { requestTimeout?: number; clientInfo?: WsRpcClientOptions['clientInfo'] },
+) {
   const { WsRpcClient } = await import('../../transport/client')
   const client = new WsRpcClient(url, {
     token,
     workspaceId,
+    clientInfo: opts?.clientInfo,
     autoReconnect: false,
     tlsRejectUnauthorized: false,
     requestTimeout: opts?.requestTimeout,

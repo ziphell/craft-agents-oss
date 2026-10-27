@@ -24,7 +24,7 @@ interface InvokeRecord {
 function client(overrides: Partial<ConnectedClientInfo> & { clientId: string }): ConnectedClientInfo {
   return {
     deviceId: overrides.clientId,
-    workspaceRoots: ['/work'],
+    allowedRoots: ['/work'],
     hubRootBase: null,
     name: overrides.clientId,
     platform: 'test',
@@ -33,6 +33,8 @@ function client(overrides: Partial<ConnectedClientInfo> & { clientId: string }):
     workspaceId: 'ws-1',
     webContentsId: null,
     capabilities: [],
+    scope: 'both',
+    tokenKind: 'device',
     connectedAt: 0,
     ...overrides,
   }
@@ -59,36 +61,26 @@ function makeServer(clients: ConnectedClientInfo[], calls: InvokeRecord[]): RpcS
   }
 }
 
-function setup(clients: ConnectedClientInfo[], enabledDeviceIds?: string[]) {
+function setup(clients: ConnectedClientInfo[]) {
   const calls: InvokeRecord[] = []
   const registry = new HubDeviceRegistry(null)
-  for (const entry of clients) {
-    if (entry.mode === 'local' || !entry.deviceId) continue
-    registry.ensure({
-      deviceId: entry.deviceId,
-      name: entry.name,
-      platform: entry.platform,
-      version: entry.version,
-    })
-  }
-  const enabled = enabledDeviceIds
-    ?? clients.filter((entry) => entry.mode !== 'local' && entry.deviceId).map((entry) => entry.deviceId!)
-  for (const id of enabled) registry.setUse(id, true)
-
   const sm = new SessionManager()
   sm.setDeviceRegistry(registry)
   sm.setRpcServer(makeServer(clients, calls))
+  // Records are written at connect time, not while listing. Mirror that here so the tests exercise
+  // the same path: only a link that offers a device tool gets a record.
+  for (const entry of clients) sm.onClientConnected(entry.clientId)
   // The browser surface is not under test here; a sentinel makes it obvious if a proxy call ever
   // reaches for the conversation's own browser instead of the named device's.
   const fns = (sm as unknown as {
     createDeviceToolFns: (workspaceId: string, getBrowserFns: (clientId: string) => unknown) => {
-      list: () => Promise<Array<{ id: string; workspaceRoots: string[] }>>
+      list: () => Promise<Array<{ id: string; allowedRoots: string[]; defaultRoot?: string }>>
       exec: (device: string, args: { command: string }) => Promise<unknown>
       fs: (device: string, args: { op: string; path: string }) => Promise<unknown>
       getBrowserFns: (device: string) => Promise<unknown>
     }
   }).createDeviceToolFns('ws-1', () => ({ sentinel: true }))
-  return { sm, fns, calls }
+  return { sm, fns, calls, registry }
 }
 
 describe('device_tool — explicit proxy routing', () => {
@@ -136,6 +128,22 @@ describe('device_tool — explicit proxy routing', () => {
     })
   })
 
+  it('keeps the session hub and workspace even when args name another', async () => {
+    const { fns, calls } = setup([
+      client({ clientId: 'c-1', deviceId: 'office', name: 'office', capabilities: [CLIENT_DEVICE_EXEC] }),
+    ])
+
+    // The hub and workspace are the caller's context, never something a nested argument supplies.
+    const hostile = { command: 'ls', workspaceId: 'ws-other', hubDeviceId: 'other-hub' } as { command: string }
+    await fns.exec('office', hostile)
+
+    expect(calls[0]?.payload).toMatchObject({
+      hubDeviceId: getDeviceId(),
+      workspaceId: 'ws-1',
+      command: 'ls',
+    })
+  })
+
   it('picks a connection of the named device that can serve the capability', async () => {
     const { fns, calls } = setup([
       client({ clientId: 'c-fs', deviceId: 'office', name: 'office', capabilities: [CLIENT_DEVICE_FS] }),
@@ -158,12 +166,13 @@ describe('device_tool — explicit proxy routing', () => {
     await expect(fns.exec('hub', { command: 'ls' })).rejects.toThrow('No device "hub"')
   })
 
-  it('names the per-hub working directory as a remote device’s root', async () => {
+  it('lists the authorized folders, and the default directory separately', async () => {
     const { fns } = setup([
       client({
         clientId: 'c-1',
         deviceId: 'office',
         workspaceId: 'ws-1',
+        allowedRoots: ['/work', '/shared'],
         hubRootBase: '/home/me/.craft-agent/.hub',
         capabilities: [CLIENT_DEVICE_EXEC],
       }),
@@ -171,7 +180,10 @@ describe('device_tool — explicit proxy routing', () => {
 
     const devices = await fns.list()
     const office = devices.find((device) => device.id === 'office')
-    expect(office?.workspaceRoots).toEqual([`/home/me/.craft-agent/.hub/${getDeviceId()}/ws-1`])
+    // Only the folders saved on the device's connection are granted; the per-hub working
+    // directory is reported apart, because it is a fixed starting point rather than a granted root.
+    expect(office?.allowedRoots).toEqual(['/work', '/shared'])
+    expect(office?.defaultRoot).toBe(`/home/me/.craft-agent/.hub/${getDeviceId()}/ws-1`)
   })
 
   it('refuses a browser proxy for a device without browser capability', async () => {
@@ -182,49 +194,64 @@ describe('device_tool — explicit proxy routing', () => {
     await expect(fns.getBrowserFns('office')).rejects.toThrow('does not offer browser')
   })
 
-  it('does not list or name a device the hub has not enabled', async () => {
-    const { fns } = setup(
-      [client({ clientId: 'c-1', deviceId: 'office', name: 'office', capabilities: [CLIENT_DEVICE_EXEC] })],
-      [],
-    )
-
-    expect(await fns.list()).toEqual([])
-    await expect(fns.exec('office', { command: 'ls' })).rejects.toThrow('not enabled for agent use')
-  })
-
-  it('does not use a device that has not allowed this server', async () => {
-    const { fns } = setup(
+  it('lists a device that turned its own authorization off, marked unauthorized', async () => {
+    // The row is the pairing, not the offer: turning device use off hides nothing, it shows the
+    // state — the hub can see the device and knows it cannot be used right now.
+    const { fns, sm } = setup(
       [client({ clientId: 'c-view', deviceId: 'office', name: 'office', capabilities: [] })],
-      ['office'],
-    )
-
-    await expect(fns.exec('office', { command: 'ls' })).rejects.toThrow('has not allowed this server')
-  })
-
-  it('reports a connected device as not available until the hub enables it', () => {
-    const { sm } = setup(
-      [client({ clientId: 'c-1', deviceId: 'office', name: 'office', capabilities: [CLIENT_DEVICE_EXEC] })],
-      [],
     )
 
     expect(sm.getConnectedDevices()).toMatchObject([
-      { id: 'office', online: true, deviceAllows: true, hubUses: false, available: false },
+      { id: 'office', online: true, deviceAllows: false, available: false },
     ])
     expect(sm.getAgentDevices()).toEqual([])
-    expect(sm.hasAvailableDevices()).toBe(false)
+    await expect(fns.exec('office', { command: 'ls' })).rejects.toThrow('does not offer shell access')
+  })
+
+  it('does not record a link that authenticated with the server token', () => {
+    // The server token is the hub's own credential, not a one-to-one device pairing — so a
+    // connection that used it is never a device row, even if it declares device tools.
+    const { sm } = setup([
+      client({ clientId: 'c-1', deviceId: 'office', name: 'office', tokenKind: 'server', capabilities: [CLIENT_DEVICE_EXEC] }),
+    ])
+
+    expect(sm.getConnectedDevices()).toEqual([])
+  })
+
+  it('keeps a deleted device deleted while its link is still connected', () => {
+    // Deleting is the hub's decision; a read must not recreate the record from the live link.
+    const { sm } = setup([
+      client({ clientId: 'c-1', deviceId: 'office', name: 'office', capabilities: [CLIENT_DEVICE_EXEC] }),
+    ])
+
+    sm.forgetDevice('office')
+
+    expect(sm.getConnectedDevices()).toEqual([])
+  })
+
+  it('reports a connected device as available without a second approval', () => {
+    const { sm } = setup([
+      client({ clientId: 'c-1', deviceId: 'office', name: 'office', capabilities: [CLIENT_DEVICE_EXEC] }),
+    ])
+
+    // The pairing is the consent; there is nothing else for the person to switch on.
+    expect(sm.getConnectedDevices()).toMatchObject([
+      { id: 'office', online: true, deviceAllows: true, available: true },
+    ])
+    expect(sm.getAgentDevices()).toHaveLength(1)
+    expect(sm.hasAvailableDevices()).toBe(true)
   })
 
   it('keeps an offline record in the settings list but out of the agent list', () => {
     const registry = new HubDeviceRegistry(null)
     registry.ensure({ deviceId: 'office', name: 'Office' })
-    registry.setUse('office', true)
 
     const sm = new SessionManager()
     sm.setDeviceRegistry(registry)
     sm.setRpcServer(makeServer([], []))
 
     expect(sm.getConnectedDevices()).toMatchObject([
-      { id: 'office', online: false, hubUses: true, available: false },
+      { id: 'office', online: false, available: false },
     ])
     expect(sm.getAgentDevices()).toEqual([])
   })

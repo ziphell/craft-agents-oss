@@ -278,9 +278,11 @@ export function CompactWorkspaceSwitcher({
                         <div className="px-3 py-2 text-xs text-muted-foreground/70">
                           {isLocal
                             ? t('workspace.noLocalWorkspaces')
-                            : group.unavailable
-                              ? t('workspace.remoteUnavailable')
-                              : t('workspace.noRemoteWorkspaces')}
+                            : group.denied
+                              ? t('workspace.remoteControlDenied')
+                              : group.unavailable
+                                ? t('workspace.remoteUnavailable')
+                                : t('workspace.noRemoteWorkspaces')}
                         </div>
                       )}
                     </div>

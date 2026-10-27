@@ -5,9 +5,24 @@ import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { addWorkspace, removeWorkspace, setActiveWorkspace } from '@craft-agent/shared/config'
 import { getDefaultWorkspacesDir, ensureDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
 import type { ServerStatus, ServerHealth } from '@craft-agent/core/types'
+import type { DeviceTokenInfo } from '@craft-agent/shared/protocol'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import type { ServerHandlerContext } from '../../bootstrap/headless-start'
+import { generateDeviceToken, type TokenScope, type TokenSummary } from '../../transport/tokens'
+import { scopePermits } from '../../transport/capabilities'
+
+function toDeviceTokenInfo(token: TokenSummary): DeviceTokenInfo {
+  return {
+    id: token.id,
+    label: token.label,
+    scope: token.scope,
+    deviceId: token.deviceId,
+    token: token.token,
+    createdAt: token.createdAt,
+    lastUsedAt: token.lastUsedAt,
+  }
+}
 
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.server.GET_WORKSPACES,
@@ -17,6 +32,10 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.server.GET_HEALTH,
   RPC_CHANNELS.server.GET_ACTIVE_SESSIONS,
   RPC_CHANNELS.server.GET_DEVICES,
+  RPC_CHANNELS.server.LIST_DEVICE_TOKENS,
+  RPC_CHANNELS.server.CREATE_DEVICE_TOKEN,
+  RPC_CHANNELS.server.REMOVE_DEVICE_TOKEN,
+  RPC_CHANNELS.server.SET_DEVICE_TOKEN_SCOPE,
   RPC_CHANNELS.server.HOME_DIR,
 ] as const
 
@@ -131,12 +150,86 @@ export function registerServerHandlers(
     return sessionManager.getConnectedDevices()
   })
 
-  server.handle(RPC_CHANNELS.server.SET_DEVICE_USE, async (_ctx, deviceId: string, use: boolean) => {
-    return sessionManager.setDeviceUse(deviceId, use)
+  server.handle(RPC_CHANNELS.server.SET_DEVICE_ALIAS, async (_ctx, deviceId: string, alias: string | null) => {
+    return sessionManager.setDeviceAlias(deviceId, alias)
   })
 
   server.handle(RPC_CHANNELS.server.FORGET_DEVICE, async (_ctx, deviceId: string) => {
     sessionManager.forgetDevice(deviceId)
+    // Revoke the pairing's own slots: their sockets are closed and cannot reconnect. Nothing else
+    // is swept by device id — a window on the same machine that connected with the server token
+    // is remote control, not the pairing being deleted, and must stay connected.
+    for (const token of ctx.tokens.list()) {
+      if (token.kind === 'device' && token.deviceId === deviceId) {
+        ctx.tokens.remove(token.id)
+        ctx.disconnectTokenClients(token.id, 'Device removed from this server')
+      }
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // Device slots — the tokens a machine connects with
+  // -----------------------------------------------------------------------
+
+  server.handle(RPC_CHANNELS.server.LIST_DEVICE_TOKENS, async () => {
+    return ctx.tokens
+      .list()
+      .filter((token) => token.kind === 'device')
+      .map(toDeviceTokenInfo)
+  })
+
+  /**
+   * Create a slot and hand back its token.
+   *
+   * The token stays copyable in the device list while the slot is pending; claiming it clears the
+   * plaintext and keeps only the hash. The slot stays unbound until a machine presents it.
+   */
+  server.handle(RPC_CHANNELS.server.CREATE_DEVICE_TOKEN, async (
+    _ctx,
+    label?: string,
+    scope?: TokenScope,
+  ) => {
+    const token = generateDeviceToken()
+    const grant = ctx.tokens.register({
+      token,
+      label: label?.trim() || 'Device',
+      scope: scope === 'client' || scope === 'device' ? scope : 'both',
+      kind: 'device',
+    })
+    const entry = ctx.tokens.list().find((candidate) => candidate.id === grant.tokenId)
+    if (!entry) throw new Error('The device slot could not be created')
+    return { token, entry: toDeviceTokenInfo(entry) }
+  })
+
+  server.handle(RPC_CHANNELS.server.REMOVE_DEVICE_TOKEN, async (_ctx, tokenId: string) => {
+    const removed = ctx.tokens.remove(tokenId)
+    if (removed) ctx.disconnectTokenClients(tokenId)
+    return removed
+  })
+
+  /**
+   * Change what one device slot may do — the hub-side half of "revoke remote access".
+   *
+   * One credential serves two different jobs (a window driving this hub, and this machine lending
+   * itself to it), so the change is applied per connection, not per credential: each connection is
+   * asked whether the new scope still permits what it declared, and only the ones that fail are
+   * dropped. Closing remote access therefore leaves the machine's device link untouched, and
+   * closing device access leaves its windows untouched.
+   */
+  server.handle(RPC_CHANNELS.server.SET_DEVICE_TOKEN_SCOPE, async (_ctx, tokenId: string, scope: TokenScope) => {
+    if (scope !== 'client' && scope !== 'device' && scope !== 'both') throw new Error('Invalid device slot scope')
+    if (!ctx.tokens.setScope(tokenId, scope)) throw new Error('Unknown device slot')
+    // The sockets already open carry the old scope; widening (turning remote control back on) has
+    // to reach them or the machine keeps being refused until it happens to reconnect.
+    ctx.applyTokenScope(tokenId, scope)
+    ctx.revalidateTokenClients(
+      tokenId,
+      ({ capabilities, role }) => scopePermits(scope, role, capabilities),
+      scope === 'device'
+        ? 'Remote access revoked: this credential may no longer open windows here.'
+        : 'Device access revoked: this credential may no longer lend this machine.',
+    )
+    return true
   })
 
   // -----------------------------------------------------------------------

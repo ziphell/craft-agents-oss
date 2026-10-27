@@ -8,12 +8,26 @@
  */
 
 import { SignJWT, jwtVerify } from 'jose'
+import { createHmac } from 'node:crypto'
 
 // ---------------------------------------------------------------------------
 // JWT helpers (via jose library)
 // ---------------------------------------------------------------------------
 
 const JWT_EXPIRY_SECONDS = 86_400 // 24 hours
+
+/**
+ * The key that signs session cookies: HMAC(server token, "webui-session\0" + Web UI password).
+ *
+ * Both credentials take part, so changing either one ends every browser session — from a
+ * browser's point of view, rotating the token and resetting the password are the same act. The
+ * server token is the HMAC key, so a weak password cannot weaken cookie integrity.
+ */
+export function deriveWebuiSessionKey(serverToken: string, webuiPassword: string): string {
+  return createHmac('sha256', serverToken)
+    .update(`webui-session\0${webuiPassword}`, 'utf8')
+    .digest('hex')
+}
 
 export interface JwtPayload {
   sub: string

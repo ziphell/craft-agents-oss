@@ -241,6 +241,18 @@ export class PiAgent extends BaseAgent {
   // Event queue for streaming (AsyncGenerator pattern over subprocess JSONL)
   private eventQueue = new EventQueue();
 
+  /**
+   * Abort handshake. Set when an abort is sent to the subprocess, resolved by
+   * its `abort_settled` reply. `chatImpl` awaits it before resetting the queue,
+   * because the aborted run's trailing events (message_end error, agent_end)
+   * would otherwise land in the *new* turn and close it before the model answers
+   * — exactly what "send now" on a queued message used to do.
+   */
+  private abortSettlePromise: Promise<void> | null = null;
+  private resolveAbortSettle: (() => void) | null = null;
+  private abortSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly ABORT_SETTLE_TIMEOUT_MS = 2_500;
+
   // Error deduplication — suppress identical consecutive errors after a threshold
   // to prevent a broken subprocess from flooding the user's session.
   private lastSubprocessError: string | null = null;
@@ -1136,6 +1148,11 @@ export class PiAgent extends BaseAgent {
         }
         break;
 
+      case 'abort_settled':
+        // The interrupted run has finished unwinding; a new turn may start.
+        this.completeAbortSettle('subprocess');
+        break;
+
       case 'error': {
         const errorCode = typeof msg.code === 'string' ? msg.code : undefined;
         const rawMessage = String(msg.message || 'Unknown subprocess error');
@@ -1242,6 +1259,91 @@ export class PiAgent extends BaseAgent {
     }
   }
 
+  // ============================================================
+  // Abort handshake (see abortSettlePromise)
+  // ============================================================
+
+  /**
+   * Start waiting for the subprocess to finish unwinding an abort. Called right
+   * after `{ type: 'abort' }` is sent, so the wait covers the very next turn.
+   */
+  private armAbortSettle(): void {
+    this.clearAbortSettle(true);
+    // Nothing is running that could emit trailing events (and nothing to answer
+    // the handshake) — the next turn may start immediately.
+    if (!this.subprocess) return;
+    this.abortSettlePromise = new Promise<void>((resolve) => {
+      this.resolveAbortSettle = resolve;
+    });
+    this.abortSettleTimer = setTimeout(() => {
+      this.completeAbortSettle('timeout');
+    }, PiAgent.ABORT_SETTLE_TIMEOUT_MS);
+  }
+
+  /** Resolve the handshake — the interrupted run can no longer emit events. */
+  private completeAbortSettle(why: string): void {
+    if (this.abortSettleTimer) {
+      clearTimeout(this.abortSettleTimer);
+      this.abortSettleTimer = null;
+    }
+    const resolve = this.resolveAbortSettle;
+    this.resolveAbortSettle = null;
+    this.abortSettlePromise = null;
+    if (resolve) {
+      this.debug(`Abort settled (${why})`);
+      resolve();
+    }
+  }
+
+  /**
+   * Drop the handshake without waiting for the subprocess (teardown, exit).
+   * `releaseWaiters` resolves a chat that is already awaiting it so it is never
+   * stranded.
+   */
+  private clearAbortSettle(releaseWaiters = true): void {
+    const resolve = this.resolveAbortSettle;
+    this.resolveAbortSettle = null;
+    this.abortSettlePromise = null;
+    if (this.abortSettleTimer) {
+      clearTimeout(this.abortSettleTimer);
+      this.abortSettleTimer = null;
+    }
+    if (releaseWaiters && resolve) resolve();
+  }
+
+  /** True while an aborted run may still deliver its trailing events. */
+  private get isAbortSettling(): boolean {
+    return this.resolveAbortSettle !== null;
+  }
+
+  /**
+   * Does this event end (or poison with an error) the run that was interrupted?
+   * Only these are discarded while the abort is still settling.
+   */
+  private isInterruptedRunEnding(eventType: string, event: Record<string, unknown>): boolean {
+    if (eventType === 'agent_end') return true
+    if (eventType === 'message_end') {
+      const message = event.message as { stopReason?: string } | undefined
+      return message?.stopReason === 'error'
+    }
+    return false
+  }
+
+  /**
+   * Wait (bounded) for the previous abort to settle. A no-op when no abort is in
+   * flight; never throws, so a wedged subprocess cannot block the next turn
+   * forever — `abortSettleTimer` releases the wait.
+   */
+  private async awaitAbortSettle(): Promise<void> {
+    const pending = this.abortSettlePromise;
+    if (!pending) return;
+    try {
+      await pending;
+    } catch {
+      // The promise only ever resolves; keep the guard for safety.
+    }
+  }
+
   /**
    * Forward a Pi SDK event from the subprocess through the event adapter.
    */
@@ -1251,6 +1353,19 @@ export class PiAgent extends BaseAgent {
 
     // Detect session MCP tool completions (same pattern as in-process version)
     const eventType = event.type as string;
+
+    // An interrupted run keeps talking for a few hundred ms after the abort:
+    // message_end carrying the abort error, then agent_end. Those two are the
+    // turn's ending, and the stream has no turn identity — forwarded after a new
+    // turn has begun, they close *that* turn (agent_end → eventQueue.complete())
+    // or paint a red error into it before the model ever answers. Everything else
+    // (a tool_result that was still in flight, usage counts) stays harmless: the
+    // queue is reset before the new turn starts, or the old loop still consumes
+    // it, so it is let through.
+    if (this.isAbortSettling && this.isInterruptedRunEnding(eventType, event)) {
+      this.debug(`Dropping "${eventType}" from the interrupted run (abort not settled)`);
+      return;
+    }
     // Manual /compact uses an RPC-owned generator rather than the event queue.
     // Its SDK end arrives before compact_result; only the correlated response
     // may report success (including after a timeout/stop discarded the request).
@@ -2004,6 +2119,9 @@ export class PiAgent extends BaseAgent {
     this.subprocessReadyResolve = null;
     this.subprocessReadyReject = null;
 
+    // A dead subprocess will never answer the abort handshake.
+    this.clearAbortSettle();
+
     // If we were processing, emit error + complete
     if (this._isProcessing) {
       const exitReason = signal ? `signal ${signal}` : `code ${code}`;
@@ -2240,6 +2358,20 @@ export class PiAgent extends BaseAgent {
     // Reset state for new turn
     this._isProcessing = true;
     this.abortReason = undefined;
+
+    // A turn may only begin once the interrupted one is over in the subprocess.
+    // "Send now" on a queued message interrupts and replays ~50 ms later; without
+    // this wait the aborted run's trailing agent_end lands in *this* turn's queue
+    // and completes it before the model answers (the message then looks like it
+    // was sent and instantly stopped). Resetting the queue afterwards also drops
+    // anything that slipped in while we waited.
+    await this.awaitAbortSettle();
+    // A Stop that landed during the wait is newer than this send: don't start a
+    // turn the user already cancelled. (forceAbort/abort clear _isProcessing.)
+    if (!this._isProcessing) {
+      this.debug('Turn cancelled while waiting for the previous abort to settle');
+      return;
+    }
     this.eventQueue.reset();
     this.currentUserMessage = message;
     this.adapter.startTurn();
@@ -2614,6 +2746,7 @@ export class PiAgent extends BaseAgent {
 
     // Send abort to subprocess
     this.send({ type: 'abort' });
+    this.armAbortSettle();
     this.eventQueue.complete();
 
     // Clear bridge cache for this interrupted turn.
@@ -2657,8 +2790,11 @@ export class PiAgent extends BaseAgent {
       return;
     }
 
-    // For other reasons, send abort to subprocess
+    // For other reasons, send abort to subprocess. The next chat() waits for the
+    // subprocess's `abort_settled` so the aborted run's trailing events cannot
+    // close it (see abortSettlePromise).
     this.send({ type: 'abort' });
+    this.armAbortSettle();
   }
 
   /**
@@ -2853,6 +2989,9 @@ export class PiAgent extends BaseAgent {
     // Clear any in-flight overflow/auto-retry recovery state so a stale
     // fallback timer doesn't fire on a torn-down adapter.
     this.adapter.resetRecoveryState();
+
+    // Release any turn waiting on the abort handshake of the process we stopped.
+    this.clearAbortSettle();
   }
 
   // ============================================================

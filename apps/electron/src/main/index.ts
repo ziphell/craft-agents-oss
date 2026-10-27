@@ -74,7 +74,7 @@ if (persistedUiLanguage) {
 const machineId = createHash('sha256').update(hostname() + homedir()).digest('hex').slice(0, 16)
 Sentry.setUser({ id: machineId })
 
-import { join, delimiter } from 'path'
+import { join, delimiter, isAbsolute } from 'path'
 import { createWriteStream, existsSync, readFileSync } from 'fs'
 import { Readable } from 'stream'
 import { pipeline } from 'stream/promises'
@@ -127,8 +127,9 @@ import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeC
 import { createTray, destroyTray } from './tray'
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, setBeforeUpdateInstallHook, setInstallQuitFailedHook } from './auto-update'
 import type { EventSink } from '@craft-agent/server-core/transport'
+import { bearerToken } from '@craft-agent/server-core/transport'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
-import { createWebuiHandler, nodeHttpAdapter, validateSession, type WebuiHandler } from '@craft-agent/server-core/webui'
+import { createWebuiHandler, nodeHttpAdapter, validateSession, deriveWebuiSessionKey, type WebuiHandler } from '@craft-agent/server-core/webui'
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -355,7 +356,10 @@ function clientIdentity(): HubClientIdentity {
     // Diagnostics only: the hub shows it beside this device. Compatibility is negotiated per
     // channel, never by comparing app versions.
     version: app.getVersion(),
-    workspaceRoots: getWorkspaces().map((workspace) => workspace.rootPath),
+    // Folders a hub may reach are saved **per connection** and advertised by that device link
+    // (`hub-connection.ts`). A local workspace is only a shortcut in the picker, not an
+    // authorization, so the shared identity offers none.
+    allowedRoots: [],
     hubRootBase: HUB_ROOT_BASE,
   }
 }
@@ -894,6 +898,18 @@ app.whenReady().then(async () => {
       const serverToken = serverModeEnabled && embeddedServerConfig.token
         ? embeddedServerConfig.token
         : randomUUID()
+      // The Web UI follows Server Mode — it is always on while the server is. Its password is
+      // still its own credential, minted on first enable and kept in the config so the settings
+      // page can show (and reset) it. Session cookies are signed with a key derived from that
+      // password and the server token, so changing either one ends browser sessions.
+      let webuiPassword = embeddedServerConfig.webuiPassword ?? ''
+      if (serverModeEnabled && !webuiPassword) {
+        webuiPassword = randomUUID()
+        const { setServerConfig: setConfig } = await import('@craft-agent/shared/config')
+        setConfig({ ...embeddedServerConfig, webuiPassword })
+        mainLog.info('[server-mode] Web UI password generated')
+      }
+      const webuiSessionKey = deriveWebuiSessionKey(serverToken, webuiPassword)
       // External binding is its own switch: server mode on + allowExternal (default true).
       const allowExternal = serverModeEnabled && embeddedServerConfig.allowExternal !== false
       const rpcHost = process.env.CRAFT_RPC_HOST
@@ -950,8 +966,8 @@ app.whenReady().then(async () => {
         }
       }
 
-      // The HTTP handler exists because this instance is a hub (Server Mode), not because a page
-      // bundle was found: protocol routes must be reachable either way.
+      // The HTTP handler exists whenever this instance is a hub: it serves the Web UI and the
+      // protocol routes (export downloads) on the RPC port.
       let serverWebuiHandler: WebuiHandler | null = null
       let serverWebuiHttpHandler: ((req: any, res: any) => void) | undefined
       let webuiHealthCheck: (() => { status: string }) | null = null
@@ -969,10 +985,10 @@ app.whenReady().then(async () => {
         rpcPort,
         tls,
         httpHandler: webuiHttpDispatcher,
-        // Accept the WebUI session cookie on WebSocket upgrade (cookie auth). This is a
-        // protocol concern, so it follows Server Mode rather than the page bundle.
+        // Accept a Web UI session cookie on the WebSocket upgrade — verified with the key derived
+        // from this hub's token and Web UI password.
         validateSessionCookie: serverModeEnabled
-          ? async (cookieHeader: string | null) => (await validateSession(cookieHeader, serverToken)) !== null
+          ? async (cookieHeader: string | null) => (await validateSession(cookieHeader, webuiSessionKey)) !== null
           : undefined,
         bundledAssetsRoot: __dirname,
         serverId: 'local',
@@ -1115,14 +1131,27 @@ app.whenReady().then(async () => {
       moduleClientResolver = resolveClientId
 
       // -----------------------------------------------------------------------
-      // Hub HTTP — protocol routes always; the page only when its bundle is there.
+      // Hub HTTP — the Web UI and protocol routes, on the RPC port.
       // -----------------------------------------------------------------------
       if (serverModeEnabled) {
         serverWebuiHandler = createWebuiHandler({
           webuiDir,
           // The same vendored editor the desktop windows use, at `/drawio/` on this origin.
           drawioDir: getBundledAssetsDir('drawio') ?? undefined,
-          secret: serverToken,
+          // The hub token logs a browser in and is half of the session signing key.
+          serverToken,
+          password: webuiPassword,
+          // Export downloads also accept a hub credential, for a native client with no cookie.
+          // Checked the way the socket checks it — bound to this machine, and not a credential
+          // that may only answer capability calls — because an HTTP GET is not a way around the
+          // device binding that stops a slot from being transferred to another machine.
+          // `probe` on purpose: a download must not be what claims a pending slot.
+          authorizeBearer: (header) => {
+            const token = bearerToken(header)
+            if (!token) return false
+            const grant = instance.tokens.authorize(token, { deviceId: clientIdentity().deviceId, probe: true })
+            return grant !== null && grant.scope !== 'device'
+          },
           // Reverse-proxy / port-mapping support comes from config, not env vars.
           publicWsUrl: embeddedServerConfig.publicWsUrl || undefined,
           wsProtocol: tls ? 'wss' : 'ws',
@@ -1265,6 +1294,7 @@ app.whenReady().then(async () => {
         e.returnValue = instance.port
       })
       ipcMain.on('__get-ws-token', (e) => {
+        // This machine's own windows present the hub's token, exactly like any other client.
         e.returnValue = instance.token
       })
 
@@ -1288,7 +1318,11 @@ app.whenReady().then(async () => {
       // deserves. If a real admin role ever exists, it belongs with the credential model, not here.
       instance.wsServer.handle(RPC_CHANNELS.settings.GET_SERVER_CONFIG, async () => {
         const { getServerConfig: getConfig } = await import('@craft-agent/shared/config')
-        return getConfig()
+        // The server token is not a settings value any more: no window — local, remote or browser —
+        // needs it, and this channel is reachable from a remote window. The main process keeps it.
+        const view = { ...getConfig() }
+        delete view.token
+        return view
       })
 
       instance.wsServer.handle(RPC_CHANNELS.settings.SET_SERVER_CONFIG, async (_ctx: unknown, config: unknown) => {
@@ -1364,7 +1398,6 @@ app.whenReady().then(async () => {
           port: runningServerState.port,
           tls: runningServerState.tls,
           url: `${protocol}://${displayHost}:${runningServerState.port}`,
-          token: runningServerState.token,
           needsRestart,
           insecureWarning: isInsecureBind,
           allowExternal: runningServerState.allowExternal,
@@ -1455,6 +1488,24 @@ app.whenReady().then(async () => {
       // person's; the dialog warns, this does not refuse.
       if (!token) throw new Error('Token is required')
 
+      // Folders this server may reach on this machine. The dialog picks local paths; this is the
+      // process that owns the device link, so it refuses anything that is not absolute here.
+      let allowedRoots: string[] | undefined
+      if (input.allowedRoots !== undefined) {
+        if (!Array.isArray(input.allowedRoots)) {
+          throw new Error('Allowed folders must be a list of paths')
+        }
+        allowedRoots = input.allowedRoots.map((root) => {
+          if (typeof root !== 'string' || !root.trim()) {
+            throw new Error('Allowed folder paths must not be empty')
+          }
+          if (!isAbsolute(root.trim())) {
+            throw new Error(`Allowed folder must be an absolute path: ${root}`)
+          }
+          return root.trim()
+        })
+      }
+
       const existing = typeof input.id === 'string' ? getRemoteConnection(input.id) : null
       const saved = saveRemoteConnection({
         id: existing?.id ?? randomUUID(),
@@ -1462,9 +1513,11 @@ app.whenReady().then(async () => {
         url,
         token,
         ...(existing?.lastWorkspaceId ? { lastWorkspaceId: existing.lastWorkspaceId } : {}),
-        ...(typeof input.deviceAccess === 'boolean'
-          ? { deviceAccess: input.deviceAccess }
-          : existing?.deviceAccess !== undefined ? { deviceAccess: existing.deviceAccess } : {}),
+        ...(allowedRoots !== undefined ? { allowedRoots } : {}),
+        // The client-side switch that lets this server use this machine. Omitted keeps it as saved.
+        ...(typeof input.deviceUseEnabled === 'boolean'
+          ? { deviceUseEnabled: input.deviceUseEnabled }
+          : {}),
       })
       trustServerOrigin(saved.url)
       syncHubConnections(getRemoteConnections(), {
@@ -1496,10 +1549,25 @@ app.whenReady().then(async () => {
       })
     })
 
+    /**
+     * Refuse to open a window on a pairing whose credential may never open one.
+     *
+     * A new window has no handshake to fail fast: it would come up only to show the hub's refusal
+     * in the window itself. The app-level link is already handshaken and its scope is kept current,
+     * so the answer is known before a window exists. An unknown scope (link down) is not a refusal:
+     * the window may then show its own reconnect screen, which is what an offline server deserves.
+     */
+    const assertWindowAllowed = (connectionId: string) => {
+      if (getHubConnectionClient(connectionId)?.getTokenScope() === 'device') {
+        throw new Error('This server does not allow remote control for this credential.')
+      }
+    }
+
     /** Open a window on a saved server. */
     ipcMain.handle('client-mode:connect', async (_event, connectionId: string, workspaceId?: string) => {
       const connection = getRemoteConnection(connectionId)
       if (!connection) throw new Error('Unknown remote connection')
+      assertWindowAllowed(connectionId)
       const target = remoteTarget(connection, workspaceId)
       trustServerOrigin(target.url)
       // A workspace opened here is the one that server should offer next time — including one
@@ -1517,6 +1585,7 @@ app.whenReady().then(async () => {
       const current = windowManager?.getRemoteForWindow(event.sender.id) ?? null
       const connection = current ? getRemoteConnection(current.connectionId) : null
       if (!current || !connection) throw new Error('This window is not connected to a remote server')
+      assertWindowAllowed(connection.id)
       const target = remoteTarget(connection, workspaceId ?? current.workspaceId)
       trustServerOrigin(target.url)
       openRemoteWindow(target)
@@ -1542,6 +1611,8 @@ app.whenReady().then(async () => {
       return getRemoteConnections().map((connection) => ({
         id: connection.id,
         status: getHubConnectionStatus(connection.id) ?? 'unknown',
+        // A device-only credential can lend this machine but never open a window here.
+        scope: getHubConnectionClient(connection.id)?.getTokenScope() ?? null,
       }))
     })
 
@@ -1656,17 +1727,19 @@ app.whenReady().then(async () => {
 
     ipcMain.handle('client-mode:test', async (_event, serverUrl: string, token: string) => {
       const { connectToRemote } = await import('./handlers/workspace')
-      const { client, error } = await connectToRemote(serverUrl, token)
+      // A probe: it validates the address and the credential, and is answered with the token's
+      // scope. It never claims a device slot — that happens on the saved connection's first real
+      // handshake, which also carries device access and the allowed folders.
+      const { client, error } = await connectToRemote(serverUrl, token, undefined, {
+        clientInfo: { ...clientIdentity(), probe: true },
+      })
       if (!client) return { ok: false, error: error ?? 'Connection failed' }
       try {
-        const workspaces = await client.invoke(RPC_CHANNELS.server.GET_WORKSPACES) as Array<{ id: string; name: string }>
         return {
           ok: true,
           serverVersion: client.getServerVersion() ?? undefined,
-          workspaces: (workspaces ?? []).map((w) => ({ id: w.id, name: w.name })),
+          scope: client.getTokenScope() ?? undefined,
         }
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : 'Connection failed' }
       } finally {
         client.destroy()
       }
@@ -1695,7 +1768,17 @@ app.whenReady().then(async () => {
 
     /** The workspaces a saved server has, for the workspace dropdown's remote section. */
     ipcMain.handle('client-mode:remote-workspaces', async (_event, connectionId: string) => {
-      return await hubClientFor(connectionId).invoke(RPC_CHANNELS.server.GET_WORKSPACES)
+      const client = hubClientFor(connectionId)
+      try {
+        return { workspaces: await client.invoke(RPC_CHANNELS.server.GET_WORKSPACES), denied: false }
+      } catch (error) {
+        // A live link that refuses the read is not an unreachable server: its credential may only
+        // lend this machine, so the hub allows it to serve device calls and nothing else.
+        if ((error as { code?: string } | null)?.code === 'SCOPE_FORBIDDEN') {
+          return { workspaces: [], denied: true }
+        }
+        throw error
+      }
     })
 
     ipcMain.handle('client-mode:remote-check-slug', async (_event, connectionId: string, slug: string) => {

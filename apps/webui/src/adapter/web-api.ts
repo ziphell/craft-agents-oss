@@ -99,6 +99,7 @@ export function createWebApi(options: WebApiOptions): {
     clientInfo: {
       name: typeof navigator !== 'undefined' ? 'Web browser' : 'Web client',
       platform: typeof navigator !== 'undefined' ? navigator.platform : undefined,
+      role: 'window',
     },
     // No token — auth is via session cookie sent on WebSocket upgrade
   })
@@ -139,6 +140,7 @@ export function createWebApi(options: WebApiOptions): {
     // File dialogs
     openFileDialog: webFilePicker,
     openFolderDialog: () => Promise.resolve(null), // not possible in browser
+    openLocalFolderDialog: () => Promise.resolve(null), // not possible in browser
     /**
      * A hub-produced export: the browser fetches `/api/exports/<id>` itself, carrying its session
      * cookie, and the response's `Content-Disposition` names the file. Long downloads keep going

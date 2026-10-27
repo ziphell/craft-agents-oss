@@ -13,10 +13,10 @@
 import { join, extname } from 'node:path'
 import { createReadStream } from 'node:fs'
 import { Readable } from 'node:stream'
-import { createHash, timingSafeEqual } from 'node:crypto'
 import {
   RateLimiter,
   createSessionToken,
+  deriveWebuiSessionKey,
   validateSession,
   buildSessionCookie,
   buildLogoutCookie,
@@ -52,17 +52,6 @@ const MIME_TYPES: Record<string, string> = {
 
 function getMimeType(path: string): string {
   return MIME_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream'
-}
-
-/** The hub token as a Bearer header — for native clients that hold it but have no cookie. */
-function bearerMatches(header: string | null, secret: string): boolean {
-  if (!header) return false
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim())
-  if (!match) return false
-  // Hashed so the comparison never depends on the secret's length.
-  const given = createHash('sha256').update(match[1]).digest()
-  const expected = createHash('sha256').update(secret).digest()
-  return timingSafeEqual(given, expected)
 }
 
 /** `attachment`, with an ASCII fallback plus the real (possibly non-ASCII) name. */
@@ -169,10 +158,19 @@ export interface WebuiHandlerOptions {
    * session cookie. No directory → the editor is reported as not installed.
    */
   drawioDir?: string
-  /** Secret used to sign JWTs — typically CRAFT_SERVER_TOKEN. */
-  secret: string
-  /** Optional separate web UI password. Falls back to `secret` for verification. */
-  password?: string
+  /**
+   * The hub's own token. It logs a browser in directly, and it is the HMAC key the session
+   * signing key is derived from (together with `password`) — so changing either credential ends
+   * every browser session.
+   */
+  serverToken: string
+  /** Web UI login password (generated when Server Mode first starts). */
+  password: string
+  /**
+   * Accepts a bearer header for endpoints a native client fetches over HTTP (export downloads).
+   * The hub passes its token registry here; a browser's cookie never reaches this path.
+   */
+  authorizeBearer?: (header: string | null) => boolean | Promise<boolean>
   /** Explicit Secure-cookie override. When unset, infer from the request / proxy headers. */
   secureCookies?: boolean
   /** Optional browser-facing WebSocket URL override for reverse-proxy deployments. */
@@ -223,8 +221,9 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
   const {
     webuiDir,
     drawioDir,
-    secret,
     password,
+    serverToken,
+    authorizeBearer,
     secureCookies,
     publicWsUrl,
     wsProtocol,
@@ -233,6 +232,9 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     logger,
     trustedProxies,
   } = options
+
+  // One key for every session this handler issues or checks; see `deriveWebuiSessionKey`.
+  const sessionKey = deriveWebuiSessionKey(serverToken, password)
 
   const runtime = options.runtime ?? createDefaultWebuiRuntime()
 
@@ -247,11 +249,11 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
   const rateLimiter = new RateLimiter(5, 60_000)
   const cleanupTimer = setInterval(() => rateLimiter.cleanup(), 120_000)
 
-  const loginPassword = password || secret
   const trustedProxySet = new Set(trustedProxies ?? [])
 
-  // Hash the login password at startup (async, but resolves before first auth attempt in practice)
-  const passwordReady = runtime.hashPassword(loginPassword)
+  // Hash both accepted passwords at startup (async, but resolves before the first auth attempt).
+  const passwordReady = runtime.hashPassword(password)
+  const tokenPasswordReady = runtime.hashPassword(serverToken)
 
   /** Extract client IP — only trusts proxy headers when trustedProxies is configured. */
   function getClientIp(req: Request): string {
@@ -302,6 +304,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     // ── Auth endpoint ──
     if (path === '/api/auth' && req.method === 'POST') {
       const passwordHash = await passwordReady
+      const tokenHash = await tokenPasswordReady
       const ip = getClientIp(req)
 
       if (!rateLimiter.check(ip)) {
@@ -323,12 +326,16 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
         return Response.json({ error: 'Password is required' }, { status: 400 })
       }
 
-      if (!await runtime.verifyPassword(body.password, passwordHash)) {
+      // Either credential is a full client of this hub, so either is a valid login.
+      const matchesPassword = await runtime.verifyPassword(body.password, passwordHash)
+      const matchesToken = matchesPassword
+        || await runtime.verifyPassword(body.password, tokenHash)
+      if (!matchesToken) {
         logger.warn(`[webui] Failed auth attempt from ${ip}`)
         return Response.json({ error: 'Invalid credentials' }, { status: 401 })
       }
 
-      const jwt = await createSessionToken(secret)
+      const jwt = await createSessionToken(sessionKey)
       logger.info(`[webui] Successful auth from ${ip}`)
 
       return Response.json({ ok: true }, {
@@ -412,7 +419,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Config endpoint (requires session cookie) ──
     if (path === '/api/config' && req.method === 'GET') {
-      const configSession = await validateSession(req.headers.get('cookie'), secret)
+      const configSession = await validateSession(req.headers.get('cookie'), sessionKey)
       if (!configSession) {
         return Response.json({ error: 'Unauthorized' }, { status: 401 })
       }
@@ -425,7 +432,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     // `activeWorkspaceId` which only tracks the most recently created one); the full list lets a
     // tab validate a workspace it remembered before using it.
     if (path === '/api/config/workspaces' && req.method === 'GET') {
-      const configSession = await validateSession(req.headers.get('cookie'), secret)
+      const configSession = await validateSession(req.headers.get('cookie'), sessionKey)
       if (!configSession) {
         return Response.json({ error: 'Unauthorized' }, { status: 401 })
       }
@@ -439,11 +446,11 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Export downloads ──
     // A file this hub produced for a caller that is not on this machine. The browser brings its
-    // session cookie; a native client brings the hub token as a bearer header. Either way the
+    // session cookie; a native client brings a hub credential as a bearer header. Either way the
     // bytes travel here, not over the RPC socket.
     if (path.startsWith('/api/exports/') && req.method === 'GET') {
-      const authorized = !!await validateSession(req.headers.get('cookie'), secret)
-        || bearerMatches(req.headers.get('authorization'), secret)
+      const authorized = !!await validateSession(req.headers.get('cookie'), sessionKey)
+        || !!await authorizeBearer?.(req.headers.get('authorization'))
       if (!authorized) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
       const file = findExport(decodeURIComponent(path.slice('/api/exports/'.length)))
@@ -461,7 +468,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Everything below requires a valid session cookie ──
     const cookieHeader = req.headers.get('cookie')
-    const session = await validateSession(cookieHeader, secret)
+    const session = await validateSession(cookieHeader, sessionKey)
 
     if (!session) {
       const accept = req.headers.get('accept') ?? ''

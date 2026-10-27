@@ -13,6 +13,7 @@ import {
   PROTOCOL_VERSION,
   REQUEST_TIMEOUT_MS,
   SEQUENCE_ACK_INTERVAL_MS,
+  RPC_CHANNELS,
   isErrorCode,
   type ErrorCode,
   type MessageEnvelope,
@@ -67,6 +68,7 @@ export type TransportConnectionStatus =
 
 export type TransportConnectionErrorKind =
   | 'auth'
+  | 'scope'
   | 'protocol'
   | 'timeout'
   | 'network'
@@ -118,7 +120,7 @@ export interface WsRpcClientOptions {
   /** Capabilities to advertise on handshake. Handlers must be registered via handleCapability(). */
   clientCapabilities?: string[]
   /** Human-readable identity shown in the server's connected-client list. */
-  clientInfo?: { name?: string; platform?: string; deviceId?: string; workspaceRoots?: string[]; hubRootBase?: string }
+  clientInfo?: { name?: string; platform?: string; deviceId?: string; allowedRoots?: string[]; hubRootBase?: string; probe?: boolean; role?: 'window' | 'device' }
   /** Runtime mode — local embedded or remote thin-client connection. */
   mode?: TransportMode
   /** Accept self-signed TLS certificates for wss:// connections. Default: false. Only works in Node.js (main process). */
@@ -138,6 +140,7 @@ export class WsRpcClient implements RpcClient {
   private anyEventListeners = new Set<(channel: string, ...args: any[]) => void>()
   private clientId: string | null = null
   private _serverVersion: string | null = null
+  private _tokenScope: 'client' | 'device' | 'both' | null = null
   private connected = false
   private reconnectAttempt = 0
   private lastSeenSeq = 0
@@ -164,7 +167,7 @@ export class WsRpcClient implements RpcClient {
   private readonly webContentsId: number | undefined
   private readonly token: string | undefined
   private readonly clientCapabilities: string[]
-  private readonly clientInfo: { name?: string; platform?: string; deviceId?: string; workspaceRoots?: string[] } | null
+  private readonly clientInfo: { name?: string; platform?: string; deviceId?: string; allowedRoots?: string[]; hubRootBase?: string; probe?: boolean } | null
   private readonly requestTimeout: number
   private readonly maxReconnectDelay: number
   private readonly autoReconnect: boolean
@@ -264,6 +267,11 @@ export class WsRpcClient implements RpcClient {
   /** Server version from handshake_ack (null if server didn't send one / not yet connected). */
   getServerVersion(): string | null {
     return this._serverVersion
+  }
+
+  /** What the credential behind this connection may do, as the server reported it. */
+  getTokenScope(): 'client' | 'device' | 'both' | null {
+    return this._tokenScope
   }
 
   /**
@@ -564,6 +572,7 @@ export class WsRpcClient implements RpcClient {
         this.pendingReconnect = null
         this.clientId = envelope.clientId ?? null
         this._serverVersion = envelope.serverVersion ?? null
+        this._tokenScope = envelope.tokenScope ?? null
         this.serverChannels = envelope.registeredChannels
           ? new Set(envelope.registeredChannels)
           : null
@@ -663,6 +672,12 @@ export class WsRpcClient implements RpcClient {
         }
 
         if (envelope.channel) {
+          // A slot's scope can change while this socket stays open; keep the local answer in step
+          // instead of holding the value the handshake happened to carry.
+          if (envelope.channel === RPC_CHANNELS.server.TOKEN_SCOPE) {
+            const next = envelope.args?.[0]
+            if (next === 'client' || next === 'device' || next === 'both') this._tokenScope = next
+          }
           // Server is shutting down — stop reconnection before dispatching
           if (envelope.channel === 'server:shuttingDown') {
             this.permanentlyClosed = true
@@ -1001,6 +1016,9 @@ export class WsRpcClient implements RpcClient {
     const normalized = typeof code === 'string' ? code.toUpperCase() : ''
 
     if (normalized === 'AUTH_FAILED') return 'auth'
+    // The credential is valid but may not open windows here. Distinct from `auth`: retrying will
+    // not help until the hub changes the slot's scope.
+    if (normalized === 'REMOTE_CONTROL_DENIED' || normalized === 'SCOPE_FORBIDDEN') return 'scope'
     if (normalized === 'PROTOCOL_VERSION_UNSUPPORTED') return 'protocol'
     if (normalized === 'HANDSHAKE_TIMEOUT' || normalized === 'REQUEST_TIMEOUT' || normalized === 'CLIENT_REQUEST_TIMEOUT') {
       return 'timeout'

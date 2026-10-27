@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Copy, Eye, EyeOff, AlertTriangle, RotateCw } from 'lucide-react'
+import { Copy, Eye, EyeOff, AlertTriangle, RotateCw, Pencil, Trash2, MoreHorizontal, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
@@ -23,13 +23,22 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Spinner } from '@craft-agent/ui'
+import { RenameDialog } from '@/components/ui/rename-dialog'
+import { useRegisterModal } from '@/context/ModalContext'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import { isWebUI } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { ServerConfig, ServerStatus } from '@craft-agent/shared/config/server-config'
-import type { ClientModeInfo, DeviceToolInfo } from '../../../shared/types'
+import type { ClientModeInfo, DeviceToolInfo, DeviceTokenInfo } from '../../../shared/types'
 
 import {
   SettingsSection,
@@ -44,13 +53,81 @@ export const meta: DetailsPageMeta = {
   slug: 'server',
 }
 
+/**
+ * The one shape for a row action on this page — the same quiet pill the rest of Settings uses
+ * (see `SettingsEditRow`), so a row never turns into a toolbar.
+ */
+function RowButton({
+  children,
+  onClick,
+  disabled,
+}: {
+  children: React.ReactNode
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-7 shrink-0 gap-1.5 rounded-[6px] bg-background px-2.5 shadow-minimal"
+      onClick={onClick}
+      disabled={disabled}
+    >
+      {children}
+    </Button>
+  )
+}
+
+/** A secondary action that belongs to the value beside it, not to the page. */
+function IconAction({
+  icon: Icon,
+  title,
+  onClick,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  title: string
+  onClick: () => void
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+    >
+      <Icon className="h-3.5 w-3.5" />
+    </Button>
+  )
+}
+
+/** `process.platform` in the words a person uses — the row says macOS, not darwin. */
+function platformLabel(platform: string | null): string | null {
+  if (!platform) return null
+  if (platform === 'darwin') return 'macOS'
+  if (platform === 'win32') return 'Windows'
+  if (platform === 'linux') return 'Linux'
+  return platform
+}
+
+/** A heading inside a card, in the same voice as the section titles above it. */
+function GroupLabel({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground", className)}>
+      {children}
+    </div>
+  )
+}
+
 interface ServerFormState {
   enabled: boolean
   port: string
   allowExternal: boolean
   tlsCertPath: string
   tlsKeyPath: string
-  token: string
+  webuiPassword: string
   publicWsUrl: string
 }
 
@@ -61,7 +138,7 @@ function configToForm(config: ServerConfig): ServerFormState {
     allowExternal: config.allowExternal !== false,
     tlsCertPath: config.tlsCertPath ?? '',
     tlsKeyPath: config.tlsKeyPath ?? '',
-    token: config.token ?? '',
+    webuiPassword: config.webuiPassword ?? '',
     publicWsUrl: config.publicWsUrl ?? '',
   }
 }
@@ -73,17 +150,18 @@ function formToConfig(form: ServerFormState): ServerConfig {
     allowExternal: form.allowExternal,
     tlsCertPath: form.tlsCertPath.trim() || undefined,
     tlsKeyPath: form.tlsKeyPath.trim() || undefined,
-    token: form.token || undefined,
+    webuiPassword: form.webuiPassword.trim() || undefined,
     publicWsUrl: form.publicWsUrl.trim() || undefined,
   }
 }
 
 /**
- * A token in the same shape the server would generate.
+ * A secret in the same shape the server would generate.
  *
- * Server Mode needs one before a client can connect, and the server only mints it at save time —
- * too late for the user to copy it out. Generating it here lets the value exist as part of the
- * form (visible, copyable, regenerable) from the moment the toggle goes on.
+ * The Web UI needs a password before the listener starts, and the server only mints it at save
+ * time — too late for the user to copy it out. Generating it here lets the value exist as part of
+ * the form (visible, copyable, regenerable) from the moment the toggle goes on. The server token
+ * is not shown and is minted by the main process, so it never appears in this form.
  */
 function generateToken(): string {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
@@ -95,6 +173,88 @@ function generateToken(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+interface AddDeviceDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  label: string
+  onLabelChange: (label: string) => void
+  remoteCap: boolean
+  onRemoteCapChange: (on: boolean) => void
+  onCreate: () => void
+  creating: boolean
+}
+
+/**
+ * A slot grants a machine remote control of this server. Device use — this server calling the
+ * other machine's tools — is a separate right: it starts on when the machine connects (offering
+ * folders is its consent) and is turned off in the device list, not here. So the invitation only
+ * asks for remote control.
+ */
+function AddDeviceDialog({
+  open,
+  onOpenChange,
+  label,
+  onLabelChange,
+  remoteCap,
+  onRemoteCapChange,
+  onCreate,
+  creating,
+}: AddDeviceDialogProps) {
+  const { t } = useTranslation()
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Register with modal context so X button / Cmd+W closes this dialog first
+  useRegisterModal(open, () => onOpenChange(false))
+
+  useEffect(() => {
+    if (open) {
+      const timer = setTimeout(() => {
+        inputRef.current?.focus()
+      }, 0)
+      return () => clearTimeout(timer)
+    }
+  }, [open])
+
+  const submit = () => {
+    onCreate()
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[420px]" onOpenAutoFocus={(e) => e.preventDefault()}>
+        <DialogHeader>
+          <DialogTitle>{t('settings.server.addDevice')}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <Input
+            ref={inputRef}
+            value={label}
+            onChange={(e) => onLabelChange(e.target.value)}
+            placeholder={t('settings.server.deviceLabelPlaceholder')}
+            onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
+          />
+          {/* The invitation only sets the starting value; the device list is where it is changed. */}
+          <label className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2.5">
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">{t('settings.server.capabilityRemote')}</span>
+            </span>
+            <Switch checked={remoteCap} onCheckedChange={onRemoteCapChange} />
+          </label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            {t('common.cancel')}
+          </Button>
+          <Button onClick={submit} disabled={creating}>
+            {creating ? <Spinner className="mr-1.5" /> : null}
+            {t('settings.server.addDevice')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export default function ServerSettingsPage() {
   const { t } = useTranslation()
 
@@ -104,17 +264,25 @@ export default function ServerSettingsPage() {
     allowExternal: true,
     tlsCertPath: '',
     tlsKeyPath: '',
-    token: '',
+    webuiPassword: '',
     publicWsUrl: '',
   })
   const [savedForm, setSavedForm] = useState<ServerFormState>(form)
   const [status, setStatus] = useState<ServerStatus | null>(null)
   const [clientMode, setClientMode] = useState<ClientModeInfo | null>(null)
   const [devices, setDevices] = useState<DeviceToolInfo[] | null>(null)
+  const [deviceTokens, setDeviceTokens] = useState<DeviceTokenInfo[] | null>(null)
   const [devicesLoading, setDevicesLoading] = useState(false)
+  const [addDeviceOpen, setAddDeviceOpen] = useState(false)
+  const [deviceLabelDraft, setDeviceLabelDraft] = useState('')
+  const [addRemoteAccess, setAddRemoteAccess] = useState(true)
+  const [isCreatingDevice, setIsCreatingDevice] = useState(false)
+  /** The device the person is about to remove (disconnects it and revokes its slot). */
+  const [removeTarget, setRemoveTarget] = useState<{ id: string; name: string } | null>(null)
+  const [isRemoving, setIsRemoving] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
-  const [tokenVisible, setTokenVisible] = useState(false)
+  const [webuiPasswordVisible, setWebuiPasswordVisible] = useState(false)
   const [error, setError] = useState<string>()
   const [loadError, setLoadError] = useState<string>()
   const [browseTarget, setBrowseTarget] = useState<'cert' | 'key' | null>(null)
@@ -170,7 +338,13 @@ export default function ServerSettingsPage() {
   const loadDevices = useCallback(async () => {
     setDevicesLoading(true)
     try {
-      setDevices(await window.electronAPI.getConnectedDevices())
+      // One list in the UI: slots waiting for a machine, and the devices that have connected.
+      const [connected, tokens] = await Promise.all([
+        window.electronAPI.getConnectedDevices(),
+        window.electronAPI.listDeviceTokens().catch(() => [] as DeviceTokenInfo[]),
+      ])
+      setDevices(connected)
+      setDeviceTokens(tokens)
     } catch (err) {
       console.error('Failed to load connected devices:', err)
     } finally {
@@ -185,6 +359,21 @@ export default function ServerSettingsPage() {
   // A headless hub does not register the handler: there is no process to relaunch through Electron.
   const canRestartServer = window.electronAPI.isChannelAvailable(RPC_CHANNELS.server.RESTART)
   const devicesVisible = form.enabled
+  /** Slots created for a machine that has not connected yet. */
+  const pendingTokens = (deviceTokens ?? []).filter((token) => token.deviceId === null)
+  /** The slot a connected device holds, so its credential can be revoked from the same row. */
+  const slotByDeviceId = new Map<string, DeviceTokenInfo>()
+  for (const token of deviceTokens ?? []) {
+    if (token.deviceId) slotByDeviceId.set(token.deviceId, token)
+  }
+  /** What a slot lets its device do, as a short label. */
+  const scopeLabel = (scope: 'client' | 'device' | 'both'): string => {
+    switch (scope) {
+      case 'both': return t('settings.server.scopeBoth')
+      case 'client': return t('settings.server.scopeClient')
+      default: return t('settings.server.scopeDevice')
+    }
+  }
   useEffect(() => {
     if (!devicesVisible) {
       setDevices(null)
@@ -227,8 +416,8 @@ export default function ServerSettingsPage() {
     try {
       const toSave = form.enabled ? form : { ...savedForm, enabled: false }
       await window.electronAPI.setServerConfig(formToConfig(toSave))
-      // Read the config back instead of assuming it: the main process fills in a token the first
-      // time Server Mode is enabled, and that value exists nowhere else until we ask for it.
+      // Read the config back instead of assuming it: the main process fills in a Web UI password
+      // the first time Server Mode is enabled, and that value exists nowhere else until we ask.
       const stored = configToForm(await window.electronAPI.getServerConfig())
       setForm(stored)
       setSavedForm(stored)
@@ -303,18 +492,71 @@ export default function ServerSettingsPage() {
     }
   }
 
-  const handleSetDeviceUse = async (deviceId: string, use: boolean) => {
+  /** Remove a device row no matter its state: live connections drop and its slot stops working. */
+  const handleRemoveDevice = async () => {
+    if (!removeTarget || isRemoving) return
+    setIsRemoving(true)
     try {
-      await window.electronAPI.setDeviceUse(deviceId, use)
+      await window.electronAPI.forgetDevice(removeTarget.id)
+      setRemoveTarget(null)
+      await loadDevices()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsRemoving(false)
+    }
+  }
+
+  // The person's own name for a device — the string the agent accepts when naming it.
+  const [aliasTarget, setAliasTarget] = useState<DeviceToolInfo | null>(null)
+  const [aliasDraft, setAliasDraft] = useState('')
+
+  /** Create an invitation. Its scope says whether the machine may open windows here. */
+  const handleCreateDevice = async () => {
+    if (isCreatingDevice) return
+    setIsCreatingDevice(true)
+    try {
+      await window.electronAPI.createDeviceToken(
+        deviceLabelDraft.trim() || undefined,
+        addRemoteAccess ? 'both' : 'device',
+      )
+      setAddDeviceOpen(false)
+      setDeviceLabelDraft('')
+      await loadDevices()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsCreatingDevice(false)
+    }
+  }
+
+  const handleRemoveDeviceToken = async (tokenId: string) => {
+    try {
+      await window.electronAPI.removeDeviceToken(tokenId)
       await loadDevices()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     }
   }
 
-  const handleForgetDevice = async (deviceId: string) => {
+  /**
+   * Remote control is a property of the slot, not of a live connection, so the same switch works
+   * while the device is still waiting to connect.
+   */
+  const handleSetRemoteAccess = async (tokenId: string, on: boolean) => {
     try {
-      await window.electronAPI.forgetDevice(deviceId)
+      await window.electronAPI.setDeviceTokenScope(tokenId, on ? 'both' : 'device')
+      await loadDevices()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleSetDeviceAlias = async () => {
+    if (!aliasTarget) return
+    try {
+      await window.electronAPI.setDeviceAlias(aliasTarget.id, aliasDraft.trim() || null)
+      setAliasTarget(null)
       await loadDevices()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -362,11 +604,6 @@ export default function ServerSettingsPage() {
   const wsUrl = status && liveMatchesForm ? status.url : draftUrl
   const browserUrl = wsUrl.replace(/^ws/, 'http')
 
-  // The token is generated on the first save, so before that there is nothing to show. Once it
-  // exists, show the one that will be enforced: the running server's while it matches the form,
-  // the saved one otherwise (it is what the restarted server will accept).
-  const token = form.token || (status && liveMatchesForm ? status.token : '')
-
   // Reverse-proxy / port-mapping address, taken from the form because it is part of this config.
   const publicWsUrl = form.publicWsUrl.trim()
   const publicHttpUrl = publicWsUrl.replace(/^ws/, 'http')
@@ -387,9 +624,9 @@ export default function ServerSettingsPage() {
                 onCheckedChange={(enabled) => setForm(f => ({
                   ...f,
                   enabled,
-                  // Mint the token up front so it is part of the config being edited (copyable now,
-                  // regenerable below) instead of appearing only after the server first saves one.
-                  token: enabled && !f.token ? generateToken() : f.token,
+                  // Mint the Web UI password up front so it is part of the config being edited
+                  // instead of appearing only after the server first saves one.
+                  webuiPassword: enabled && !f.webuiPassword ? generateToken() : f.webuiPassword,
                 }))}
               />
             </SettingsCard>
@@ -455,7 +692,7 @@ export default function ServerSettingsPage() {
             </div>
           )}
 
-          {/* Connection + TLS — only visible when server mode is relevant */}
+          {/* What to hand out, and to whom — only visible when server mode is on. */}
           {showServerDetails && (
             <SettingsSection title={t("settings.server.connectionSection")}>
               <SettingsCard>
@@ -466,118 +703,74 @@ export default function ServerSettingsPage() {
                   placeholder="9100"
                 />
 
-                {/* Endpoint rows. Shown whenever Server Mode is on — this is the address the user
-                    hands to another machine — and they follow the form until the running listener
-                    matches it. The token is different: it only exists once the server runs with
-                    this config, so it stays hidden until then. */}
-                {form.enabled && (
-                  <>
-                    <SettingsRow label={t("settings.server.wsUrl")}>
-                      <div className="flex items-center gap-1.5">
-                        <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
-                          {wsUrl}
-                        </code>
-                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleCopy(wsUrl, t("settings.server.wsUrl"))}>
-                          <Copy className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </SettingsRow>
+                {/* Addresses show the one that reaches this machine from outside; the override
+                    is edited under the WebSocket address. */}
+                <SettingsRow label={t("settings.server.browserUrl")}>
+                  <span className="font-mono text-sm text-muted-foreground">{publicWsUrl ? publicHttpUrl : browserUrl}</span>
+                  <IconAction
+                    icon={Copy}
+                    title={t("common.copy")}
+                    onClick={() => handleCopy(publicWsUrl ? publicHttpUrl : browserUrl, t("settings.server.browserUrl"))}
+                  />
+                </SettingsRow>
 
-                    <SettingsRow label={t("settings.server.browserUrl")}>
-                      <div className="flex items-center gap-1.5">
-                        {/* Same host:port, HTTP(S) for the browser (the WS URL is the client endpoint). */}
-                        <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
-                          {browserUrl}
-                        </code>
-                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleCopy(browserUrl, t("settings.server.browserUrl"))}>
-                          <Copy className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </SettingsRow>
-
-                    {publicWsUrl && (
-                      <>
-                        <SettingsRow label={t("settings.server.publicWsUrl")}>
-                          <div className="flex items-center gap-1.5">
-                            <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
-                              {publicWsUrl}
-                            </code>
-                            <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleCopy(publicWsUrl, t("settings.server.publicWsUrl"))}>
-                              <Copy className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        </SettingsRow>
-
-                        <SettingsRow label={t("settings.server.publicBrowserUrl")}>
-                          <div className="flex items-center gap-1.5">
-                            <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
-                              {publicHttpUrl}
-                            </code>
-                            <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleCopy(publicHttpUrl, t("settings.server.publicBrowserUrl"))}>
-                              <Copy className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        </SettingsRow>
-                      </>
-                    )}
-
-                    <SettingsRow label={t("settings.server.token")}>
-                      <div className="flex items-center gap-1.5">
-                        <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded max-w-[180px] truncate">
-                          {token ? (tokenVisible ? token : '••••••••••••••••') : '—'}
-                        </code>
-                        {token && (
-                          <>
-                            <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => setTokenVisible(v => !v)}>
-                              {tokenVisible ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                            </Button>
-                            <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => handleCopy(token, 'Token')}>
-                              <Copy className="h-3 w-3" />
-                            </Button>
-                          </>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0"
-                          title={t('settings.server.regenerateToken')}
-                          onClick={() => {
-                            setForm(f => ({ ...f, token: generateToken() }))
-                            setTokenVisible(true)
-                          }}
-                        >
-                          <RotateCw className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </SettingsRow>
-                  </>
-                )}
+                <SettingsRow label={t("settings.server.webuiPassword")}>
+                  <span className="font-mono text-sm text-muted-foreground">
+                    {form.webuiPassword ? (webuiPasswordVisible ? form.webuiPassword : "••••••••••••") : "—"}
+                  </span>
+                  {form.webuiPassword && (
+                    <>
+                      <IconAction
+                        icon={webuiPasswordVisible ? EyeOff : Eye}
+                        title={t("settings.server.webuiPassword")}
+                        onClick={() => setWebuiPasswordVisible(v => !v)}
+                      />
+                      <IconAction
+                        icon={Copy}
+                        title={t("common.copy")}
+                        onClick={() => handleCopy(form.webuiPassword, t("settings.server.webuiPassword"))}
+                      />
+                    </>
+                  )}
+                  <IconAction
+                    icon={RotateCw}
+                    title={t("settings.server.regenerateWebuiPassword")}
+                    onClick={() => {
+                      setForm(f => ({ ...f, webuiPassword: generateToken() }))
+                      setWebuiPasswordVisible(true)
+                    }}
+                  />
+                </SettingsRow>
 
                 <SettingsRow label={t("settings.server.certificate")}>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground truncate max-w-[200px]">
-                      {form.tlsCertPath || 'Not configured'}
-                    </span>
-                    <Button variant="outline" size="sm" className="h-6 text-[11px] px-2 shrink-0" onClick={() => { void handleBrowse('cert') }}>
-                      Browse
-                    </Button>
-                  </div>
+                  <span className="max-w-[220px] truncate text-sm text-muted-foreground">
+                    {form.tlsCertPath || t("settings.server.notConfigured")}
+                  </span>
+                  <RowButton onClick={() => { void handleBrowse("cert") }}>
+                    {t("common.choose")}
+                  </RowButton>
                 </SettingsRow>
 
                 <SettingsRow label={t("settings.server.privateKey")}>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground truncate max-w-[200px]">
-                      {form.tlsKeyPath || 'Not configured'}
-                    </span>
-                    <Button variant="outline" size="sm" className="h-6 text-[11px] px-2 shrink-0" onClick={() => { void handleBrowse('key') }}>
-                      Browse
-                    </Button>
-                  </div>
+                  <span className="max-w-[220px] truncate text-sm text-muted-foreground">
+                    {form.tlsKeyPath || t("settings.server.notConfigured")}
+                  </span>
+                  <RowButton onClick={() => { void handleBrowse("key") }}>
+                    {t("common.choose")}
+                  </RowButton>
+                </SettingsRow>
+
+                <SettingsRow label={t("settings.server.wsUrl")}>
+                  <span className="font-mono text-sm text-muted-foreground">{publicWsUrl || wsUrl}</span>
+                  <IconAction
+                    icon={Copy}
+                    title={t("common.copy")}
+                    onClick={() => handleCopy(publicWsUrl || wsUrl, t("settings.server.wsUrl"))}
+                  />
                 </SettingsRow>
 
                 <SettingsInputRow
                   label={t("settings.server.publicWsUrl")}
-                  description={t("settings.server.publicWsUrlDesc")}
                   value={form.publicWsUrl}
                   onChange={(publicWsUrl) => setForm(f => ({ ...f, publicWsUrl }))}
                   placeholder="wss://agents.example.com"
@@ -585,15 +778,15 @@ export default function ServerSettingsPage() {
               </SettingsCard>
 
               {!needsRestart && status?.bindError && (
-                <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-warning/10 border border-warning/20 text-xs text-warning">
-                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <div className="flex items-start gap-2 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-warning">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>{t("settings.server.bindError")}</span>
                 </div>
               )}
 
               {form.enabled && !hasTls && (
-                <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-warning/10 border border-warning/20 text-xs text-warning">
-                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <div className="flex items-start gap-2 rounded-lg border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-warning">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>
                     {status?.insecureWarning && !needsRestart && !isDirty
                       ? t("settings.server.insecureWarning")
@@ -604,105 +797,243 @@ export default function ServerSettingsPage() {
             </SettingsSection>
           )}
 
-          {/* Devices — the machines this hub knows. Connected is not the same as usable. */}
+          {/* One switch per row: remote control (the device drives this server). Device use needs
+              no switch — a paired link is already allowed. */}
           {devicesVisible && (
-            <SettingsSection title={t("settings.server.connectedDevices")}>
-              <SettingsCard>
+            <SettingsSection
+              title={t("settings.server.connectedDevices")}
+              action={
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-[6px] bg-background text-foreground/60 shadow-minimal hover:text-foreground"
+                    title={t("common.refresh")}
+                    aria-label={t("common.refresh")}
+                    onClick={() => { void loadDevices() }}
+                    disabled={devicesLoading}
+                  >
+                    {devicesLoading
+                      ? <Spinner className="h-3.5 w-3.5" />
+                      : <RotateCw className="h-3.5 w-3.5" />}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-[6px] bg-background px-3 text-foreground/70 shadow-minimal hover:text-foreground"
+                    onClick={() => {
+                      setDeviceLabelDraft("")
+                      setAddRemoteAccess(true)
+                      setAddDeviceOpen(true)
+                    }}
+                    disabled={devicesLoading}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {t("settings.server.addDevice")}
+                  </Button>
+                </div>
+              }
+            >
+              {pendingTokens.length > 0 && (
+                <div className="space-y-2">
+                  <GroupLabel className="px-1 pt-0 pb-0">{t("settings.server.pendingTokens")}</GroupLabel>
+                  {pendingTokens.map((token) => {
+                    const secret = token.token
+                    return (
+                      <div key={token.id} className="rounded-xl bg-background px-4 py-3 shadow-minimal">
+                        <div className="flex items-start gap-3">
+                          <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-medium">{token.label}</div>
+                            {/* The token and both actions sit on one line, with nothing stranded. */}
+                            <div className="mt-1.5 flex items-center gap-1">
+                              <code
+                                className="min-w-0 flex-1 truncate rounded-md bg-foreground/[0.04] px-2 py-1 font-mono text-[11px] text-muted-foreground"
+                                title={secret ?? ""}
+                              >
+                                {secret ?? "—"}
+                              </code>
+                              {secret && (
+                                <IconAction
+                                  icon={Copy}
+                                  title={t("settings.server.deviceTokenHint")}
+                                  onClick={() => handleCopy(secret, t("settings.server.deviceToken"))}
+                                />
+                              )}
+                              <IconAction
+                                icon={Trash2}
+                                title={t("common.delete")}
+                                onClick={() => { void handleRemoveDeviceToken(token.id) }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        {/* Settable before the device arrives: the slot decides what it may do. */}
+                        <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/50 pt-2.5">
+                          <span className="text-sm">{t("settings.server.capabilityRemote")}</span>
+                          <Switch
+                            checked={token.scope !== "device"}
+                            onCheckedChange={(on) => { void handleSetRemoteAccess(token.id, on) }}
+                            aria-label={t("settings.server.capabilityRemote")}
+                          />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <GroupLabel className="px-1 pt-0 pb-0">{t("settings.server.connectedList")}</GroupLabel>
+
                 {devices === null ? (
-                  <SettingsRow label={t("settings.server.loadingDevices")} />
+                  <SettingsCard>
+                    <SettingsRow label={t("settings.server.loadingDevices")} />
+                  </SettingsCard>
                 ) : devices.length === 0 ? (
-                  <SettingsRow label={t("settings.server.noDevices")} />
+                  <SettingsCard>
+                    <SettingsRow label={t("settings.server.noDevices")} />
+                  </SettingsCard>
                 ) : (
-                  devices.map((device) => (
-                    <div
-                      key={device.id}
-                      className="flex items-start justify-between gap-3 px-4 py-3"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
+                  devices.map((device) => {
+                    const slot = slotByDeviceId.get(device.id)
+                    const remoteGranted = !!slot && (slot.scope === "client" || slot.scope === "both")
+                    return (
+                      <div key={device.id} className="rounded-xl bg-background px-4 py-3 shadow-minimal">
+                        <div className="flex items-start gap-3">
                           <span
                             className={cn(
-                              'h-1.5 w-1.5 shrink-0 rounded-full',
-                              device.online ? 'bg-success' : 'bg-muted-foreground/40',
+                              "mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full",
+                              device.online ? "bg-success" : "bg-muted-foreground/40",
                             )}
                           />
-                          <span className="truncate text-[13px] font-medium">{device.name}</span>
-                          {device.available && (
-                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                              {t('settings.server.deviceAvailable')}
-                            </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate text-sm font-medium">{device.name}</span>
+                              {device.alias && (
+                                <span className="truncate text-sm text-muted-foreground">
+                                  {device.alias}
+                                </span>
+                              )}
+                              {/* The device's own consent; only that machine can change it. */}
+                              <span
+                                className={cn(
+                                  "shrink-0 rounded-full border px-1.5 py-px text-[10px] leading-4",
+                                  device.deviceAllows
+                                    ? "border-success/25 text-success"
+                                    : "border-border text-muted-foreground",
+                                )}
+                              >
+                                {device.deviceAllows
+                                  ? t("settings.server.deviceAuthorized")
+                                  : t("settings.server.deviceNotAuthorized")}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                              {[
+                                platformLabel(device.platform),
+                                device.online
+                                  ? null
+                                  : device.lastSeenAt
+                                    ? t("settings.server.deviceLastSeen", {
+                                        time: new Date(device.lastSeenAt).toLocaleDateString(),
+                                      })
+                                    : t("settings.server.deviceOffline"),
+                              ].filter(Boolean).join(" · ")}
+                            </div>
+                          </div>
+
+                          <DropdownMenu modal={false}>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground"
+                                aria-label={t("common.more")}
+                              >
+                                <MoreHorizontal className="h-4 w-4" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem
+                                onSelect={() => {
+                                  setAliasTarget(device)
+                                  setAliasDraft(device.alias ?? "")
+                                }}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                                <span>{t("settings.server.setAlias")}</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onSelect={() => setRemoveTarget({ id: device.id, name: device.alias ?? device.name })}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                <span>{t("settings.server.deleteDevice")}</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+
+                        {/* Remote control is the slot's right. Letting the hub use the device needs no
+                            switch: a paired link is already allowed. */}
+                        <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/50 pt-2.5">
+                          <span className="text-sm">{t("settings.server.capabilityRemote")}</span>
+                          {slot ? (
+                            <Switch
+                              checked={remoteGranted}
+                              onCheckedChange={(on) => { void handleSetRemoteAccess(slot.id, on) }}
+                              aria-label={t("settings.server.capabilityRemote")}
+                            />
+                          ) : (
+                            <span className="text-xs text-muted-foreground/50">—</span>
                           )}
                         </div>
-                        <div className="mt-0.5 text-xs text-muted-foreground">
-                          {[
-                            device.platform,
-                            device.version ? `v${device.version}` : null,
-                            device.online
-                              ? t('settings.server.deviceOnline')
-                              : t('settings.server.deviceOffline'),
-                            !device.online && device.lastSeenAt
-                              ? t('settings.server.deviceLastSeen', {
-                                  time: new Date(device.lastSeenAt).toLocaleDateString(),
-                                })
-                              : null,
-                          ].filter(Boolean).join(' · ')}
-                        </div>
-                        {device.hubUses && !device.deviceAllows && (
-                          <p className="mt-1 text-xs text-warning">
-                            {t('settings.server.deviceAllowHint')}
-                          </p>
-                        )}
                       </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        {device.online && (
-                          <span
-                            className={cn(
-                              'text-[11px]',
-                              device.deviceAllows ? 'text-success' : 'text-muted-foreground',
-                            )}
-                          >
-                            {device.deviceAllows
-                              ? t('settings.server.deviceAccessGranted')
-                              : t('settings.server.deviceAccessNotGranted')}
-                          </span>
-                        )}
-                        <Switch
-                          checked={device.hubUses}
-                          onCheckedChange={(use) => { void handleSetDeviceUse(device.id, use) }}
-                          aria-label={t('settings.server.deviceUse')}
-                          title={t('settings.server.deviceUse')}
-                        />
-                        {!device.online && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-[11px]"
-                            onClick={() => { void handleForgetDevice(device.id) }}
-                            title={t('settings.server.deviceForget')}
-                          >
-                            {t('settings.server.deviceForget')}
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  ))
+                    )
+                  })
                 )}
-              </SettingsCard>
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs text-muted-foreground px-1">
-                  {t("settings.server.connectedDevicesDesc")}
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-6 text-[11px] px-2 shrink-0"
-                  onClick={() => { void loadDevices() }}
-                  disabled={devicesLoading}
-                >
-                  {devicesLoading ? <Spinner className="mr-1" /> : null}
-                  {t("common.refresh")}
-                </Button>
               </div>
+
+              <RenameDialog
+                open={aliasTarget !== null}
+                onOpenChange={(open) => { if (!open) setAliasTarget(null) }}
+                title={t('settings.server.setAlias')}
+                value={aliasDraft}
+                onValueChange={setAliasDraft}
+                onSubmit={() => { void handleSetDeviceAlias() }}
+                placeholder={t('settings.server.aliasPlaceholder')}
+                allowEmpty
+              />
+
+              <AddDeviceDialog
+                open={addDeviceOpen}
+                onOpenChange={(open) => { if (!open) setAddDeviceOpen(false) }}
+                label={deviceLabelDraft}
+                onLabelChange={setDeviceLabelDraft}
+                remoteCap={addRemoteAccess}
+                onRemoteCapChange={setAddRemoteAccess}
+                onCreate={() => { void handleCreateDevice() }}
+                creating={isCreatingDevice}
+              />
+
+              <Dialog open={removeTarget !== null} onOpenChange={(open) => { if (!open) setRemoveTarget(null) }}>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>{t('settings.server.deleteDeviceConfirmTitle', { name: removeTarget?.name ?? '' })}</DialogTitle>
+                    <DialogDescription>
+                      {t('settings.server.deleteDeviceConfirmDesc')}
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter className="gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setRemoveTarget(null)} disabled={isRemoving}>
+                      {t('common.cancel')}
+                    </Button>
+                    <Button variant="destructive" size="sm" onClick={() => { void handleRemoveDevice() }} disabled={isRemoving}>
+                      {isRemoving ? <Spinner className="mr-1.5" /> : null}
+                      {t('settings.server.deleteDevice')}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
             </SettingsSection>
           )}
 

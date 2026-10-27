@@ -202,6 +202,7 @@ export type TransportConnectionStatus =
 
 export type TransportConnectionErrorKind =
   | 'auth'
+  | 'scope'
   | 'protocol'
   | 'timeout'
   | 'network'
@@ -292,6 +293,7 @@ import type {
   RemoteSessionTransferPayload,
   ImportRemoteSessionTransferResult,
   ConnectedClientInfo,
+  DeviceTokenInfo,
 } from '@craft-agent/shared/protocol'
 
 /** One device `device_tool` can name — also what Server → Devices lists. */
@@ -330,13 +332,16 @@ export interface ClientModeTestResult {
   ok: boolean
   error?: string
   serverVersion?: string
-  workspaces?: Array<{ id: string; name: string }>
+  /** What the tested credential may do, reported by the hub's handshake. */
+  scope?: 'client' | 'device' | 'both'
 }
 
 /** One saved server's reachability right now (`unknown` = no link yet). */
 export interface RemoteConnectionStatus {
   id: string
   status: TransportConnectionStatus | 'unknown'
+  /** What the saved credential may do; `null` until the link has handshaken. */
+  scope?: 'client' | 'device' | 'both' | null
 }
 
 /** Stable identity of this install, as advertised on the WS handshake. */
@@ -405,10 +410,18 @@ export interface ElectronAPI {
   restartServer(): Promise<{ ok: boolean }>
   /** Devices other than this machine that this hub can drive (one row per machine). */
   getConnectedDevices(): Promise<DeviceToolInfo[]>
-  /** Persist the hub-side switch for one device and return its updated row. */
-  setDeviceUse(deviceId: string, use: boolean): Promise<DeviceToolInfo>
+  /** Set the person's own name for a device (`null` clears it); the agent accepts it in calls. */
+  setDeviceAlias(deviceId: string, alias: string | null): Promise<DeviceToolInfo>
   /** Forget an offline device record. */
   forgetDevice(deviceId: string): Promise<void>
+  /** Device slots on this hub — pending ones included. */
+  listDeviceTokens(): Promise<DeviceTokenInfo[]>
+  /** Create a slot; the token comes back once and is never stored in plaintext. */
+  createDeviceToken(label?: string, scope?: 'client' | 'device' | 'both'): Promise<{ token: string; entry: DeviceTokenInfo }>
+  /** Delete a slot (drops any connection authenticated with it). */
+  removeDeviceToken(tokenId: string): Promise<boolean>
+  /** Change what a device slot may do — e.g. drop to `device` to revoke its remote access. */
+  setDeviceTokenScope(tokenId: string, scope: 'client' | 'device' | 'both'): Promise<boolean>
 
   // Remote connections (per window — direct IPC, works while connected to a remote server)
   getClientMode(): Promise<ClientModeInfo>
@@ -426,8 +439,11 @@ export interface ElectronAPI {
    */
   listRemoteDirectories(connectionId: string, dirPath: string, options?: { includeFiles?: boolean }): Promise<DirectoryListingResult>
   getRemoteHomeDir(connectionId: string): Promise<string>
-  /** The workspaces a saved server owns — the second level of the workspace dropdown. */
-  listRemoteWorkspaces(connectionId: string): Promise<WorkspaceInfo[]>
+  /**
+   * The workspaces a saved server owns — the second level of the workspace dropdown.
+   * `denied` means the link is up but its credential may not drive the hub, so the list was refused.
+   */
+  listRemoteWorkspaces(connectionId: string): Promise<{ workspaces: WorkspaceInfo[]; denied: boolean }>
   /** Reachability of every saved server, shown next to its name. */
   getRemoteConnectionStatuses(): Promise<RemoteConnectionStatus[]>
   /**
@@ -666,6 +682,13 @@ export interface ElectronAPI {
 
   // Folder dialog
   openFolderDialog(): Promise<string | null>
+  /**
+   * Pick a folder on **this** machine, bypassing the window's (possibly remote) transport.
+   *
+   * The saved-server list and its device permissions belong to this install, so the folder it
+   * authorizes must be chosen here even when the window is showing another server.
+   */
+  openLocalFolderDialog(): Promise<string | null>
 
   // User Preferences
   readPreferences(): Promise<{ content: string; exists: boolean; path: string }>

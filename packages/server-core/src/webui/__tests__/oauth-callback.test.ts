@@ -51,7 +51,7 @@ describe('WebUI /api/oauth/callback', () => {
 
     const handler = createWebuiHandler({
       webuiDir: createTestWebuiDir(),
-      secret: 'test-secret',
+      serverToken: 'test-server-token',
       password: 'test-password',
       wsProtocol: 'wss',
       wsPort: 9100,
@@ -96,7 +96,7 @@ describe('WebUI /api/oauth/callback', () => {
 
     const handler = createWebuiHandler({
       webuiDir: createTestWebuiDir(),
-      secret: 'test-secret',
+      serverToken: 'test-server-token',
       password: 'test-password',
       wsProtocol: 'wss',
       wsPort: 9100,

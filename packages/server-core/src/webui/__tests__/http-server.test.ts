@@ -3,10 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startWebuiHttpServer } from '../http-server'
+import { deriveWebuiSessionKey } from '../auth'
 import { storeExport } from '../../services/export-store'
 
 const SECRET = 'test-server-secret'
 const PASSWORD = 'test-password'
+/** A hub credential, as a native client would present it — not the Web UI's signing key. */
+const HUB_TOKEN = 'test-hub-token'
 const TEMP_DIRS: string[] = []
 const SERVERS: Array<{ stop: () => void }> = []
 
@@ -49,8 +52,9 @@ async function createServer(overrides?: {
     port: 0,
     ...(overrides?.withoutWebui ? {} : { webuiDir: createTestWebuiDir() }),
     ...(overrides?.withDrawio ? { drawioDir: createTestDrawioDir() } : {}),
-    secret: SECRET,
+    serverToken: HUB_TOKEN,
     password: PASSWORD,
+    authorizeBearer: (header) => header === `Bearer ${HUB_TOKEN}`,
     secureCookies: overrides?.secureCookies,
     publicWsUrl: overrides?.publicWsUrl,
     wsProtocol: overrides?.wsProtocol ?? 'wss',
@@ -131,7 +135,7 @@ describe('startWebuiHttpServer', () => {
     const { id } = storeExport({ path: file, name: 'deck.pdf', mime: 'application/pdf' })
 
     const viaBearer = await fetch(`${baseUrl}/api/exports/${id}`, {
-      headers: { Authorization: `Bearer ${SECRET}` },
+      headers: { Authorization: `Bearer ${HUB_TOKEN}` },
     })
     expect(viaBearer.status).toBe(200)
     expect(viaBearer.headers.get('content-type')).toBe('application/pdf')
@@ -148,13 +152,16 @@ describe('startWebuiHttpServer', () => {
     })
     expect(viaCookie.status).toBe(200)
 
-    // No credential, a wrong one, and an unknown id are three different answers.
+    // No credential, a wrong one, the signing key, and an unknown id are four different answers.
     expect((await fetch(`${baseUrl}/api/exports/${id}`)).status).toBe(401)
     expect((await fetch(`${baseUrl}/api/exports/${id}`, {
       headers: { Authorization: 'Bearer wrong' },
     })).status).toBe(401)
-    expect((await fetch(`${baseUrl}/api/exports/unknown`, {
+    expect((await fetch(`${baseUrl}/api/exports/${id}`, {
       headers: { Authorization: `Bearer ${SECRET}` },
+    })).status).toBe(401)
+    expect((await fetch(`${baseUrl}/api/exports/unknown`, {
+      headers: { Authorization: `Bearer ${HUB_TOKEN}` },
     })).status).toBe(404)
   })
 
@@ -168,7 +175,7 @@ describe('startWebuiHttpServer', () => {
     const { id } = storeExport({ path: file, name: 'deck.pdf', mime: 'application/pdf' })
 
     const download = await fetch(`${baseUrl}/api/exports/${id}`, {
-      headers: { Authorization: `Bearer ${SECRET}` },
+      headers: { Authorization: `Bearer ${HUB_TOKEN}` },
     })
     expect(download.status).toBe(200)
     expect(await download.text()).toBe('pdf-bytes')
@@ -200,6 +207,24 @@ describe('startWebuiHttpServer', () => {
 
     expect(res.status).toBe(401)
     expect(await res.json()).toEqual({ error: 'Invalid credentials' })
+  })
+
+  it('accepts the hub token at the login page', async () => {
+    // The token already drives this hub from a desktop client, so it may as well work in the
+    // browser login form — same privilege, one less thing to look up.
+    const { baseUrl } = await createServer()
+
+    const res = await fetch(`${baseUrl}/api/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: HUB_TOKEN }),
+    })
+
+    expect(res.status).toBe(200)
+    const configRes = await fetch(`${baseUrl}/api/config`, {
+      headers: { cookie: extractSessionCookie(res) },
+    })
+    expect(configRes.status).toBe(200)
   })
 
   it('honors an explicit secure-cookie override', async () => {
@@ -324,5 +349,16 @@ describe('startWebuiHttpServer', () => {
     // Relative Location — a bare `Response.redirect('/login')` throws under Node's
     // undici, so the handler must build the response itself.
     expect(res.headers.get('location')).toBe('/login')
+  })
+})
+
+describe('Web UI session signing key', () => {
+  it('depends on both the hub token and the Web UI password', () => {
+    const base = deriveWebuiSessionKey('token-a', 'password-a')
+
+    expect(deriveWebuiSessionKey('token-a', 'password-a')).toBe(base)
+    // Either credential changing ends the sessions the old key signed.
+    expect(deriveWebuiSessionKey('token-b', 'password-a')).not.toBe(base)
+    expect(deriveWebuiSessionKey('token-a', 'password-b')).not.toBe(base)
   })
 })

@@ -1233,7 +1233,7 @@ export class SessionManager implements ISessionManager {
   private browserPaneManager: IBrowserPaneManager | null = null
   private installTweaksFn?: (workspaceId: string) => void
   private rpcServer: RpcServer | null = null
-  /** Durable record of devices that have connected; owns the hub-side `hubUses` switch. */
+  /** Durable record of devices that have connected. */
   private deviceRegistry = new HubDeviceRegistry()
   /** Browser bridges for one **named** device, for `device_tool`'s nested `browser`. */
   private remoteDeviceBpms = new Map<string, RemoteBrowserPaneManager>()
@@ -1325,6 +1325,32 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * Called by the transport bootstrap on `onClientConnected`.
+   *
+   * A record exists for a machine that connected with its **own one-to-one device token**. The
+   * server token is the hub's own credential — a window, or a client that was handed the master
+   * token — and never makes a device row, no matter which machine it comes from.
+   *
+   * The record is written even when the device declares no tools: this machine may have turned
+   * device use off, which is shown on the hub as "not authorized" rather than hiding the device.
+   * This is the only place a record is created; listing devices never writes one, so deleting a
+   * device is final even while the machine is still linked.
+   */
+  onClientConnected(clientId: string): void {
+    const client = this.rpcServer?.getConnectedClients?.()
+      .find((candidate) => candidate.clientId === clientId)
+    if (!client || this.isLocalClient(clientId)) return
+    if (client.tokenKind !== 'device') return
+    if (!client.deviceId?.trim()) return
+    this.deviceRegistry.ensure({
+      deviceId: client.deviceId,
+      name: client.name,
+      platform: client.platform,
+      version: client.version,
+    })
+  }
+
+  /**
    * Called by the transport bootstrap on `onClientDisconnected`. Drops the bridges held by
    * `clientId` so the next `device_tool` call re-resolves the device (and says it is offline)
    * rather than holding a socket-shaped memory of it.
@@ -1345,19 +1371,24 @@ export class SessionManager implements ISessionManager {
   // ---------------------------------------------------------------------------
 
   /**
-   * Every device that has connected to this hub, online or offline, with the connections backing
-   * it right now.
+   * Every device this hub keeps a record for, online or offline, with the connections backing it
+   * right now.
    *
-   * This server's own machine is deliberately **not** one of them: it is where the agent already
-   * runs, so its shell, files and browser need no name — `device_tool` names other machines. A
-   * machine can hold several connections (an app-level link, a window, a reconnect mid-flight);
-   * they are one device because they are one machine. Which connection answers a call is decided
+   * A row is a **record saved when a machine connected with its own device token**, not a picture
+   * of whatever connections happen to exist: the registry keeps it after the machine goes away,
+   * and deleting it is what stops the hub from using that machine. Records are written only in
+   * {@link onClientConnected}, never while listing. A link that used the server token, and a
+   * deleted device, stay out of the list; a device that turned its own authorization off stays in
+   * it with `deviceAllows: false`. Which install a machine is plays no part in it.
+   *
+   * A machine can hold several connections (an app-level link, a window, a reconnect mid-flight);
+   * they are one device because they share a device id. Which connection answers a call is decided
    * in {@link resolveDevice}.
    *
-   * Being connected is not the same as being usable: `deviceAllows` (the device-side switch) and
-   * `hubUses` (the persisted hub-side switch) must both be on, and only then is `available` true.
+   * Being connected is not the same as being usable: `deviceAllows` (the device-side switch)
+   * must be on, and only then is `available` true.
    */
-  private deviceEntries(): Array<{
+  private deviceEntries(workspaceId?: string): Array<{
     info: DeviceToolInfo
     offered: { shell: boolean; files: boolean; browser: boolean }
     clients: Array<{ clientId: string; workspaceId: string | null }>
@@ -1376,28 +1407,32 @@ export class SessionManager implements ISessionManager {
       if (!client.deviceId?.trim()) continue
 
       const id = client.deviceId
+      // What a link declares decides which tools exist; the folder authorization is what makes a
+      // connection declare them at all.
       const offered = {
         shell: client.capabilities.includes(CLIENT_DEVICE_EXEC),
         files: client.capabilities.includes(CLIENT_DEVICE_FS),
         browser: client.capabilities.includes(CLIENT_BROWSER_INVOKE),
       }
       const allows = offered.shell || offered.files || offered.browser
-      const record = this.deviceRegistry.ensure({
-        deviceId: id,
-        name: client.name,
-        platform: client.platform,
-        version: client.version,
-      })
+      // Rows are saved records, not a picture of the connections. A connection only annotates the
+      // record written when that machine connected as a device; a read must never create or
+      // resurrect one, so deleting a device stays deleted even while it is still linked.
+      const record = this.deviceRegistry.get(id)
+      if (!record) continue
 
       const existing = entries.get(id)
       const roots = this.deviceRoots(client)
+      // Only the listing that a session asked for can name a default: it is per (hub, workspace).
+      const defaultRoot = workspaceId ? this.deviceDefaultRoot(client, workspaceId) : undefined
       if (existing) {
         existing.offered.shell ||= offered.shell
         existing.offered.files ||= offered.files
         existing.offered.browser ||= offered.browser
         existing.info.deviceAllows ||= allows
+        if (defaultRoot && !existing.info.defaultRoot) existing.info.defaultRoot = defaultRoot
         for (const root of roots) {
-          if (!existing.info.workspaceRoots.includes(root)) existing.info.workspaceRoots.push(root)
+          if (!existing.info.allowedRoots.includes(root)) existing.info.allowedRoots.push(root)
         }
         existing.clients.push({ clientId: client.clientId, workspaceId: client.workspaceId })
         continue
@@ -1406,13 +1441,16 @@ export class SessionManager implements ISessionManager {
       entries.set(id, {
         info: {
           id,
+          // A record exists only for machines that lend something; a window-only machine is
+          // described by the connection itself and keeps no history on this hub.
           name: record.name,
+          ...(record.alias ? { alias: record.alias } : {}),
           platform: record.platform,
           version: record.version,
-          workspaceRoots: roots,
+          allowedRoots: roots,
+          ...(defaultRoot ? { defaultRoot } : {}),
           online: true,
           deviceAllows: allows,
-          hubUses: record.hubUses,
           available: false,
           lastSeenAt: record.lastSeenAt,
           offered,
@@ -1430,12 +1468,12 @@ export class SessionManager implements ISessionManager {
         info: {
           id: record.deviceId,
           name: record.name,
+          ...(record.alias ? { alias: record.alias } : {}),
           platform: record.platform,
           version: record.version,
-          workspaceRoots: [],
+          allowedRoots: [],
           online: false,
           deviceAllows: false,
-          hubUses: record.hubUses,
           available: false,
           lastSeenAt: record.lastSeenAt,
           offered: { shell: false, files: false, browser: false },
@@ -1448,7 +1486,7 @@ export class SessionManager implements ISessionManager {
 
     const result = [...entries.values()]
     for (const entry of result) {
-      entry.info.available = entry.info.online && entry.info.deviceAllows && entry.info.hubUses
+      entry.info.available = entry.info.online && entry.info.deviceAllows
       entry.info.capabilities = entry.info.available
         ? { ...entry.offered }
         : { shell: false, files: false, browser: false }
@@ -1470,9 +1508,13 @@ export class SessionManager implements ISessionManager {
   /**
    * Devices `device_tool` may name right now: connected, allowed by the device, and enabled on
    * this server. The tool is only registered while this list is non-empty.
+   *
+   * Roots are the connection's own authorization list. The device's per-hub working directory is
+   * where an omitted `cwd` starts; it is always usable, so it is listed separately as `default`
+   * rather than mixed into the granted roots.
    */
-  getAgentDevices(): DeviceToolInfo[] {
-    return this.deviceEntries().filter((entry) => entry.info.available).map((entry) => entry.info)
+  getAgentDevices(workspaceId?: string): DeviceToolInfo[] {
+    return this.deviceEntries(workspaceId).filter((entry) => entry.info.available).map((entry) => entry.info)
   }
 
   /** Whether `device_tool` should be part of the agent's tool list at all. */
@@ -1480,41 +1522,55 @@ export class SessionManager implements ISessionManager {
     return this.deviceEntries().some((entry) => entry.info.available)
   }
 
-  /** Persist the hub-side switch and return the updated row. */
-  setDeviceUse(deviceId: string, use: boolean): DeviceToolInfo {
-    const record = this.deviceRegistry.setUse(deviceId, use)
+  /** Set the person's own name for a device, or clear it with `null`. */
+  setDeviceAlias(deviceId: string, alias: string | null): DeviceToolInfo {
+    const record = this.deviceRegistry.setAlias(deviceId, alias)
     if (!record) throw new Error(`Unknown device: ${deviceId}`)
     const entry = this.deviceEntries().find((candidate) => candidate.info.id === deviceId)
     if (!entry) throw new Error(`Unknown device: ${deviceId}`)
     return entry.info
   }
 
-  /** Remove a device record. Refused while the device is still connected. */
+  /**
+   * Remove a device record. Works whether or not the device is connected — the caller decides what
+   * to do about the live connection (the RPC handler drops it and any bound slot).
+   */
   forgetDevice(deviceId: string): void {
     const entry = this.deviceEntries().find((candidate) => candidate.info.id === deviceId)
     if (!entry) throw new Error(`Unknown device: ${deviceId}`)
-    if (entry.info.online) throw new Error('Disconnect the device before forgetting it.')
     this.deviceRegistry.forget(deviceId)
   }
 
   /**
-   * The directory one connection offers to this hub.
+   * The folders one connection authorized for this hub.
    *
-   * A device works in `<hubRootBase>/<this hub's device id>/<the connection's workspace id>`, which
-   * it creates on first use. That directory is the whole boundary: it does not depend on which
-   * local workspaces the client happens to have, and two hubs on one machine never share one.
+   * `device_tool` is path-based and independent of the hub's workspaces: the device advertises the
+   * folders the person saved for this server, and that list is the whole authorization surface.
+   * The device also keeps a per-(hub, workspace) working directory for calls that omit `cwd`, but
+   * that is a default location rather than a granted root, so it is not reported here.
    */
   private deviceRoots(client: ConnectedClientInfo): string[] {
-    const base = client.hubRootBase?.trim()
-    const workspaceId = client.workspaceId?.trim()
-    if (!base || !workspaceId) return []
-    // The base came from the device, so its separators are the device's — not this server's.
-    const joinPath = client.platform === 'win32' ? win32.join : posix.join
-    return [joinPath(base, getDeviceId(), workspaceId)]
+    return [...new Set(client.allowedRoots)]
   }
 
   /**
-   * A device by id, then by display name, and the connection that can serve `capability`.
+   * Where a call that omits `cwd` lands: `<hubRootBase>/<this hub's device id>/<workspace id>`.
+   *
+   * This directory is a fixed authorization — always usable, created on first use — but it is a
+   * default location rather than one of the connection's granted folders, so `device_tool` lists it
+   * separately as `default`.
+   */
+  private deviceDefaultRoot(client: ConnectedClientInfo, workspaceId: string): string | undefined {
+    const base = client.hubRootBase?.trim()
+    if (!base || !workspaceId.trim()) return undefined
+    // The base came from the device, so its separators are the device's — not this server's.
+    const joinPath = client.platform === 'win32' ? win32.join : posix.join
+    return joinPath(base, getDeviceId(), workspaceId)
+  }
+
+  /**
+   * A device by id, then by the person's alias, then by display name, and the connection that can
+   * serve `capability`.
    *
    * A name that fits two machines is refused rather than guessed — the whole point of naming a
    * device is that the answer does not drift.
@@ -1530,11 +1586,13 @@ export class SessionManager implements ISessionManager {
     }
 
     const named = entries.filter(
-      (entry) => entry.info.id === wanted || entry.info.name.toLowerCase() === wanted.toLowerCase(),
+      (entry) => entry.info.id === wanted
+        || entry.info.name.toLowerCase() === wanted.toLowerCase()
+        || entry.info.alias?.toLowerCase() === wanted.toLowerCase(),
     )
     if (named.length === 0) {
       const available = entries.filter((entry) => entry.info.available)
-        .map((entry) => `${entry.info.name} (${entry.info.id})`).join(', ')
+        .map((entry) => `${entry.info.alias ?? entry.info.name} (${entry.info.id})`).join(', ')
       throw new Error(available
         ? `No device "${ref}". Available devices: ${available}.`
         : `No enabled device "${ref}".`)
@@ -1548,15 +1606,6 @@ export class SessionManager implements ISessionManager {
     const name = entry.info.name
     if (!entry.info.online) {
       throw new Error(`Device "${name}" is offline.`)
-    }
-    if (!entry.info.deviceAllows) {
-      throw new Error(
-        `Device "${name}" has not allowed this server. Allow it on that device: ` +
-        'Connect to Server → Edit → This machine\'s capabilities.',
-      )
-    }
-    if (!entry.info.hubUses) {
-      throw new Error(`Device "${name}" is not enabled for agent use on this server.`)
     }
     if (!entry.info.offered[capability]) {
       throw new Error(`Device "${name}" does not offer ${capability} access.`)
@@ -1637,24 +1686,27 @@ export class SessionManager implements ISessionManager {
     }
 
     /**
-     * Which directory the call works in on the far side.
+     * The hub and workspace that scope the call.
      *
-     * The device is told which hub is asking and which workspace this conversation is in; it turns
-     * the pair into `<its hub root base>/<this hub>/<workspace>` and creates it.
+     * `workspaceId` is **this hub's** workspace (the conversation's, not the connection's). The
+     * device uses the pair only to keep one default working directory per (hub, workspace) apart,
+     * so two workspaces never share a scratch directory. It is not path authorization — that is
+     * the folder list saved on the connection.
      */
     const hubContext = workspaceId
       ? { hubDeviceId: getDeviceId(), workspaceId }
       : {}
 
     return {
-      list: async () => this.getAgentDevices(),
+      list: async () => this.getAgentDevices(workspaceId),
       exec: async (device: string, args: DeviceExecArgs) => {
         const { clientId } = this.resolveDevice(device, 'shell')
         const timeoutMs = Math.min(Math.max(args.timeoutMs ?? 60_000, 1_000), 300_000)
         return await invoke<DeviceExecResult>(
           clientId,
           CLIENT_DEVICE_EXEC,
-          { v: 1, ...hubContext, ...args, timeoutMs },
+          // Hub context last: a nested arg can never name another hub or workspace.
+          { v: 1, ...args, ...hubContext, timeoutMs },
           // The device answers when the command ends, so the reply deadline follows the command's
           // own bound — otherwise the hub gives up while the device keeps running it.
           timeoutMs + 15_000,
@@ -1662,7 +1714,7 @@ export class SessionManager implements ISessionManager {
       },
       fs: async (device: string, args: DeviceFsArgs) => {
         const { clientId } = this.resolveDevice(device, 'files')
-        const req: DeviceFsRequest = { v: 1, ...hubContext, ...args }
+        const req: DeviceFsRequest = { v: 1, ...args, ...hubContext }
         return await invoke<DeviceFsResult>(clientId, CLIENT_DEVICE_FS, req, 60_000)
       },
       getBrowserFns: async (device: string) => {

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next"
 import * as Icons from "lucide-react"
 import { isMac } from "@/lib/platform"
 import { isNativeShell, openServerList } from "@/lib/native-shell"
+import { logOutWebUI } from "@/lib/webui-logout"
 import { useActionLabel } from "@/actions"
 import {
   DropdownMenu,
@@ -269,7 +270,19 @@ export function DesktopAppMenu({
           </StyledDropdownMenuItem>
         )}
 
-        {/* 浏览器里的 WebUI 没有可退出的 App，隐藏以免和“回服务器列表”混淆。 */}
+        {/* 浏览器里的 WebUI：退出登录（清除服务端会话），不是退出 App。 */}
+        {!isElectron && !isNativeShell && (
+          <StyledDropdownMenuItem
+            onClick={() => {
+              if (!window.confirm(t('dialog.logoutConfirmation'))) return
+              void logOutWebUI()
+            }}
+          >
+            <Icons.LogOut className="h-3.5 w-3.5" />
+            {t('webui.logOut')}
+          </StyledDropdownMenuItem>
+        )}
+
         {isElectron && (
           <StyledDropdownMenuItem onClick={() => window.electronAPI.menuQuit()}>
             <Icons.LogOut className="h-3.5 w-3.5" />

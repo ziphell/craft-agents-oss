@@ -140,8 +140,8 @@ bun run validate:dev                     # 全量校验：typecheck + shared 测
 bun run webui:build                                   # 改过 renderer 必须重建：server 直接发 dist
 $env:CRAFT_CONFIG_DIR   = "$env:TEMP\craft-remote-cfg"  # 隔离/并行实例，见 6.3
 $env:CRAFT_SERVER_TOKEN = 'e2e-remote-token'            # 必填
-$env:CRAFT_WEBUI_PASSWORD = 'craft-demo'                # 可选：登录页用短口令（缺省回落到 token）
-$env:CRAFT_WEBUI_DIR    = "$PWD\apps\webui\dist"
+$env:CRAFT_WEBUI_PASSWORD = 'craft-demo'                # 可选：Web UI 登录口令（与 token 一起派生会话签名 key）
+$env:CRAFT_WEBUI_DIR    = "$PWD\apps\webui\dist"        # Web UI 的页面资源；不给则只有协议路由
 $env:CRAFT_BUNDLED_ASSETS_ROOT = "$PWD\apps\electron"
 $env:CRAFT_DISABLE_MESSAGING = 'true'                   # 与正在跑的桌面端共用配置目录时必加，否则两边抢 Telegram/WhatsApp
 bun run packages/server/src/index.ts

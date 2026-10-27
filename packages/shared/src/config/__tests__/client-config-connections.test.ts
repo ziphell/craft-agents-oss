@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
 
@@ -217,7 +217,7 @@ describe('editing a saved server', () => {
   it('keeps its id and its last workspace', () => {
     const { configDir, configPath } = setupConfigDir([{ id: 'ws-local', name: 'Local' }], 'ws-local', {
       connections: [
-        { id: 'conn-1', name: 'Hub', url: 'ws://hub.example:4321', token: 'old-token', lastWorkspaceId: 'ws-7', deviceAccess: true },
+        { id: 'conn-1', name: 'Hub', url: 'ws://hub.example:4321', token: 'old-token', lastWorkspaceId: 'ws-7' },
       ],
     })
 
@@ -228,7 +228,34 @@ describe('editing a saved server', () => {
 
     const config = readConfig(configPath)
     expect(config.clientConfig.connections).toEqual([
-      { id: 'conn-1', name: 'Hub renamed', url: 'wss://hub.example:4321', token: 'new-token', lastWorkspaceId: 'ws-7', deviceAccess: true },
+      { id: 'conn-1', name: 'Hub renamed', url: 'wss://hub.example:4321', token: 'new-token', lastWorkspaceId: 'ws-7' },
     ])
+  })
+})
+
+describe('folders a server may reach on this machine', () => {
+  it('keeps absolute folders only, and keeps them when an edit omits the field', () => {
+    const extra = resolve(join(tmpdir(), 'craft-extra-root'))
+    const { configDir, configPath } = setupConfigDir([{ id: 'ws-local', name: 'Local' }], 'ws-local', {
+      connections: [
+        { id: 'conn-1', name: 'Hub', url: 'ws://hub.example:4321', token: 'tok' },
+      ],
+    })
+
+    runStorage(configDir, `import { saveRemoteConnection } from '${STORAGE_MODULE_PATH}';
+      saveRemoteConnection({ id: 'conn-1', name: 'Hub', url: 'ws://hub.example:4321', token: 'tok',
+        allowedRoots: [${JSON.stringify(extra)}, 'relative/path', '  ', ${JSON.stringify(extra)}] });`)
+
+    const first = readConfig(configPath).clientConfig.connections[0]
+    expect(first.allowedRoots).toEqual([extra])
+
+    // Renaming or rotating a token must not silently widen or revoke what the server can reach.
+    runStorage(configDir, `import { saveRemoteConnection } from '${STORAGE_MODULE_PATH}';
+      saveRemoteConnection({ id: 'conn-1', name: 'Hub renamed', url: 'ws://hub.example:4321', token: 'new-token' });`)
+
+    expect(readConfig(configPath).clientConfig.connections[0]).toMatchObject({
+      name: 'Hub renamed',
+      allowedRoots: [extra],
+    })
   })
 })

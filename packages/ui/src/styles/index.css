@@ -236,6 +236,14 @@ html[data-font="inter"] {
   --color-foreground: var(--foreground);
   --color-accent: var(--accent);
   --color-info: var(--info);
+  /*
+   * `warning` is the same amber as `info`, under the name the UI actually reaches for: eight
+   * components ask for `bg-warning` / `text-warning` / `border-warning` (the pending-invitation
+   * dot, the transport banner, a source's needs-auth chip, …) and there was no token behind the
+   * name, so those classes were silently nothing — the dot was invisible, not orange. One alias
+   * rather than renaming the call sites, and a theme that sets `info` moves both.
+   */
+  --color-warning: var(--info);
   --color-success: var(--success);
   --color-destructive: var(--destructive);
 

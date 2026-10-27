@@ -228,6 +228,11 @@ export const mockElectronAPI = {
     return null
   },
 
+  openLocalFolderDialog: async () => {
+    console.log('[Playground] openLocalFolderDialog called')
+    return null
+  },
+
   getTaskOutput: async (taskId: string) => {
     console.log('[Playground] getTaskOutput called:', taskId)
     return `Output for task ${taskId}:\n\nThis is a mock output in the playground.\nIn the real app, this would show the actual task output.`

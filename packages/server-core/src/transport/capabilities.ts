@@ -6,6 +6,7 @@
 
 import type { BrowserCapabilityRequest } from './browser-capability'
 import type { RpcServer } from './types'
+import type { TokenScope } from './tokens'
 
 /** Capability: open a URL in the client's default browser. */
 export const CLIENT_OPEN_EXTERNAL = 'client:openExternal'
@@ -33,6 +34,56 @@ export const CLIENT_DEVICE_EXEC = 'client:device:exec'
 
 /** Capability: read/write/list/search files on this device for a remote agent. */
 export const CLIENT_DEVICE_FS = 'client:device:fs'
+
+/**
+ * The capabilities only a device link advertises — this machine lending itself to a server rather
+ * than asking it for something.
+ *
+ * One list, two readers: the links in `apps/electron/src/main/hub-connection.ts` advertise exactly
+ * these, and the handshake checks a credential's scope against the same list. Keeping them apart
+ * would let "what a device is" and "what a device-scope credential permits" drift.
+ */
+export const DEVICE_CAPABILITIES = [
+  CLIENT_DEVICE_EXEC,
+  CLIENT_DEVICE_FS,
+  CLIENT_BROWSER_INVOKE,
+] as const
+
+/** Whether these capabilities include any this machine lends to a server. */
+export function hasDeviceCapability(capabilities: Iterable<string>): boolean {
+  const declared = new Set(capabilities)
+  return DEVICE_CAPABILITIES.some((capability) => declared.has(capability))
+}
+
+/**
+ * What a connection is for, as the client declares it on the handshake.
+ *
+ * A **window** is a view of the hub (remote control). A **device** link is this machine lending
+ * itself. The role is declared, never inferred from the capabilities a link advertises: a device
+ * can turn its own authorization off and declare no tools at all while remaining a device link.
+ */
+export type ConnectionRole = 'window' | 'device'
+
+/**
+ * Whether a credential's scope permits a connection that plays `role`.
+ *
+ * A scope answers one question: **may this pairing open windows?** `device` says no, so a window
+ * may not connect with it; a device link always may, whatever it declares. Device use is not a
+ * scope question at all — the device alone decides it with its own authorization.
+ *
+ * A client that does not declare a role (older build) falls back to the previous inference: a
+ * connection that declares a device tool is a device link, anything else is a window.
+ */
+export function scopePermits(
+  scope: TokenScope,
+  role: ConnectionRole | null | undefined,
+  capabilities: Iterable<string>,
+): boolean {
+  if (scope !== 'device') return true
+  if (role === 'window') return false
+  if (role === 'device') return true
+  return hasDeviceCapability(capabilities)
+}
 
 // ---------------------------------------------------------------------------
 // Helper wrappers — thin error-handling around server.invokeClient()

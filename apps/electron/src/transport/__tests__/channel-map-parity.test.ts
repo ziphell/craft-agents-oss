@@ -25,6 +25,7 @@ type ApiToChannelMapKeys = Exclude<
   | 'relaunchApp' // direct IPC to main process — not through WS RPC
   | 'getClientMode' // direct IPC to main process — this window's connection
   | 'saveRemoteConnection' // direct IPC to main process — saved server list
+  | 'openLocalFolderDialog' // direct IPC to main process — a folder on this machine, not the hub's
   | 'removeRemoteConnection' // direct IPC to main process — saved server list
   | 'connectToRemoteConnection' // direct IPC to main process — opens a window
   | 'testClientModeConnection' // direct IPC to main process — tests a server not routed through WS

@@ -1,14 +1,16 @@
 /**
- * Exhaustive channel routing table for hybrid local/remote transport.
+ * Channel routing for hybrid local/remote transport.
  *
- * Every RPC channel must belong to exactly one of two sets:
- * - LOCAL_ONLY: Always runs on the local Electron server, never proxied.
- * - REMOTE_ELIGIBLE: Runs on whichever server owns the workspace.
+ * One curated list, one derived complement:
+ * - LOCAL_ONLY: always runs on the local Electron server, never proxied. This is the only
+ *   question a new channel asks, and the only list anyone maintains by hand.
+ * - REMOTE_ELIGIBLE: everything else — it runs on whichever server owns the workspace.
  *
- * An exhaustiveness test ensures new channels fail CI until classified.
+ * Deriving the second set is not a shortcut: `RoutedClient` routes on `isLocalOnly`, so a
+ * hand-written remote list could disagree with the actual behaviour without anything failing.
  */
 
-import { RPC_CHANNELS } from './channels'
+import { RPC_CHANNELS, getAllChannelValues } from './channels'
 
 // ---------------------------------------------------------------------------
 // LOCAL_ONLY — fundamentally requires local OS / Electron
@@ -169,409 +171,35 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
 ])
 
 // ---------------------------------------------------------------------------
-// REMOTE_ELIGIBLE — runs on whichever server owns the workspace
+// REMOTE_ELIGIBLE — everything LOCAL_ONLY does not claim
 // ---------------------------------------------------------------------------
 
-export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
-  // workspaces — creation and slug checks run where the workspace will live, so a remote
-  // window creates on its hub and a local window on this machine (workspaceClient is local).
-  RPC_CHANNELS.workspaces.CREATE,
-  RPC_CHANNELS.workspaces.CHECK_SLUG,
-
-  // server — server-level operations (no workspace context needed)
-  RPC_CHANNELS.server.GET_WORKSPACES,
-  RPC_CHANNELS.server.CREATE_WORKSPACE,
-  RPC_CHANNELS.server.REMOVE_WORKSPACE,
-  RPC_CHANNELS.server.GET_STATUS,
-  RPC_CHANNELS.server.GET_HEALTH,
-  RPC_CHANNELS.server.GET_ACTIVE_SESSIONS,
-  RPC_CHANNELS.server.GET_DEVICES,
-  RPC_CHANNELS.server.SET_DEVICE_USE,
-  RPC_CHANNELS.server.FORGET_DEVICE,
-  RPC_CHANNELS.server.SHUTTING_DOWN,
-  RPC_CHANNELS.server.RESTART,
-  RPC_CHANNELS.server.STATUS_CHANGED,
-  RPC_CHANNELS.server.HOME_DIR,
-
-  // sessions — core session runtime
-  RPC_CHANNELS.sessions.GET,
-  RPC_CHANNELS.sessions.GET_UNREAD_SUMMARY,
-  RPC_CHANNELS.sessions.MARK_ALL_READ,
-  RPC_CHANNELS.sessions.UNREAD_SUMMARY_CHANGED,
-  RPC_CHANNELS.sessions.CREATE,
-  RPC_CHANNELS.sessions.DELETE,
-  RPC_CHANNELS.sessions.GET_MESSAGES,
-  RPC_CHANNELS.sessions.SEND_MESSAGE,
-  RPC_CHANNELS.sessions.CANCEL,
-  RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE,
-  RPC_CHANNELS.sessions.SEND_QUEUED_MESSAGE_NOW,
-  RPC_CHANNELS.sessions.KILL_SHELL,
-  RPC_CHANNELS.sessions.RESPOND_TO_PERMISSION,
-  RPC_CHANNELS.sessions.RESPOND_TO_CREDENTIAL,
-  RPC_CHANNELS.sessions.COMMAND,
-  RPC_CHANNELS.sessions.GET_PENDING_PLAN_EXECUTION,
-  RPC_CHANNELS.sessions.GET_PERMISSION_MODE_STATE,
-  RPC_CHANNELS.sessions.EVENT,
-  RPC_CHANNELS.sessions.GET_MODEL,
-  RPC_CHANNELS.sessions.SET_MODEL,
-  RPC_CHANNELS.sessions.GET_FILES,
-  RPC_CHANNELS.sessions.GET_NOTES,
-  RPC_CHANNELS.sessions.SET_NOTES,
-  RPC_CHANNELS.sessions.WATCH_FILES,
-  RPC_CHANNELS.sessions.UNWATCH_FILES,
-  RPC_CHANNELS.sessions.FILES_CHANGED,
-
-  RPC_CHANNELS.sessions.SEARCH_CONTENT,
-  RPC_CHANNELS.sessions.EXPORT,
-  RPC_CHANNELS.sessions.IMPORT,
-  RPC_CHANNELS.sessions.EXPORT_REMOTE_TRANSFER,
-  RPC_CHANNELS.sessions.IMPORT_REMOTE_TRANSFER,
-
-  // transfer — chunked large-payload import (sessions, resources)
-  RPC_CHANNELS.transfer.START,
-  RPC_CHANNELS.transfer.CHUNK,
-  RPC_CHANNELS.transfer.COMMIT,
-  RPC_CHANNELS.transfer.ABORT,
-
-  // tasks — workspace content (Conductor DAG runs on the workspace server)
-  RPC_CHANNELS.tasks.GET_OUTPUT,
-  RPC_CHANNELS.tasks.VALIDATE,
-  RPC_CHANNELS.tasks.CREATE,
-  RPC_CHANNELS.tasks.GENERATE,
-  RPC_CHANNELS.tasks.GENERATED,
-  RPC_CHANNELS.tasks.RUN,
-  RPC_CHANNELS.tasks.PAUSE,
-  RPC_CHANNELS.tasks.RESUME,
-  RPC_CHANNELS.tasks.STOP,
-  RPC_CHANNELS.tasks.GET,
-  RPC_CHANNELS.tasks.LIST,
-  RPC_CHANNELS.tasks.GET_RESULTS,
-  RPC_CHANNELS.tasks.RESOLVE_APPROVAL,
-
-  // file — workspace files (not openDialog which is native)
-  RPC_CHANNELS.file.READ,
-  RPC_CHANNELS.file.READ_DATA_URL,
-  RPC_CHANNELS.file.READ_PREVIEW_DATA_URL,
-  RPC_CHANNELS.file.READ_BINARY,
-  RPC_CHANNELS.file.WRITE,
-  RPC_CHANNELS.file.READ_ATTACHMENT,
-  RPC_CHANNELS.file.STORE_ATTACHMENT,
-  RPC_CHANNELS.file.GENERATE_THUMBNAIL,
-
-  // fs — workspace filesystem
-  RPC_CHANNELS.fs.SEARCH,
-  RPC_CHANNELS.fs.LIST_DIRECTORY,
-  RPC_CHANNELS.fs.CHECK_DIRECTORY,
-
-  // credentials — remote server's credential state
-  RPC_CHANNELS.credentials.HEALTH_CHECK,
-
-  // llmConnections — LLM config lives on server running workspace
-  RPC_CHANNELS.llmConnections.LIST,
-  RPC_CHANNELS.llmConnections.LIST_WITH_STATUS,
-  RPC_CHANNELS.llmConnections.GET,
-  RPC_CHANNELS.llmConnections.GET_API_KEY,
-  RPC_CHANNELS.llmConnections.SAVE,
-  RPC_CHANNELS.llmConnections.DELETE,
-  RPC_CHANNELS.llmConnections.TEST,
-  RPC_CHANNELS.llmConnections.SET_DEFAULT,
-  RPC_CHANNELS.llmConnections.SET_WORKSPACE_DEFAULT,
-  RPC_CHANNELS.llmConnections.REFRESH_MODELS,
-  RPC_CHANNELS.llmConnections.CHANGED,
-
-  // chatgpt — OAuth via capability passthrough
-  RPC_CHANNELS.chatgpt.START_OAUTH,
-  RPC_CHANNELS.chatgpt.COMPLETE_OAUTH,
-  RPC_CHANNELS.chatgpt.CANCEL_OAUTH,
-  RPC_CHANNELS.chatgpt.GET_AUTH_STATUS,
-  RPC_CHANNELS.chatgpt.LOGOUT,
-
-  // copilot — OAuth via capability passthrough
-  RPC_CHANNELS.copilot.START_OAUTH,
-  RPC_CHANNELS.copilot.CANCEL_OAUTH,
-  RPC_CHANNELS.copilot.GET_AUTH_STATUS,
-  RPC_CHANNELS.copilot.LOGOUT,
-  RPC_CHANNELS.copilot.DEVICE_CODE,
-
-  // Claude OAuth — runs on workspace server so credentials and connection config
-  // end up on the same server that will use them. Browser opening is client-side.
-  RPC_CHANNELS.onboarding.START_CLAUDE_OAUTH,
-  RPC_CHANNELS.onboarding.EXCHANGE_CLAUDE_CODE,
-  RPC_CHANNELS.onboarding.HAS_CLAUDE_OAUTH_STATE,
-  RPC_CHANNELS.onboarding.CLEAR_CLAUDE_OAUTH_STATE,
-
-  // onboarding — whether this server still needs setup, and the answer it records
-  RPC_CHANNELS.onboarding.GET_AUTH_STATE,
-  RPC_CHANNELS.onboarding.VALIDATE_MCP,
-  RPC_CHANNELS.onboarding.DEFER_SETUP,
-
-  // settings — workspace-level settings
-  RPC_CHANNELS.settings.SETUP_LLM_CONNECTION,
-  RPC_CHANNELS.settings.TEST_LLM_CONNECTION_SETUP,
-  RPC_CHANNELS.settings.GET_DEFAULT_THINKING_LEVEL,
-  RPC_CHANNELS.settings.SET_DEFAULT_THINKING_LEVEL,
-
-  // server mode — the listener belongs to the server this window is on. A remote window therefore
-  // reads and writes its hub's port/TLS/token, not this machine's. The hub is already trusted with
-  // the workspace and shell; hiding these fields would be UI preference dressed up as a boundary.
-  RPC_CHANNELS.settings.GET_SERVER_CONFIG,
-  RPC_CHANNELS.settings.SET_SERVER_CONFIG,
-  RPC_CHANNELS.settings.GET_SERVER_STATUS,
-
-  // settings the agent host reads — tool policy, prompt cache, token optimization, decisions
-  RPC_CHANNELS.appearance.GET_RICH_TOOL_DESCRIPTIONS,
-  RPC_CHANNELS.appearance.SET_RICH_TOOL_DESCRIPTIONS,
-  RPC_CHANNELS.caching.GET_EXTENDED_PROMPT_CACHE,
-  RPC_CHANNELS.caching.SET_EXTENDED_PROMPT_CACHE,
-  RPC_CHANNELS.caching.GET_ENABLE_1M_CONTEXT,
-  RPC_CHANNELS.caching.SET_ENABLE_1M_CONTEXT,
-  RPC_CHANNELS.rtk.GET_ENABLED,
-  RPC_CHANNELS.rtk.SET_ENABLED,
-  RPC_CHANNELS.rtk.GET_STATUS,
-  RPC_CHANNELS.rtk.GET_GAIN,
-  RPC_CHANNELS.decisions.GET_SETTINGS,
-  RPC_CHANNELS.decisions.SET_SETTINGS,
-  RPC_CHANNELS.decisions.GET_STATUS,
-  RPC_CHANNELS.decisions.SET_API_KEY,
-  RPC_CHANNELS.decisions.DELETE_API_KEY,
-  RPC_CHANNELS.decisions.TEST,
-  RPC_CHANNELS.decisions.PROBE_SERVER,
-  RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
-  RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
-
-  // pi — provider config on workspace server
-  RPC_CHANNELS.pi.GET_API_KEY_PROVIDERS,
-  RPC_CHANNELS.pi.GET_PROVIDER_BASE_URL,
-  RPC_CHANNELS.pi.GET_PROVIDER_MODELS,
-
-  // preferences — workspace-level preferences
-  RPC_CHANNELS.preferences.READ,
-  RPC_CHANNELS.preferences.WRITE,
-
-  // drafts — workspace content
-  RPC_CHANNELS.drafts.GET,
-  RPC_CHANNELS.drafts.SET,
-  RPC_CHANNELS.drafts.DELETE,
-  RPC_CHANNELS.drafts.GET_ALL,
-
-  // sources — source config per-workspace
-  RPC_CHANNELS.sources.GET,
-  RPC_CHANNELS.sources.CREATE,
-  RPC_CHANNELS.sources.DELETE,
-  RPC_CHANNELS.sources.START_OAUTH,
-  RPC_CHANNELS.sources.SAVE_CREDENTIALS,
-  RPC_CHANNELS.sources.CHANGED,
-  RPC_CHANNELS.sources.GET_PERMISSIONS,
-  RPC_CHANNELS.sources.GET_MCP_TOOLS,
-
-  // oauth — OAuth state management
-  RPC_CHANNELS.oauth.START,
-  RPC_CHANNELS.oauth.COMPLETE,
-  RPC_CHANNELS.oauth.CANCEL,
-  RPC_CHANNELS.oauth.REVOKE,
-
-  // workspace — workspace config + images (sharp on headless)
-  RPC_CHANNELS.workspace.GET_PERMISSIONS,
-  RPC_CHANNELS.workspace.READ_IMAGE,
-  RPC_CHANNELS.workspace.WRITE_IMAGE,
-  RPC_CHANNELS.workspace.SETTINGS_GET,
-  RPC_CHANNELS.workspace.SETTINGS_UPDATE,
-  // browserProfiles — app-level profile registry (routes with the server that owns the config)
-  RPC_CHANNELS.browserProfiles.LIST,
-  RPC_CHANNELS.browserProfiles.CREATE,
-  RPC_CHANNELS.browserProfiles.RENAME,
-  RPC_CHANNELS.browserProfiles.DELETE,
-  RPC_CHANNELS.browserProfiles.RESOLVE,
-
-  // browserPane — the workspace's browser, on the workspace's server.
-  //
-  // Same rule as the shell: a browser window is a thing that runs where the workspace lives, and
-  // the client is only a viewer. A local window's workspace client *is* this machine's server, so
-  // one code path serves both — no branch on "remote". Streaming frames only go to the client
-  // that started the stream (`to: 'client'`); `STREAM_FRAME` is never replayed (see transport).
-  RPC_CHANNELS.browserPane.CREATE,
-  RPC_CHANNELS.browserPane.DESTROY,
-  RPC_CHANNELS.browserPane.LIST,
-  RPC_CHANNELS.browserPane.NAVIGATE,
-  RPC_CHANNELS.browserPane.OPEN_FILE,
-  RPC_CHANNELS.browserPane.OPEN_URL,
-  RPC_CHANNELS.browserPane.GO_BACK,
-  RPC_CHANNELS.browserPane.GO_FORWARD,
-  RPC_CHANNELS.browserPane.RELOAD,
-  RPC_CHANNELS.browserPane.STOP,
-  RPC_CHANNELS.browserPane.FOCUS,
-  RPC_CHANNELS.browserPane.TAB_ACTION,
-  RPC_CHANNELS.browserPane.RESIZE_VIEWPORT,
-  RPC_CHANNELS.browserPane.SNAPSHOT,
-  RPC_CHANNELS.browserPane.CLICK,
-  RPC_CHANNELS.browserPane.FILL,
-  RPC_CHANNELS.browserPane.SELECT,
-  RPC_CHANNELS.browserPane.SCREENSHOT,
-  RPC_CHANNELS.browserPane.EVALUATE,
-  RPC_CHANNELS.browserPane.FETCH_RESOURCE,
-  RPC_CHANNELS.browserPane.SCROLL,
-  RPC_CHANNELS.browserPane.STREAM_START,
-  RPC_CHANNELS.browserPane.STREAM_STOP,
-  RPC_CHANNELS.browserPane.STREAM_CONTROL,
-  RPC_CHANNELS.browserPane.STREAM_INPUT,
-  RPC_CHANNELS.browserPane.STREAM_CARET,
-  RPC_CHANNELS.browserPane.STREAM_FRAME,
-  RPC_CHANNELS.browserPane.STREAM_ENDED,
-  RPC_CHANNELS.browserPane.LAUNCH,
-  RPC_CHANNELS.browserPane.STATE_CHANGED,
-  RPC_CHANNELS.browserPane.REMOVED,
-  RPC_CHANNELS.browserPane.INTERACTED,
-  RPC_CHANNELS.browserPane.TOOLBAR_ACTION,
-
-  // permissions — workspace permissions
-  RPC_CHANNELS.permissions.GET_DEFAULTS,
-  RPC_CHANNELS.permissions.DEFAULTS_CHANGED,
-
-  // skills — skill content per-workspace (not openEditor/openFinder which are local OS)
-  RPC_CHANNELS.skills.GET,
-  RPC_CHANNELS.skills.GET_FILES,
-  RPC_CHANNELS.skills.DELETE,
-  RPC_CHANNELS.skills.CHANGED,
-
-  // statuses — workspace metadata
-  RPC_CHANNELS.statuses.LIST,
-  RPC_CHANNELS.statuses.REORDER,
-  RPC_CHANNELS.statuses.CHANGED,
-
-  // labels — workspace metadata
-  RPC_CHANNELS.labels.LIST,
-  RPC_CHANNELS.labels.CREATE,
-  RPC_CHANNELS.labels.DELETE,
-  RPC_CHANNELS.labels.CHANGED,
-
-  // views — workspace UI views
-  RPC_CHANNELS.views.LIST,
-  RPC_CHANNELS.views.SAVE,
-
-  // toolIcons — workspace config
-  RPC_CHANNELS.toolIcons.GET_MAPPINGS,
-
-  // logo — workspace config
-  RPC_CHANNELS.logo.GET_URL,
-
-  // automations — workspace automations
-  RPC_CHANNELS.automations.GET,
-  RPC_CHANNELS.automations.TEST,
-  RPC_CHANNELS.automations.SET_ENABLED,
-  RPC_CHANNELS.automations.DUPLICATE,
-  RPC_CHANNELS.automations.DELETE,
-  RPC_CHANNELS.automations.GET_HISTORY,
-  RPC_CHANNELS.automations.GET_LAST_EXECUTED,
-  RPC_CHANNELS.automations.REPLAY,
-  RPC_CHANNELS.automations.CHANGED,
-
-  // projects — workspace projects
-  RPC_CHANNELS.projects.GET,
-  RPC_CHANNELS.projects.GET_ONE,
-  RPC_CHANNELS.projects.LAYERS,
-  RPC_CHANNELS.projects.FILES,
-  RPC_CHANNELS.projects.CREATE,
-  RPC_CHANNELS.projects.UPDATE,
-  RPC_CHANNELS.projects.DELETE,
-  RPC_CHANNELS.projects.LIST_ASSETS,
-  RPC_CHANNELS.projects.UPLOAD_ASSET,
-  RPC_CHANNELS.projects.DELETE_ASSET,
-  RPC_CHANNELS.projects.CHANGED,
-  RPC_CHANNELS.projects.WATCH_FILES,
-  RPC_CHANNELS.projects.UNWATCH_FILES,
-  RPC_CHANNELS.projects.FILES_CHANGED,
-
-  // drawio is NOT here: the editor is a UI asset that ships with the app. The desktop windows
-  // (local and remote) load it from their own `craft-local://` origin; the web UI loads the
-  // hub's copy from `/drawio/` on its own origin (see server-core/webui/drawio.ts).
-
-
-  // tweaks — standing edits, stored as a folder per tweak in the workspace
-  RPC_CHANNELS.tweaks.GET,
-  RPC_CHANNELS.tweaks.GET_ONE,
-  RPC_CHANNELS.tweaks.UPDATE,
-  RPC_CHANNELS.tweaks.DELETE,
-  // An export writes the extension where the person pointed the picker, so on a remote
-  // host the build happens beside the tweaks rather than here.
-  RPC_CHANNELS.tweaks.EXPORT,
-  RPC_CHANNELS.tweaks.CHANGED,
-
-  // designs — workspace designs (mini web pages)
-  RPC_CHANNELS.designs.GET,
-  RPC_CHANNELS.designs.GET_ONE,
-  RPC_CHANNELS.designs.CREATE,
-  RPC_CHANNELS.designs.UPDATE,
-  RPC_CHANNELS.designs.DELETE,
-  RPC_CHANNELS.designs.GET_CONTENT,
-  RPC_CHANNELS.designs.SET_CONTENT,
-  RPC_CHANNELS.designs.GET_DATA,
-  RPC_CHANNELS.designs.LIST_GRANTS,
-  RPC_CHANNELS.designs.ISSUE_GRANT,
-  RPC_CHANNELS.designs.REVOKE_GRANT,
-  RPC_CHANNELS.designs.CREATE_LEASE,
-  RPC_CHANNELS.designs.RELEASE_LEASE,
-  RPC_CHANNELS.designs.EXECUTE_ACTION,
-  RPC_CHANNELS.designs.CANCEL_ACTION,
-  RPC_CHANNELS.designs.GET_SHARE_CAPABILITIES,
-  RPC_CHANNELS.designs.GET_SHARE_DATA_SCAN,
-  RPC_CHANNELS.designs.PUBLISH,
-  RPC_CHANNELS.designs.SET_PUBLICATION_PASSWORD,
-  RPC_CHANNELS.designs.UNPUBLISH,
-  RPC_CHANNELS.designs.GET_THUMBNAIL,
-  RPC_CHANNELS.designs.REGENERATE_THUMBNAIL,
-  RPC_CHANNELS.designs.EXPORT,
-  RPC_CHANNELS.designs.CHANGED,
-
-  // git — workspace filesystem
-  RPC_CHANNELS.git.GET_BRANCH,
-
-  // resources — workspace resource export/import
-  RPC_CHANNELS.resources.EXPORT,
-  RPC_CHANNELS.resources.IMPORT,
-
-  // messaging — gateway channels run on workspace server
-  RPC_CHANNELS.messaging.WA_REGISTER,
-  RPC_CHANNELS.messaging.WA_INCOMING,
-  RPC_CHANNELS.messaging.WA_BUTTON_PRESS,
-  RPC_CHANNELS.messaging.WA_STATUS,
-  RPC_CHANNELS.messaging.WA_QR,
-  RPC_CHANNELS.messaging.WA_SEND,
-  RPC_CHANNELS.messaging.WA_SEND_BUTTONS,
-  RPC_CHANNELS.messaging.WA_SEND_TYPING,
-  RPC_CHANNELS.messaging.WA_SEND_FILE,
-  RPC_CHANNELS.messaging.WA_CONNECT,
-  RPC_CHANNELS.messaging.WA_DISCONNECT,
-  RPC_CHANNELS.messaging.BINDING_CHANGED,
-  RPC_CHANNELS.messaging.PLATFORM_STATUS,
-  RPC_CHANNELS.messaging.PENDING_CHANGED,
-  RPC_CHANNELS.messaging.GET_CONFIG,
-  RPC_CHANNELS.messaging.UPDATE_CONFIG,
-  RPC_CHANNELS.messaging.TEST_TELEGRAM,
-  RPC_CHANNELS.messaging.SAVE_TELEGRAM,
-  RPC_CHANNELS.messaging.TEST_LARK,
-  RPC_CHANNELS.messaging.SAVE_LARK,
-  RPC_CHANNELS.messaging.DISCONNECT,
-  RPC_CHANNELS.messaging.FORGET,
-  RPC_CHANNELS.messaging.GET_BINDINGS,
-  RPC_CHANNELS.messaging.GENERATE_CODE,
-  RPC_CHANNELS.messaging.GENERATE_SUPERGROUP_CODE,
-  RPC_CHANNELS.messaging.GET_SUPERGROUP,
-  RPC_CHANNELS.messaging.UNBIND_SUPERGROUP,
-  RPC_CHANNELS.messaging.UNBIND,
-  RPC_CHANNELS.messaging.UNBIND_BINDING,
-  RPC_CHANNELS.messaging.WA_START_CONNECT,
-  RPC_CHANNELS.messaging.WA_SUBMIT_PHONE,
-  RPC_CHANNELS.messaging.WA_UI_EVENT,
-  // messaging access control — UI ↔ Server, per-platform owners + per-binding allow-list
-  RPC_CHANNELS.messaging.GET_PLATFORM_OWNERS,
-  RPC_CHANNELS.messaging.SET_PLATFORM_OWNERS,
-  RPC_CHANNELS.messaging.GET_PLATFORM_ACCESS_MODE,
-  RPC_CHANNELS.messaging.SET_PLATFORM_ACCESS_MODE,
-  RPC_CHANNELS.messaging.GET_PENDING_SENDERS,
-  RPC_CHANNELS.messaging.DISMISS_PENDING_SENDER,
-  RPC_CHANNELS.messaging.ALLOW_PENDING_SENDER,
-  RPC_CHANNELS.messaging.SET_BINDING_ACCESS,
-])
+/**
+ * A channel runs on whichever server owns the workspace **unless** it is in LOCAL_ONLY.
+ *
+ * Derived, not listed. This is the same question the router asks at runtime — `RoutedClient`
+ * sends anything that is not local to the workspace client — so a second hand-maintained table
+ * could only ever disagree with it. Two things went wrong while it was a list: a new channel
+ * worked without being classified (nothing to forget, nothing to notice), and a channel missing
+ * from the list changed no behaviour while making the table lie about what the protocol does.
+ *
+ * That leaves one decision per new channel instead of two: *is this fundamentally local?* Say so
+ * in LOCAL_ONLY, with the reason. Everything else travels with the server that runs the work:
+ *
+ * - workspace creation and slug checks happen where the workspace will live, so a remote window
+ *   creates on its hub and a local window on this machine;
+ * - the server-mode listener is the one this window is on: a remote window edits its hub's
+ *   port/TLS, not this machine's (the hub is already trusted with the workspace and the shell —
+ *   hiding those fields would be UI preference dressed up as a boundary);
+ * - files, fs, git, sources, skills, projects, designs, tweaks, automations, tasks, permissions
+ *   and the browser live with the workspace; OAuth exchanges and LLM connection config run where
+ *   the credentials will be used;
+ * - drawio is the exception that proves the rule: the editor is a UI asset, so windows load their
+ *   own copy and the web UI loads the hub's — which is why `drawio:getOrigin` is local.
+ */
+export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>(
+  getAllChannelValues().filter((channel) => !LOCAL_ONLY_CHANNELS.has(channel)),
+)
 
 // ---------------------------------------------------------------------------
 // Query helpers
@@ -581,6 +209,7 @@ export function isLocalOnly(channel: string): boolean {
   return LOCAL_ONLY_CHANNELS.has(channel)
 }
 
+/** The exact complement of `isLocalOnly` — the rule the router actually applies. */
 export function isRemoteEligible(channel: string): boolean {
-  return REMOTE_ELIGIBLE_CHANNELS.has(channel)
+  return !LOCAL_ONLY_CHANNELS.has(channel)
 }

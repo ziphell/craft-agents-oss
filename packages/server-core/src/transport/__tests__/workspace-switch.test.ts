@@ -24,7 +24,7 @@ async function startPair(workspaceId: string) {
     host: '127.0.0.1',
     port: 0,
     requireAuth: true,
-    validateToken: async (t) => t === TEST_TOKEN,
+    validateToken: async (t) => (t === TEST_TOKEN ? { tokenId: 'test-token', scope: 'both' } : null),
     serverId: 'test',
   })
   await server.listen()

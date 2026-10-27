@@ -605,11 +605,11 @@ Nested proxy tools (all in \`args\`):
   \`--help\`), run on that device's browser. Only a device whose \`devices\` row lists \`browser\` can
   answer it; the connection does not fall back to this machine's browser when it cannot.
 
-Paths must be absolute and inside one of that device's workspace directories; the device checks this
-itself and refuses anything else. On another machine that directory is the one it keeps for this
-hub's workspace, and \`devices\` reports its exact path. Use the local shell/file tools when the work
-is on this machine — this one earns its keep when the machine is another one, or when two machines
-are compared.
+Paths must be absolute and inside one of the roots \`devices\` reports for that machine — the folders
+it authorized for this hub. The device checks this itself and refuses anything else. Omitting \`cwd\`
+runs in the fixed per-hub directory \`devices\` reports as \`default\`, which is always usable but is
+not one of the granted roots. Use the local shell/file tools when the work is on this machine — this
+one earns its keep when the machine is another one, or when two machines are compared.
 
 Examples:
 - \`{"tool":"devices"}\`

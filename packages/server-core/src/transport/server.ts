@@ -26,6 +26,8 @@ import {
   type ConnectedClientInfo,
 } from '@craft-agent/shared/protocol'
 import type { RpcServer, HandlerFn, RequestContext } from './types'
+import type { TokenContext, TokenGrant, TokenKind, TokenScope } from './tokens'
+import { scopePermits, type ConnectionRole } from './capabilities'
 import { serializeEnvelope, deserializeEnvelope } from './codec'
 import { createLogger } from '@craft-agent/shared/utils'
 
@@ -61,8 +63,8 @@ interface ClientConnection {
   name: string
   /** Stable device identity (survives reconnects); null for clients that don't send one. */
   deviceId: string | null
-  /** Directories this device allows remote shell/file access inside. */
-  workspaceRoots: string[]
+  /** Folders this device authorized for this server (device access only). */
+  allowedRoots: string[]
   /** Root of this device's per-hub working directories (`<base>/<hub device id>/<workspace id>`). */
   hubRootBase: string | null
   platform: string | null
@@ -70,6 +72,16 @@ interface ClientConnection {
   version: string | null
   /** Local = this server's own windows; remote = thin clients / browser clients. */
   mode: 'local' | 'remote'
+  /** What the client declared this connection for; null for a client that predates the field. */
+  role: ConnectionRole | null
+  /** The credential this client authenticated with; null for a cookie session. */
+  tokenId: string | null
+  /** What kind of credential that is — a device pairing token or this hub's server token. */
+  tokenKind: TokenKind | null
+  /** What that credential permits. `device` clients answer calls and issue none. */
+  scope: TokenScope
+  /** False once a credential is revoked: the connection is dropped and not held for reconnect. */
+  retainForReconnect: boolean
   connectedAt: number
   missedPongs: number
   alive: boolean
@@ -110,8 +122,12 @@ export interface WsRpcServerOptions {
   port?: number
   /** Whether to require a bearer token on handshake. Default: false */
   requireAuth?: boolean
-  /** Token validator. Called when requireAuth is true. */
-  validateToken?: (token: string) => Promise<boolean>
+  /**
+   * Token validator. Called when requireAuth is true. Returning a grant authenticates the client
+   * as that credential; returning null refuses the handshake. The caller decides what the grant
+   * means — scope, device binding and revocation live in the registry, not here.
+   */
+  validateToken?: (token: string, context: TokenContext) => Promise<TokenGrant | null>
   /**
    * Optional cookie-based session validator (for web UI auth).
    * Called with the Cookie header from the HTTP upgrade request.
@@ -170,7 +186,7 @@ export class WsRpcServer implements RpcServer {
   private readonly host: string
   private readonly requestedPort: number
   private readonly requireAuth: boolean
-  private readonly validateToken: ((token: string) => Promise<boolean>) | null
+  private readonly validateToken: WsRpcServerOptions['validateToken'] | null
   private readonly validateSessionCookie: ((cookieHeader: string | null) => Promise<boolean>) | null
   private readonly serverId: string
   private readonly tlsOptions: WsRpcTlsOptions | null
@@ -219,7 +235,7 @@ export class WsRpcServer implements RpcServer {
     return [...this.clients.values()].map((client) => ({
       clientId: client.id,
       deviceId: client.deviceId,
-      workspaceRoots: client.workspaceRoots,
+      allowedRoots: client.allowedRoots,
       hubRootBase: client.hubRootBase,
       name: client.name,
       platform: client.platform,
@@ -228,6 +244,9 @@ export class WsRpcServer implements RpcServer {
       workspaceId: client.workspaceId,
       webContentsId: client.webContentsId,
       capabilities: [...client.capabilities],
+      scope: client.scope,
+      tokenKind: client.tokenKind,
+      role: client.role,
       connectedAt: client.connectedAt,
     }))
   }
@@ -235,6 +254,85 @@ export class WsRpcServer implements RpcServer {
   /** Whether the client runs on this server's own machine (a local window). */
   isLocalClient(clientId: string): boolean {
     return this.clients.get(clientId)?.mode === 'local'
+  }
+
+  /**
+   * Drop every connection authenticated with one credential, and forget their replay buffers.
+   *
+   * Revocation has to reach live sockets: the registry only refuses *new* handshakes, so without
+   * this a revoked window would keep working until it happened to reconnect.
+   */
+  disconnectTokenClients(tokenId: string, reason = 'Credential revoked'): number {
+    let dropped = 0
+    for (const client of [...this.clients.values()]) {
+      if (client.tokenId !== tokenId) continue
+      client.retainForReconnect = false
+      client.ws.close(4005, reason)
+      dropped++
+    }
+    for (const [id, entry] of [...this.disconnectedClients]) {
+      if (entry.client.tokenId !== tokenId) continue
+      clearTimeout(entry.timer)
+      this.disconnectedClients.delete(id)
+    }
+    return dropped
+  }
+
+  /**
+   * Adopt a changed credential scope on the sockets that already hold it.
+   *
+   * The handshake decides scope once, but a slot's scope can change underneath a live link.
+   * Narrowing must take effect at once (a device link must stop calling the hub), and widening must
+   * too (the same link must be able to read the hub again after remote control is turned back on).
+   * Neither needs a reconnect: scope is consulted per request, never baked into the socket.
+   */
+  applyTokenScope(tokenId: string, scope: TokenScope): number {
+    let changed = 0
+    for (const client of this.clients.values()) {
+      if (client.tokenId !== tokenId) continue
+      client.scope = scope
+      // The client keeps its own copy for the UI; tell it rather than waiting for a reconnect.
+      this.push(RPC_CHANNELS.server.TOKEN_SCOPE, { to: 'client', clientId: client.id }, scope)
+      changed++
+    }
+    for (const entry of this.disconnectedClients.values()) {
+      if (entry.client.tokenId !== tokenId) continue
+      entry.client.scope = scope
+    }
+    return changed
+  }
+
+  /**
+   * Re-check every connection holding one credential and drop only the ones its scope no longer
+   * permits.
+   *
+   * A scope change is not a revocation. "This machine may no longer open windows here" says
+   * nothing about the same machine serving this hub as a device, and both connections carry the
+   * same credential — so dropping by credential made them knock each other over: closing remote
+   * access bounced the device link and forced it to reconnect for no reason. Asking each
+   * connection what it answers, and keeping the ones still allowed, is exactly the question the
+   * handshake asks; a scope change just asks it again.
+   */
+  revalidateTokenClients(
+    tokenId: string,
+    stillPermitted: (client: { capabilities: ReadonlySet<string>; role: ConnectionRole | null }) => boolean,
+    reason = 'Credential scope changed',
+  ): number {
+    let dropped = 0
+    for (const client of [...this.clients.values()]) {
+      if (client.tokenId !== tokenId) continue
+      if (stillPermitted({ capabilities: client.capabilities, role: client.role })) continue
+      client.retainForReconnect = false
+      client.ws.close(4005, reason)
+      dropped++
+    }
+    for (const [id, entry] of [...this.disconnectedClients]) {
+      if (entry.client.tokenId !== tokenId) continue
+      if (stillPermitted({ capabilities: entry.client.capabilities, role: entry.client.role })) continue
+      clearTimeout(entry.timer)
+      this.disconnectedClients.delete(id)
+    }
+    return dropped
   }
 
   // -------------------------------------------------------------------------
@@ -509,25 +607,70 @@ export class WsRpcServer implements RpcServer {
         }
 
         // Auth check — bearer token OR session cookie (web UI)
+        let grant: { tokenId: string | null; scope: TokenScope; kind?: TokenKind; probe?: boolean } | null = null
         if (this.requireAuth) {
-          let authenticated = false
-
-          // 1. Try bearer token (standard path)
+          // 1. Bearer token (standard path). The registry decides scope, and claims/binds a
+          //    device slot on its first use. A probe validates without claiming.
           if (envelope.token && this.validateToken) {
-            authenticated = await this.validateToken(envelope.token)
+            grant = await this.validateToken(envelope.token, {
+              deviceId: envelope.clientInfo?.deviceId?.trim() || null,
+              probe: envelope.clientInfo?.probe === true,
+            })
           }
 
-          // 2. Fallback: try session cookie from HTTP upgrade request (web UI path)
-          if (!authenticated && this.validateSessionCookie && upgradeRequestCookie) {
-            authenticated = await this.validateSessionCookie(upgradeRequestCookie)
+          // 2. Fallback: cookie session from the HTTP upgrade request (web UI path). A session is
+          //    always a full client of this hub; it belongs to no bearer record.
+          if (!grant && this.validateSessionCookie && upgradeRequestCookie) {
+            if (await this.validateSessionCookie(upgradeRequestCookie)) {
+              grant = { tokenId: null, scope: 'client' }
+            }
           }
 
-          if (!authenticated) {
+          if (!grant) {
             const reason = envelope.token ? 'Invalid token' : 'Token required'
             this.sendError(ws, envelope.id, 'AUTH_FAILED', reason)
             ws.close(4005, 'Auth failed')
             return
           }
+        }
+
+        // A probe asked only "can I reach this server, and what may this credential do?". It is
+        // answered from the handshake and never becomes a client: no device record, no slot claim,
+        // and no channel access. That is what lets Test Connection run before the connection (and
+        // its device access / allowed folders) has been saved.
+        if (grant?.probe) {
+          handshakeCompleted = true
+          this.safeSend(ws, serializeEnvelope({
+            id: envelope.id,
+            type: 'handshake_ack',
+            protocolVersion: PROTOCOL_VERSION,
+            serverVersion: this.serverVersion || undefined,
+            clientId: `probe-${randomUUID()}`,
+            // A probe may call nothing; an empty list says so without relying on the client.
+            registeredChannels: [],
+            tokenScope: grant.scope,
+          }))
+          return
+        }
+
+        // What the credential may do and what this connection will do are two different claims,
+        // and the handshake carries both. A scoped credential can be narrowed while a socket is
+        // still open — that is what revoking access from the hub's device list does — and the
+        // client reconnects under the same still-valid token. Refusing here is what makes that a
+        // single readable refusal at connect time instead of a SCOPE_FORBIDDEN on every call
+        // from a window that should not have been allowed back at all.
+        //
+        // After the probe branch above: a probe declares no capabilities and exists to learn
+        // what a credential may do, so it must not be refused by its own answer.
+        if (grant && !scopePermits(grant.scope, envelope.clientInfo?.role, envelope.clientCapabilities ?? [])) {
+          // The credential may only lend this machine, and this connection is a window. Device
+          // use is not a scope question, so a device link is never refused here — even when it
+          // declares no tools because the person turned device use off.
+          const message =
+            'This credential cannot open windows on this server: remote control is not allowed for it.'
+          this.sendError(ws, envelope.id, 'REMOTE_CONTROL_DENIED', message)
+          ws.close(4005, message)
+          return
         }
 
         // ── Reconnect attempt ──
@@ -556,8 +699,8 @@ export class WsRpcServer implements RpcServer {
               // The handshake carries identity again; roots can change while a client was away
               // (a workspace added, a config dir moved), so the reconnected connection takes the
               // latest answer instead of the one it disconnected with.
-              if (envelope.clientInfo?.workspaceRoots) {
-                prevClient.workspaceRoots = envelope.clientInfo.workspaceRoots
+              if (envelope.clientInfo?.allowedRoots) {
+                prevClient.allowedRoots = envelope.clientInfo.allowedRoots
               }
               if (envelope.clientInfo?.hubRootBase) {
                 prevClient.hubRootBase = envelope.clientInfo.hubRootBase
@@ -566,6 +709,12 @@ export class WsRpcServer implements RpcServer {
               // advertised version is the one the client list should show.
               const advertisedVersion = envelope.clientInfo?.version?.trim()
               if (advertisedVersion) prevClient.version = advertisedVersion
+              // A reconnect presents a credential again; the connection carries the one it just
+              // proved, not the one it disconnected with.
+              if (grant) {
+                prevClient.tokenId = grant.tokenId
+                prevClient.scope = grant.scope
+              }
               handshakeCompleted = true
 
               // Determine replay vs stale using the per-client delivery sequence.
@@ -590,6 +739,7 @@ export class WsRpcServer implements RpcServer {
                   serverVersion: this.serverVersion || undefined,
                   clientId: prevClient.id,
                   registeredChannels: [...this.handlers.keys()],
+                  tokenScope: prevClient.scope,
                   reconnected: true,
                 }
                 this.safeSend(ws, serializeEnvelope(ack))
@@ -613,6 +763,7 @@ export class WsRpcServer implements RpcServer {
                   serverVersion: this.serverVersion || undefined,
                   clientId: prevClient.id,
                   registeredChannels: [...this.handlers.keys()],
+                  tokenScope: prevClient.scope,
                   reconnected: true,
                   stale: true,
                 }
@@ -661,11 +812,18 @@ export class WsRpcServer implements RpcServer {
           capabilities: new Set(envelope.clientCapabilities ?? []),
           name: envelope.clientInfo?.name?.trim() || 'Unknown client',
           deviceId: envelope.clientInfo?.deviceId?.trim() || null,
-          workspaceRoots: envelope.clientInfo?.workspaceRoots ?? [],
+          allowedRoots: envelope.clientInfo?.allowedRoots ?? [],
           hubRootBase: envelope.clientInfo?.hubRootBase ?? null,
           platform: envelope.clientInfo?.platform ?? null,
           version: envelope.clientInfo?.version?.trim() || null,
           mode: envelope.clientInfo?.mode === 'local' ? 'local' : 'remote',
+          role: envelope.clientInfo?.role === 'window' || envelope.clientInfo?.role === 'device'
+            ? envelope.clientInfo.role
+            : null,
+          tokenId: grant?.tokenId ?? null,
+          tokenKind: grant?.kind ?? null,
+          scope: grant?.scope ?? 'client',
+          retainForReconnect: true,
           connectedAt: Date.now(),
           missedPongs: 0,
           alive: true,
@@ -684,6 +842,7 @@ export class WsRpcServer implements RpcServer {
           serverVersion: this.serverVersion || undefined,
           clientId,
           registeredChannels: [...this.handlers.keys()],
+          tokenScope: grant?.scope ?? 'client',
         }
         this.safeSend(ws, serializeEnvelope(ack))
 
@@ -751,6 +910,16 @@ export class WsRpcServer implements RpcServer {
 
     if (!channel) {
       this.sendResponseError(client.ws, id, undefined, 'CHANNEL_NOT_FOUND', 'Missing channel')
+      return
+    }
+
+    // A device credential lends this machine's shell and files to the hub; it is not a way to
+    // drive the hub. Refusing here is what keeps a leaked device token from becoming a client.
+    if (client.scope === 'device') {
+      this.sendResponseError(
+        client.ws, id, channel, 'SCOPE_FORBIDDEN',
+        'This credential may only serve device capabilities; it cannot call server channels.',
+      )
       return
     }
 
@@ -824,19 +993,22 @@ export class WsRpcServer implements RpcServer {
       transportLog.info('Client disconnected', { clientId: client.id })
       this.clients.delete(client.id)
 
-      // Retain buffer for potential reconnect
-      const timer = setTimeout(() => {
-        this.disconnectedClients.delete(client.id)
-      }, DISCONNECTED_CLIENT_TTL_MS)
-      this.disconnectedClients.set(client.id, { client, timer })
+      // Retain buffer for potential reconnect — unless the credential behind this connection was
+      // revoked. Reviving a revoked client would hand it its pending events on the next handshake.
+      if (client.retainForReconnect) {
+        const timer = setTimeout(() => {
+          this.disconnectedClients.delete(client.id)
+        }, DISCONNECTED_CLIENT_TTL_MS)
+        this.disconnectedClients.set(client.id, { client, timer })
 
-      // Cap disconnectedClients to prevent unbounded growth
-      if (this.disconnectedClients.size > 50) {
-        const oldestKey = this.disconnectedClients.keys().next().value
-        if (oldestKey) {
-          const oldest = this.disconnectedClients.get(oldestKey)
-          if (oldest) clearTimeout(oldest.timer)
-          this.disconnectedClients.delete(oldestKey)
+        // Cap disconnectedClients to prevent unbounded growth
+        if (this.disconnectedClients.size > 50) {
+          const oldestKey = this.disconnectedClients.keys().next().value
+          if (oldestKey) {
+            const oldest = this.disconnectedClients.get(oldestKey)
+            if (oldest) clearTimeout(oldest.timer)
+            this.disconnectedClients.delete(oldestKey)
+          }
         }
       }
 

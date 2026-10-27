@@ -66,8 +66,11 @@
 3. 找到条目（规范 id 或乐观 id），从原位置取出、插到队首。
 4. 广播一次队列状态，让所有窗口的待发送区先显示新顺序。
 5. `interruptTurn({ silent: true })`：结束当前轮，但**不**插入「Response interrupted」气泡。
+6. 新轮**不会**在中断的同一毫秒开跑：pi 后端要等子进程回 `abort_settled`（被中断那一轮的 `message_end`/`agent_end` 都已转发完）才发出这一轮的 prompt。这段时间界面上就是这一轮的 loading，最长 2.5 s 超时放行。
 
 当前轮结束后，队首条目照常走 §4.2 的出队流程。排在其后的条目保持原来顺序。
+
+**为什么要等**：被中断的一轮在 abort 之后还会继续吐几百毫秒的事件（`message_end` 带 `The operation was aborted.`，随后 `agent_end`）。子进程→主进程的事件流不带「第几轮」的身份，如果新轮次已经开跑，这颗迟到的 `agent_end` 会直接关掉**新轮次**的事件队列——消息看起来发出去了又立刻停下，transcript 里那条用户消息永远没有回复（2026-10-27 `261026-bright-titanium` 现场：08:08:29.945 立即发送 → 08:08:30.424 新一轮被迟到 `agent_end` 关掉）。等 `abort_settled` 之后再 `eventQueue.reset()`，迟到的残片既关不掉新轮次，也不会被当成新轮次的内容。
 
 **为什么不是 steer**：steer 的投递时机取决于 provider（Claude 要等下一个工具边界，没有工具调用就投递不了；Pi 是 SDK 原生边界），用户无法预知它何时生效，而且只能带文本。立即发送是确定性的：结束这一轮、下一轮就是它，附件也照常走正常发送路径。
 
@@ -167,6 +170,7 @@ Stop 是「不要再继续」，与「插队」相反：
 | 删除 / 编辑与出队同时发生 | 后端找不到队列条目时返回 `cancelled: false`，前端 toast；孤儿排队行会被真正删除 |
 | 崩溃 / 重载 | 排队条目已持久化；加载时按 transcript 顺序重建队列，空闲则 `setImmediate` 出队；重放时新建轮次消息 |
 | 手动压缩中 | ⚡ 拒绝，条目留在队列；压缩结束后照常 |
+| ⚡ 打断后立刻重放 | 新轮先等子进程的 `abort_settled` 再发；等待期间被中断轮次的迟到事件被丢弃，不会提前结束这一轮（超时 2.5 s 兜底放行） |
 | 附件 | 出队时从载荷恢复到新轮次消息，附件不丢；编辑只回填文本，附件随条目删除 |
 | Stop 恢复 | 只回填文本；附件不回到输入框 |
 | 隐藏消息（系统 nudge） | 可以入队，但 `hidden` 让它不渲染气泡 |
@@ -194,6 +198,10 @@ Stop 是「不要再继续」，与「插队」相反：
 | [QueuedMessagesTray.tsx](file:///c:/Users/Ryan/code/craft-agents-oss/apps/electron/src/renderer/components/app-shell/input/QueuedMessagesTray.tsx) | 待发送区：拖拽、收起、四个动作 |
 | [ChatDisplay.tsx](file:///c:/Users/Ryan/code/craft-agents-oss/apps/electron/src/renderer/components/app-shell/ChatDisplay.tsx#L1311-L1407) | Stop、删除、编辑、立即发送、重排的调用点 |
 | [midstream-queue.test.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/server-core/src/sessions/midstream-queue.test.ts) | 后端：入队、立即发送、删除、重排、出队新建轮次 |
+| [pi-agent.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/agent/pi-agent.ts#L1270-L1330) | 主进程的 `abort_settled` 握手：`armAbortSettle` / `awaitAbortSettle`，以及在未收尾期间丢弃迟到事件 |
+| [pi-agent.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/agent/pi-agent.ts#L2345-L2356) | `chatImpl` 在 `eventQueue.reset()` 之前等握手，重放不会撞上上一轮的残片 |
+| [index.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/pi-agent-server/src/index.ts#L350-L380) | 子进程侧 `settleAbort`：转发完 `agent_end` 后回 `abort_settled`，另有 2 s 兜底 |
+| [pi-agent-abort-settle.test.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/agent/__tests__/pi-agent-abort-settle.test.ts) | 握手：迟到事件被丢弃、settle 后才放行、无子进程时不等待 |
 | [handle-user-message.test.ts](file:///c:/Users/Ryan/code/craft-agents-oss/apps/electron/src/renderer/event-processor/handlers/__tests__/handle-user-message.test.ts) | 前端：相同文本不覆盖、出队排在上一轮之后、状态对账 |
 
 ---

@@ -14,7 +14,11 @@ function makeFns(overrides: Partial<DeviceToolFns> = {}): DeviceToolFns {
       name: 'office-mac',
       platform: 'darwin',
       version: '0.9.3',
-      workspaceRoots: ['/work'],
+      allowedRoots: ['/work'],
+      online: true,
+      deviceAllows: true,
+      available: true,
+      offered: { shell: true, files: true, browser: true },
       capabilities: { shell: true, files: true, browser: true },
     }],
     exec: async () => ({

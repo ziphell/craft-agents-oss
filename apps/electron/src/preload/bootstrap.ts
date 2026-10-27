@@ -78,12 +78,12 @@ interface ClientIdentity {
   platform: string
   /** App version advertised for diagnostics; the hub never gates on it. */
   version?: string
-  workspaceRoots: string[]
+  allowedRoots: string[]
   /** Where this install keeps `<base>/<hub device id>/<workspace id>` working directories. */
   hubRootBase?: string
 }
 const clientIdentity = (ipcRenderer.sendSync('__get-client-identity') as ClientIdentity | null)
-  ?? { deviceId: '', name: hostname(), platform: process.platform, workspaceRoots: [] }
+  ?? { deviceId: '', name: hostname(), platform: process.platform, allowedRoots: [] }
 
 const wsPort: number = ipcRenderer.sendSync('__get-ws-port')
 const wsToken: string = ipcRenderer.sendSync('__get-ws-token')
@@ -120,7 +120,7 @@ const localClient = new WsRpcClient(`ws://127.0.0.1:${wsPort}`, {
   autoReconnect: true,
   mode: 'local',
   clientCapabilities: [...WINDOW_CAPABILITIES],
-  clientInfo: clientIdentity,
+  clientInfo: { ...clientIdentity, role: 'window' },
 })
 
 let workspaceClient: WsRpcClient = localClient
@@ -140,7 +140,7 @@ if (windowTarget) {
     autoReconnect: true,
     mode: 'remote',
     clientCapabilities: [...WINDOW_CAPABILITIES],
-    clientInfo: clientIdentity,
+    clientInfo: { ...clientIdentity, role: 'window' },
     // The URL came from the person, so a hub with a self-signed certificate is accepted — the
     // same policy the app-level device links use.
     tlsRejectUnauthorized: false,
@@ -442,6 +442,14 @@ client.onConnectionStateChanged((state) => {
 ;(api as ElectronAPI).getClientMode = () => ipcRenderer.invoke('client-mode:get')
 ;(api as ElectronAPI).saveRemoteConnection = (connection) =>
   ipcRenderer.invoke('client-mode:save-connection', connection)
+// Device folders are this install's own, so the picker is a direct IPC even in a remote window —
+// the routed `openFolderDialog` would ask the hub the window is showing.
+;(api as ElectronAPI).openLocalFolderDialog = async () => {
+  const result = await ipcRenderer.invoke('__dialog:showOpenDialog', {
+    properties: ['openDirectory'],
+  }) as { canceled: boolean; filePaths: string[] }
+  return result.canceled ? null : result.filePaths[0] ?? null
+}
 ;(api as ElectronAPI).removeRemoteConnection = (connectionId) =>
   ipcRenderer.invoke('client-mode:remove-connection', connectionId)
 ;(api as ElectronAPI).connectToRemoteConnection = (connectionId, workspaceId) =>
@@ -620,7 +628,7 @@ function createHubClient(target: RemoteTargetUpdate, workspaceId: string | undef
     autoReconnect: true,
     mode: 'remote',
     clientCapabilities: [...WINDOW_CAPABILITIES],
-    clientInfo: clientIdentity,
+    clientInfo: { ...clientIdentity, role: 'window' },
     tlsRejectUnauthorized: false,
   })
 }

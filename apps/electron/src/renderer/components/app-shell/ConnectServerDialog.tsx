@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAtomValue } from 'jotai'
-import { AlertTriangle, Pencil, Trash2 } from 'lucide-react'
+import { AlertTriangle, Pencil, Plus, Trash2, X } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -54,9 +54,15 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
   const [serverUrl, setServerUrl] = useState('')
   const [token, setToken] = useState('')
   const [hostName, setHostName] = useState('')
-  // One switch covers shell/files/browser. Kept separate from "connect" on purpose: viewing a
-  // server's workspaces never needs this machine's capabilities.
-  const [deviceAccess, setDeviceAccess] = useState(false)
+  /** Whether this machine lets the server use it. Kept separate from "connect" on purpose: a
+   *  window on that server never needs this machine's capabilities, and turning the switch off
+   *  keeps the connection (and the folders below) so it can be turned back on later. */
+  const [deviceUseEnabled, setDeviceUseEnabled] = useState(true)
+  // Folders this server may reach beyond this app's own workspaces. Entered here, on this machine.
+  const [allowedRoots, setAllowedRoots] = useState<string[]>([])
+  // This machine's workspaces, offered as one-click shortcuts into `allowedRoots` — a convenience,
+  // not an authorization: a workspace is only reachable once it is in the saved list.
+  const [localWorkspaces, setLocalWorkspaces] = useState<Array<{ name: string; rootPath: string }>>([])
   const [isTesting, setIsTesting] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [busyConnectionId, setBusyConnectionId] = useState<string>()
@@ -66,6 +72,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
   const [formOpen, setFormOpen] = useState(false)
   const [editingId, setEditingId] = useState<string>()
   const [statuses, setStatuses] = useState<Record<string, TransportConnectionStatus | 'unknown'>>({})
+  /** What each saved server's credential may do, as the hub reported it on the link's handshake. */
+  const [scopes, setScopes] = useState<Record<string, 'client' | 'device' | 'both' | null>>({})
 
   const load = useCallback(() => {
     void window.electronAPI.getClientMode()
@@ -82,10 +90,14 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setServerUrl('')
     setToken('')
     setHostName('')
-    setDeviceAccess(false)
+    setDeviceUseEnabled(true)
+    setAllowedRoots([])
     setEditingId(undefined)
     setFormOpen(false)
     load()
+    void window.electronAPI.getLocalWorkspaces()
+      .then((list) => setLocalWorkspaces(list.map((workspace) => ({ name: workspace.name, rootPath: workspace.rootPath }))))
+      .catch(() => setLocalWorkspaces([]))
   }, [open, load])
 
   // Saved and reachable are different things; the dots say which is which. Polled only while the
@@ -98,6 +110,7 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
         .then((list) => {
           if (cancelled) return
           setStatuses(Object.fromEntries(list.map((entry) => [entry.id, entry.status])))
+          setScopes(Object.fromEntries(list.map((entry) => [entry.id, entry.scope ?? null])))
         })
         .catch(() => {})
     }
@@ -180,6 +193,18 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     }
   }
 
+  /** Add a folder on **this** machine. The server never chooses one — it has no local meaning. */
+  const addAllowedRoot = async () => {
+    setError(undefined)
+    try {
+      const path = await window.electronAPI.openLocalFolderDialog()
+      if (!path) return
+      setAllowedRoots((current) => current.includes(path) ? current : [...current, path])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   const handleAddAndConnect = async () => {
     const validationError = validate(true) ?? duplicateUrlError
     if (validationError) {
@@ -194,7 +219,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
         name: hostName.trim(),
         url: serverUrl.trim(),
         token: token.trim(),
-        deviceAccess,
+        allowedRoots,
+        deviceUseEnabled,
       })
       await window.electronAPI.connectToRemoteConnection(saved.id, saved.lastWorkspaceId)
       onOpenChange(false)
@@ -210,7 +236,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setEditingId(connection.id)
     setServerUrl(connection.url)
     setHostName(connection.name)
-    setDeviceAccess(connection.deviceAccess === true)
+    setDeviceUseEnabled(connection.deviceUseEnabled !== false)
+    setAllowedRoots(connection.allowedRoots ?? [])
     // Never echo the saved token into the form; blank means "keep it".
     setToken('')
     setError(undefined)
@@ -224,7 +251,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setServerUrl('')
     setHostName('')
     setToken('')
-    setDeviceAccess(false)
+    setDeviceUseEnabled(true)
+    setAllowedRoots([])
     setError(undefined)
     setTestResult(null)
     setFormOpen(true)
@@ -236,7 +264,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setServerUrl('')
     setHostName('')
     setToken('')
-    setDeviceAccess(false)
+    setDeviceUseEnabled(true)
+    setAllowedRoots([])
     setError(undefined)
     setTestResult(null)
     setFormOpen(false)
@@ -261,7 +290,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
         name: hostName.trim(),
         url: serverUrl.trim(),
         token: token.trim() || editingConnection?.token || '',
-        deviceAccess,
+        allowedRoots,
+        deviceUseEnabled,
       })
       closeForm()
       load()
@@ -362,22 +392,77 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
               <span className="block text-xs text-muted-foreground">{t('settings.client.tokenDesc')}</span>
             </div>
 
-            {/* Deliberately separate from the connection fields above: this grants capabilities to
-                the server, it does not connect or authorize viewing its workspaces. */}
+            {/* Device use is its own switch: a window on that server never needs this machine's
+                capabilities. Turning it off keeps the saved connection and the folders below, so
+                it can be turned back on later — the hub shows the device as not authorized. */}
+            <label className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-lg border px-3 py-2.5">
+              <span className="min-w-0 text-[13px] font-medium">
+                {t('settings.client.deviceUseEnabled')}
+              </span>
+              <Switch checked={deviceUseEnabled} onCheckedChange={setDeviceUseEnabled} />
+            </label>
+
+            {/* Where the tools may work. Kept editable while device use is off: the list is saved
+                either way and applies again when authorization is turned back on. */}
             <div className="space-y-2 rounded-lg border px-3 py-2.5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[13px] font-medium">{t('settings.client.deviceAccess')}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {t('settings.client.deviceAccessDesc')}
-                  </p>
-                </div>
-                <Switch
-                  checked={deviceAccess}
-                  onCheckedChange={setDeviceAccess}
-                  aria-label={t('settings.client.deviceAccess')}
-                />
+              <div className="flex items-center justify-between gap-3">
+                <p className="min-w-0 truncate text-[13px] font-medium">
+                  {t('settings.client.deviceAllowedRoots')}
+                </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 shrink-0 gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => { void addAllowedRoot() }}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {t('settings.client.deviceAllowedRootsAdd')}
+                </Button>
               </div>
+              {allowedRoots.length === 0 ? (
+                <p className="text-center text-xs text-muted-foreground">{t('settings.client.deviceAllowedRootsEmpty')}</p>
+              ) : (
+                <ul className="space-y-1">
+                  {allowedRoots.map((root) => (
+                    <li key={root} className="flex items-center gap-2 rounded-md border px-2 py-1">
+                      <span className="min-w-0 flex-1 truncate text-xs" title={root}>{root}</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 shrink-0 p-0"
+                        title={t('common.remove')}
+                        onClick={() => setAllowedRoots((current) => current.filter((entry) => entry !== root))}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {localWorkspaces.some((workspace) => !allowedRoots.includes(workspace.rootPath)) && (
+                <div className="space-y-1">
+                  <p className="text-[11px] text-muted-foreground">
+                    {t('settings.client.deviceAllowedRootsWorkspaces')}
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {localWorkspaces
+                      .filter((workspace) => !allowedRoots.includes(workspace.rootPath))
+                      .map((workspace) => (
+                        <Button
+                          key={workspace.rootPath}
+                          variant="outline"
+                          size="sm"
+                          className="h-6 max-w-full px-2 text-[11px]"
+                          title={workspace.rootPath}
+                          onClick={() => setAllowedRoots((current) => [...current, workspace.rootPath])}
+                        >
+                          <Plus className="mr-1 h-3 w-3 shrink-0" />
+                          <span className="truncate">{workspace.name}</span>
+                        </Button>
+                      ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {isInsecureUrl && (
@@ -387,19 +472,6 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
               </p>
             )}
 
-            {testResult?.ok && (
-              <p className="text-xs text-success">
-                {t('settings.client.testOk')}
-                {testResult.workspaces && testResult.workspaces.length > 0
-                  ? ` · ${testResult.workspaces.map((w) => w.name).join(', ')}`
-                  : ''}
-              </p>
-            )}
-            {testResult && !testResult.ok && (
-              <p className="text-xs text-destructive">
-                {t('settings.client.testFail', { message: testResult.error ?? 'unknown error' })}
-              </p>
-            )}
             {error && <p className="text-xs text-destructive">{error}</p>}
           </div>
         ) : (
@@ -413,6 +485,9 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
                 {connections.map((connection) => {
                   const isBusy = busyConnectionId === connection.id
                   const status = liveStatus(connection.id)
+                  // A device-only credential lends this machine to the hub; it may not open a window
+                  // there, so don't offer an Open that the hub is going to refuse.
+                  const windowDenied = scopes[connection.id] === 'device'
                   return (
                     <div
                       key={connection.id}
@@ -425,16 +500,11 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[13px]">{connection.name}</div>
                         <div className="truncate text-xs text-muted-foreground">{connection.url}</div>
-                        <div
-                          className={cn(
-                            'truncate text-[11px]',
-                            connection.deviceAccess ? 'text-success' : 'text-muted-foreground',
-                          )}
-                        >
-                          {connection.deviceAccess
-                            ? t('settings.client.deviceAccessAllowed')
-                            : t('settings.client.deviceAccessNotAllowed')}
-                        </div>
+                        {windowDenied && (
+                          <div className="truncate text-[11px] text-muted-foreground">
+                            {t('settings.client.remoteControlOff')}
+                          </div>
+                        )}
                       </div>
                       <Button
                         variant="ghost"
@@ -459,7 +529,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
                         variant="outline"
                         size="sm"
                         className="h-7 px-2 shrink-0"
-                        disabled={isBusy}
+                        disabled={isBusy || windowDenied}
+                        title={windowDenied ? t('settings.client.remoteControlOff') : undefined}
                         onClick={() => { void handleOpen(connection) }}
                       >
                         {isBusy ? <Spinner className="mr-1" /> : null}
@@ -477,6 +548,21 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
         <DialogFooter className="gap-2">
           {formOpen ? (
             <>
+              {/* The test result shares the button row: no extra line, and it stays next to the
+                  action that produced it. */}
+              {testResult && (
+                <span
+                  className={cn(
+                    'mr-auto min-w-0 self-center truncate text-xs',
+                    testResult.ok ? 'text-success' : 'text-destructive',
+                  )}
+                  title={testResult.ok ? undefined : (testResult.error ?? 'unknown error')}
+                >
+                  {testResult.ok
+                    ? t('settings.client.testOk')
+                    : t('settings.client.testFail', { message: testResult.error ?? 'unknown error' })}
+                </span>
+              )}
               <Button variant="outline" size="sm" onClick={handleTest} disabled={isTesting || isConnecting}>
                 {isTesting ? <Spinner className="mr-1.5" /> : null}
                 {t('settings.client.testConnection')}

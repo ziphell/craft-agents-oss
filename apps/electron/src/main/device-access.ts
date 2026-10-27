@@ -1,9 +1,10 @@
 /**
  * Device access — shell and file operations this machine offers to a hub.
  *
- * The hub names a device and a path; this side decides whether that path is its
- * business. A call is rooted in the directory this install keeps for that hub's workspace
- * (`<hub root base>/<hub device id>/<workspace id>`), and nothing outside it is reachable.
+ * The hub names a device and a path; this side decides whether that path is its business. A call
+ * is rooted in the directory this install keeps for that hub's workspace
+ * (`<hub root base>/<hub device id>/<workspace id>`) and in the folders the person added to that
+ * saved server — and nothing outside those is reachable.
  *
  * Advertised as `client:device:exec` / `client:device:fs` on the app-level links to saved
  * servers (`hub-connection.ts`); windows no longer answer these.
@@ -26,15 +27,19 @@ const MAX_SEARCH_FILES = 5000
 const MAX_SEARCH_RESULTS = 1000
 
 /**
- * The directory a request may touch.
+ * The directories a request may touch.
  *
- * A call from a hub always names that hub and its workspace, and works in the directory this
- * install keeps for that pair — created on first use, so a hub's workspace has a place here even
- * when this machine has no local workspace for it. A request without that context is refused
- * rather than answered with this machine's own workspaces: a hub must never reach files that
- * belong to this install, and its own workspace (when it has one) is already scoped by the pair.
+ * Two sources:
+ * - the directory this install keeps for that (hub, workspace) pair — created on first use. It is
+ *   the tool's own scratch space, not a mapping to any hub workspace;
+ * - folders the person added to that saved server (`allowedRoots`).
+ *
+ * A local workspace is **not** authorized by being a workspace: the dialog merely offers it as a
+ * one-click path. Authorization is the saved list on the connection, and nothing else is reachable.
+ * A request without the hub context is refused rather than answered with this machine's own
+ * workspaces: a hub must never reach files that belong to this install by naming nothing.
  */
-function rootsForRequest(req: DeviceHubContext): string[] {
+function rootsForRequest(req: DeviceHubContext, allowedRoots: readonly string[]): string[] {
   const hubDeviceId = req.hubDeviceId?.trim()
   const workspaceId = req.workspaceId?.trim()
   if (!hubDeviceId || !workspaceId) {
@@ -46,7 +51,24 @@ function rootsForRequest(req: DeviceHubContext): string[] {
   } catch (error) {
     throw new Error(`Could not create this device's workspace directory: ${error instanceof Error ? error.message : String(error)}`)
   }
-  return [root]
+
+  return uniqueRoots([root, ...allowedRoots])
+}
+
+/** Resolve, drop blanks/relatives, and dedupe (case-insensitively on Windows) without reordering. */
+function uniqueRoots(candidates: string[]): string[] {
+  const roots: string[] = []
+  const seen = new Set<string>()
+  for (const candidate of candidates) {
+    const value = candidate.trim()
+    if (!value || !isAbsolute(value)) continue
+    const absolute = resolve(value)
+    const key = process.platform === 'win32' ? absolute.toLowerCase() : absolute
+    if (seen.has(key)) continue
+    seen.add(key)
+    roots.push(absolute)
+  }
+  return roots
 }
 
 function samePath(a: string, b: string): boolean {
@@ -76,9 +98,9 @@ function capOutput(value: string, remaining: number): { text: string; truncated:
   return { text: Buffer.from(value, 'utf8').subarray(0, Math.max(0, remaining)).toString('utf8'), truncated: true }
 }
 
-export async function runExec(req: DeviceExecRequest): Promise<DeviceExecResponse> {
+export async function runExec(req: DeviceExecRequest, allowedRoots: readonly string[]): Promise<DeviceExecResponse> {
   if (!req.command?.trim()) throw new Error('A command is required')
-  const roots = rootsForRequest(req)
+  const roots = rootsForRequest(req, allowedRoots)
   if (roots.length === 0) {
     throw new Error('This device has no workspace directories available for remote access.')
   }
@@ -185,8 +207,8 @@ async function walkFiles(root: string, visit: (file: string) => Promise<boolean>
   }
 }
 
-export async function runFs(req: DeviceFsRequest): Promise<DeviceFsResponse> {
-  const roots = rootsForRequest(req)
+export async function runFs(req: DeviceFsRequest, allowedRoots: readonly string[]): Promise<DeviceFsResponse> {
+  const roots = rootsForRequest(req, allowedRoots)
   const absolute = req.path ? resolveAllowedPath(req.path, roots) : undefined
 
   switch (req.op) {
@@ -311,20 +333,22 @@ export async function runFs(req: DeviceFsRequest): Promise<DeviceFsResponse> {
  *
  * `connectionId` is the saved server this link belongs to. Browser windows are filed under it, so
  * two servers that happen to use the same workspace id never share one (`browserWorkspaceKey`).
- * Shell and file access are namespaced by the hub id and workspace id carried in each request.
+ * `allowedRoots` is that saved server's folder list, captured when the link was built: the link is
+ * rebuilt whenever the list changes, so a request never re-reads the config.
  */
 export function attachDeviceCapabilities(
   client: WsRpcClient,
   browserPaneManager: () => { dispatchCapability(req: BrowserCapabilityRequest, connectionId?: string | null): Promise<unknown> } | null,
   connectionId: string,
+  allowedRoots: readonly string[],
 ): void {
   client.handleCapability(CLIENT_DEVICE_EXEC, async (req: DeviceExecRequest): Promise<DeviceExecResponse> => {
     if (!req || req.v !== 1) throw new Error('Unsupported device exec request')
-    return await runExec(req)
+    return await runExec(req, allowedRoots)
   })
   client.handleCapability(CLIENT_DEVICE_FS, async (req: DeviceFsRequest): Promise<DeviceFsResponse> => {
     if (!req || req.v !== 1) throw new Error('Unsupported device fs request')
-    return await runFs(req)
+    return await runFs(req, allowedRoots)
   })
   client.handleCapability(CLIENT_BROWSER_INVOKE, async (req: BrowserCapabilityRequest): Promise<unknown> => {
     const manager = browserPaneManager()

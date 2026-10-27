@@ -11,14 +11,18 @@ import type { DeviceExecArgs, DeviceExecResult, DeviceFsArgs, DeviceFsResult } f
 /**
  * Where a call works on the receiving machine.
  *
- * Both fields together say "run this inside the directory this device keeps for that hub's
- * workspace" (`<hub root base>/<hub device id>/<workspace id>`). The hub always sends them, and a
- * request without them is refused — a device link never falls back to the device's own workspaces.
+ * `hubDeviceId` names the hub, and `workspaceId` is **that hub's** workspace id (the session's,
+ * not the connection's). The device uses the pair only to keep one default working directory per
+ * (hub, workspace) apart, so two workspaces never share a scratch directory. It is not path
+ * authorization: a request may only touch the folders that connection saved on the device.
+ *
+ * The hub always sends both, and a request without them is refused — a device link never falls
+ * back to the device's own workspaces.
  */
 export interface DeviceHubContext {
   /** Stable device id of the hub that is asking. */
   hubDeviceId?: string
-  /** The workspace the call works in — the session's workspace, not the connection's. */
+  /** This hub's workspace — an isolation key for the default directory, never an authorization. */
   workspaceId?: string
 }
 

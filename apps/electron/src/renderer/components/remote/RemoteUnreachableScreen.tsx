@@ -68,6 +68,9 @@ export function RemoteUnreachableScreen({
   const retrying =
     connectionState?.status === 'connecting' || connectionState?.status === 'reconnecting'
   const host = target?.name || target?.url || ''
+  // The hub answered and refused: the credential is valid but may not open windows here. That is
+  // not an unreachable server, so the screen says which right is missing instead.
+  const remoteControlDenied = connectionState?.lastError?.kind === 'scope'
   const detail = connectionState
     ? getFailureReason(connectionState)
     : t('transport.waitingForConnection')
@@ -83,14 +86,20 @@ export function RemoteUnreachableScreen({
         </div>
 
         <AddWorkspaceStepHeader
-          title={t('remote.unreachable.title')}
-          description={host ? t('remote.unreachable.description', { name: host }) : undefined}
+          title={remoteControlDenied
+            ? t('remote.unreachable.remoteControlDeniedTitle')
+            : t('remote.unreachable.title')}
+          description={remoteControlDenied
+            ? t('remote.unreachable.remoteControlDeniedDesc')
+            : host ? t('remote.unreachable.description', { name: host }) : undefined}
           className="mt-4"
         />
 
-        <p className="mt-3 w-full break-words text-center text-xs text-muted-foreground">
-          {detail}
-        </p>
+        {!remoteControlDenied && (
+          <p className="mt-3 w-full break-words text-center text-xs text-muted-foreground">
+            {detail}
+          </p>
+        )}
 
         <AddWorkspacePrimaryButton
           onClick={onRetry}

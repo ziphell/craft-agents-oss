@@ -541,7 +541,7 @@ describe('auth', () => {
       host: '127.0.0.1',
       port: 0,
       requireAuth: true,
-      validateToken: async (t) => t === 'valid-token',
+      validateToken: async (t) => (t === 'valid-token' ? { tokenId: 'test-token', scope: 'both' } : null),
     }))
     await server.listen()
 
@@ -560,7 +560,7 @@ describe('auth', () => {
       host: '127.0.0.1',
       port: 0,
       requireAuth: true,
-      validateToken: async (t) => t === 'valid-token',
+      validateToken: async (t) => (t === 'valid-token' ? { tokenId: 'test-token', scope: 'both' } : null),
     }))
     await server.listen()
 
@@ -579,7 +579,7 @@ describe('auth', () => {
       host: '127.0.0.1',
       port: 0,
       requireAuth: true,
-      validateToken: async (t) => t === 'valid-token',
+      validateToken: async (t) => (t === 'valid-token' ? { tokenId: 'test-token', scope: 'both' } : null),
     }))
     await server.listen()
 
@@ -613,7 +613,7 @@ describe('connection state', () => {
       host: '127.0.0.1',
       port: 0,
       requireAuth: true,
-      validateToken: async (t) => t === 'valid-token',
+      validateToken: async (t) => (t === 'valid-token' ? { tokenId: 'test-token', scope: 'both' } : null),
     }))
     await server.listen()
 
@@ -645,7 +645,7 @@ describe('connection state', () => {
       host: '127.0.0.1',
       port: 0,
       requireAuth: true,
-      validateToken: async (t) => t === 'valid-token',
+      validateToken: async (t) => (t === 'valid-token' ? { tokenId: 'test-token', scope: 'both' } : null),
     }))
     await server.listen()
 

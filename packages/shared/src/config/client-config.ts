@@ -18,10 +18,19 @@ export interface RemoteConnection {
   /** The workspace this app last opened on that server, offered next time. */
   lastWorkspaceId?: string
   /**
-   * Allow this server's agent to use this machine's capabilities — shell, files and browser —
-   * through the app-level device link. Connecting a window does not need it; the default is off.
+   * Whether this machine lets that server use it as a device (shell, files, browser).
+   *
+   * On by default. Turning it off keeps the saved connection — remote control (windows) still
+   * works — and the folders above stay saved, so authorization can be turned back on later. The
+   * app-level link then declares no device tools, and the hub shows the device as not authorized.
    */
-  deviceAccess?: boolean
+  deviceUseEnabled?: boolean
+  /**
+   * Extra folders this server's agent may reach on this machine, beyond the per-hub working
+   * directory used for calls without `cwd`. Empty means no additional folders. The list is kept
+   * while `deviceUseEnabled` is off, so turning authorization back on restores it.
+   */
+  allowedRoots?: string[]
 }
 
 export interface ClientConfig {

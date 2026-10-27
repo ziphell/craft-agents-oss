@@ -21,6 +21,8 @@ export interface RemoteWorkspaceGroup {
   workspaces: WorkspaceInfo[]
   /** The server could not be asked (offline, or its link is not up yet). */
   unavailable: boolean
+  /** The link is up but its credential is device-only: it may serve this machine, not drive the hub. */
+  denied: boolean
 }
 
 export interface RemoteWorkspaceGroups {
@@ -51,14 +53,16 @@ export function useRemoteWorkspaceGroups(active: boolean): RemoteWorkspaceGroups
             connection: null,
             workspaces: await window.electronAPI.getLocalWorkspaces().catch(() => [] as WorkspaceInfo[]),
             unavailable: false,
+            denied: false,
           }]
         : []
       const loaded = await Promise.all(connections.map(async (connection): Promise<RemoteWorkspaceGroup> => {
         try {
-          return { connection, workspaces: await window.electronAPI.listRemoteWorkspaces(connection.id), unavailable: false }
+          const { workspaces, denied } = await window.electronAPI.listRemoteWorkspaces(connection.id)
+          return { connection, workspaces, unavailable: false, denied }
         } catch {
           // One unreachable server must not hide the others.
-          return { connection, workspaces: [], unavailable: true }
+          return { connection, workspaces: [], unavailable: true, denied: false }
         }
       }))
       setGroups([...localGroup, ...loaded])

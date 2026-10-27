@@ -24,6 +24,13 @@ export interface ServerConfig {
   /** Stable auth token for remote clients (auto-generated on first enable) */
   token?: string
   /**
+   * Web UI login password (auto-generated when Server Mode is first enabled).
+   *
+   * The Web UI follows Server Mode. Sessions are signed with a key derived from this password and
+   * `token`, so there is no third secret to store — and changing either one signs browsers out.
+   */
+  webuiPassword?: string
+  /**
    * Public WebSocket URL the WebUI should connect to. Needed when browsers reach
    * the server through a reverse proxy or a port mapping whose external port
    * differs from `port` (e.g. `wss://agents.example.com/craft`). When unset, the
@@ -43,8 +50,6 @@ export interface ServerStatus {
   tls: boolean
   /** Full connection URL (ws:// or wss://) */
   url: string
-  /** Current auth token */
-  token: string
   /** Whether saved config differs from running config (restart needed) */
   needsRestart: boolean
   /** True when server is bound to a network address without TLS */

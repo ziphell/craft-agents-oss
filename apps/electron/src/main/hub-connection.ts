@@ -3,27 +3,23 @@
  *
  * One link per saved server. It exists for two independent reasons: it is how this machine makes
  * requests on its own behalf (workspace creation, directory browsing), and it is how a hub reaches
- * this machine as a device. The second reason is opt-in: `deviceAccess` must be true on the saved
- * connection, otherwise the link carries no device capabilities at all. Connecting a window to a
- * hub never grants it shell/files/browser access by itself.
+ * this machine as a device.
+ *
+ * Connecting is offering: every link advertises this machine's tools. The folder list only bounds
+ * where those tools may work — an empty list means the per-hub working directory the device keeps
+ * for calls without `cwd` — and whether the hub actually uses them is decided there. Which
+ * direction a pairing is for is the invite's business (the token's scope).
  *
  * A link exists exactly while its server is in the saved list, and reconnects on its own.
  */
 
-import {
-  CLIENT_BROWSER_INVOKE,
-  CLIENT_DEVICE_EXEC,
-  CLIENT_DEVICE_FS,
-} from '@craft-agent/server-core/transport'
+import { DEVICE_CAPABILITIES } from '@craft-agent/server-core/transport'
 import type { RemoteConnection } from '@craft-agent/shared/config/client-config'
 import type { TransportConnectionStatus } from '../shared/types'
 import { WsRpcClient } from '../transport/client'
 import { attachDeviceCapabilities } from './device-access'
 import type { BrowserPaneManager } from './browser-pane-manager'
 import { mainLog } from './logger'
-
-/** The capabilities this connection advertises — exactly the three it can answer. */
-const DEVICE_CAPABILITIES = [CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS, CLIENT_BROWSER_INVOKE] as const
 
 /** This install's identity, as the hub sees it (the handshake's `clientInfo`). */
 export interface HubClientIdentity {
@@ -32,7 +28,8 @@ export interface HubClientIdentity {
   platform: string
   /** App version, shown beside this device on the hub; never used to gate compatibility. */
   version?: string
-  workspaceRoots: string[]
+  /** Base identity sends none; each device link replaces this with its connection's authorized folders. */
+  allowedRoots: string[]
   hubRootBase?: string
 }
 
@@ -47,7 +44,19 @@ interface Link {
   client: WsRpcClient
   url: string
   token: string
-  deviceAccess: boolean
+  allowedRoots: string[]
+  /** Whether this link offers the machine at all (`deviceUseEnabled`, default on). */
+  deviceUseEnabled: boolean
+}
+
+/** Same folders, in the same order — used to decide whether a saved edit needs a new handshake. */
+function sameRoots(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((root, index) => root === b[index])
+}
+
+/** Folders are irrelevant while the machine is not offered, so compare the effective value. */
+function offersDevice(connection: RemoteConnection): boolean {
+  return connection.deviceUseEnabled !== false
 }
 
 /** One live link per saved connection id. */
@@ -76,7 +85,8 @@ export function syncHubConnections(
       next
       && next.url === link.url
       && next.token === link.token
-      && (next.deviceAccess === true) === link.deviceAccess
+      && offersDevice(next) === link.deviceUseEnabled
+      && sameRoots(next.allowedRoots ?? [], link.allowedRoots)
     ) continue
     stopLink(link)
     links.delete(id)
@@ -85,26 +95,33 @@ export function syncHubConnections(
   for (const [id, connection] of wanted) {
     if (links.has(id)) continue
 
-    // Capabilities are fixed at handshake. A link that is not allowed to use this machine still
-    // connects — workspace creation and other control-plane requests ride it — but advertises
-    // nothing, so the hub cannot list this machine as a drivable device.
-    const deviceAccess = connection.deviceAccess === true
+    // Capabilities are fixed at handshake. The person can turn this machine's use off without
+    // dropping the connection: the link stays up (remote control, workspace browsing) but declares
+    // no device tools, and the hub shows the device as not authorized. The folder list is still
+    // kept — it says where the tools may work once authorization is back on.
+    const allowedRoots = connection.allowedRoots ?? []
+    const deviceUseEnabled = offersDevice(connection)
+    const identity = connectionDeps.identity()
+    // Never this install's whole workspace list: only the folders saved on this connection.
+    // `role` is declared, not inferred: this link is this machine lending itself, whether or not
+    // the person has turned device use off.
+    const clientInfo = { ...identity, allowedRoots, role: 'device' as const }
     const client = new WsRpcClient(connection.url, {
       token: connection.token,
       autoReconnect: true,
       mode: 'remote',
-      clientCapabilities: deviceAccess ? [...DEVICE_CAPABILITIES] : [],
-      clientInfo: connectionDeps.identity(),
+      clientCapabilities: deviceUseEnabled ? [...DEVICE_CAPABILITIES] : [],
+      clientInfo,
       // The person typed this URL, so a hub with a self-signed certificate is accepted — the same
       // policy a window's hub connection uses.
       tlsRejectUnauthorized: false,
     })
-    if (deviceAccess) {
-      attachDeviceCapabilities(client, connectionDeps.browserPaneManager, connection.id)
+    if (deviceUseEnabled) {
+      attachDeviceCapabilities(client, connectionDeps.browserPaneManager, connection.id, allowedRoots)
     }
     client.connect()
-    links.set(id, { client, url: connection.url, token: connection.token, deviceAccess })
-    mainLog.info(`[hub] link opened to ${connection.url} (${connection.name}, device access: ${deviceAccess})`)
+    links.set(id, { client, url: connection.url, token: connection.token, allowedRoots, deviceUseEnabled })
+    mainLog.info(`[hub] link opened to ${connection.url} (${connection.name}, ${deviceUseEnabled ? `${allowedRoots.length} extra folders` : 'device use off'})`)
   }
 }
 

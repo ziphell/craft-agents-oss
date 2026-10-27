@@ -6,6 +6,7 @@ import {
   type SettingsMenuItem,
 } from '../../../shared/menu-schema'
 import { isNativeShell } from '@/lib/native-shell'
+import { isWebUI } from '@/lib/platform'
 
 /** Identifies one of the mobile menu pages. */
 export type MobileMenuPageId = 'root' | 'settings' | 'help' | 'debug'
@@ -18,7 +19,7 @@ export type MobileMenuPageId = 'root' | 'settings' | 'help' | 'debug'
  */
 export type MobileMenuAction =
   | { kind: 'navigate'; to: MobileMenuPageId }
-  | { kind: 'callback'; key: 'newChat' | 'newWindow' | 'openSettings' | 'serverList' }
+  | { kind: 'callback'; key: 'newChat' | 'newWindow' | 'openSettings' | 'serverList' | 'logout' }
   | { kind: 'settingsSubpage'; subpage: SettingsMenuItem['id'] }
   | { kind: 'url'; url: string }
   | { kind: 'electronApi'; method: 'checkForUpdates' | 'installUpdate' | 'menuToggleDevTools' }
@@ -103,6 +104,15 @@ export function buildMobileMenuPages({ hasNewWindow, isDebugMode }: BuildOptions
       iconName: 'LogOut',
       labelKey: 'menu.serverList',
       action: { kind: 'callback', key: 'serverList' },
+    })
+  }
+  // 浏览器版 WebUI 没有可退出的 App，最后一项改为退出登录。
+  if (isWebUI && !isNativeShell) {
+    rootRows.push({
+      id: 'log-out',
+      iconName: 'LogOut',
+      labelKey: 'webui.logOut',
+      action: { kind: 'callback', key: 'logout' },
     })
   }
 

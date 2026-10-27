@@ -322,9 +322,11 @@ export function WorkspaceSwitcher({
                         <StyledDropdownMenuItem disabled className="font-sans text-muted-foreground">
                           {isLocal
                             ? t('workspace.noLocalWorkspaces')
-                            : group.unavailable
-                              ? t('workspace.remoteUnavailable')
-                              : t('workspace.noRemoteWorkspaces')}
+                            : group.denied
+                              ? t('workspace.remoteControlDenied')
+                              : group.unavailable
+                                ? t('workspace.remoteUnavailable')
+                                : t('workspace.noRemoteWorkspaces')}
                         </StyledDropdownMenuItem>
                       )}
                     </StyledDropdownMenuSubContent>

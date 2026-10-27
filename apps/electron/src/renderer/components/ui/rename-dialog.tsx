@@ -19,6 +19,8 @@ interface RenameDialogProps {
   onValueChange: (value: string) => void
   onSubmit: () => void
   placeholder?: string
+  /** Allow an empty value — used where blank means "clear it" rather than "no name". */
+  allowEmpty?: boolean
 }
 
 export function RenameDialog({
@@ -29,6 +31,7 @@ export function RenameDialog({
   onValueChange,
   onSubmit,
   placeholder,
+  allowEmpty = false,
 }: RenameDialogProps) {
   const { t } = useTranslation()
   const effectivePlaceholder = placeholder ?? t("common.enterName")
@@ -48,7 +51,7 @@ export function RenameDialog({
   }, [open])
 
   const handleSubmit = () => {
-    if (value.trim()) {
+    if (value.trim() || allowEmpty) {
       onSubmit()
     }
   }
@@ -76,7 +79,7 @@ export function RenameDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t("common.cancel")}
           </Button>
-          <Button onClick={handleSubmit} disabled={!value.trim()}>
+          <Button onClick={handleSubmit} disabled={!value.trim() && !allowEmpty}>
             {t("common.save")}
           </Button>
         </DialogFooter>

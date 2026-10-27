@@ -46,7 +46,7 @@ interface RemoteConnection {
   id: string            // 稳定标识，改名/换 token 不变
   name: string          // 徽标、工作区菜单、窗口标题里显示的名字
   url: string           // ws:// 或 wss://
-  token: string         // 握手 token
+  token: string         // 握手 token（hub 为该设备建的坑位 token，或主 token）
   lastWorkspaceId?: string  // 下次打开这台服务器时的默认工作区
 }
 ```
@@ -160,7 +160,7 @@ interface RemoteConnection {
 | 浏览器窗口 | **hub（工作区所在服务器）** | 与 shell 同一条规则：本地窗口开本机浏览器，远程窗口开 hub 上的浏览器；客户端只画帧、送回输入（`RemoteBrowserPanel`，见 [browser-view-streaming.md](browser-view-streaming.md)）。hub 没有浏览器（headless / WebUI-only）时不注册 `browser_pane` 相关通道与 `browser_tool`，跨机器浏览器只能由 `device_tool` 点名 |
 | 链接与预览 | 动作在服务器，渲染在客户端 | 应用内浏览器的链接/文件开在工作区服务器，`openUrl`/`openFile` 返回 `{instanceId, tabId}`，客户端据此打开观看面板；只有显式“在系统浏览器打开”（设置关闭，或用户选择）才回本机。Markdown/HTML/PDF 预览在客户端渲染、内容走 RPC；HTML 预览里 React 看不到的链接由主进程截获后交给渲染端走同一条 openUrl 路径 |
 | drawio 编辑器 | **客户端资源** | 桌面窗口（含远程窗口）用本机 app 的 `craft-local://`（`drawio:getOrigin` 是 LOCAL_ONLY）；webui 由 hub 在 `/drawio/` 同源提供，走会话 cookie 鉴权，图表数据仍通过 postMessage |
-| 设备工作目录 | 客户端 | hub 把本机当设备时，只服务 `<config>/.hub/<hub device id>/<workspace id>`，不暴露任意本地路径 |
+| 设备工作目录 | 客户端 | hub 把本机当设备时，只可访问该连接**显式授权的目录**；本机工作区只是目录选择器里的快捷入口，必须加入授权列表才可访问。未指定 `cwd` 时在 `(hub, workspace)` 的 `.hub` 工作目录里启动，它是默认位置而不是额外授权。hub 不能指定本机路径 |
 
 附件有两种来源，形状一致（`FileAttachment`）：
 
@@ -184,10 +184,19 @@ interface RemoteConnection {
 
 ## 8. 信任与安全
 
-- token 存在本机 config、随握手发送；**保存一台服务器 = 允许它把本机当设备**（exec / 文件 / 浏览器）。删除即撤销；界面上的「在线状态点」读的就是这条链路的真实状态。
+- **凭据各司其职**：
+  - 主 token（`serverConfig.token` / `CRAFT_SERVER_TOKEN`）：scope `both`，本机窗口、远端窗口、设备链路都用它（`__get-ws-token` 直接返回它）。它稳定存在，不会因为开关 Server Mode 或改口令而重新生成，也不在界面上展示、不轮换；只有配置里还没有它时才会补一个。设置页保存时省略它即表示沿用已存值，`settings:getServerConfig` / `settings:getServerStatus` 也不再把它返回给窗口（包括远程窗口）。Server Mode 关闭时每次启动生成一个临时值，只给本机窗口，不持久化。
+  - Web UI：随 Server Mode 固定开启。登录接受 Web UI 口令或主 token（两者同权）。会话 cookie 的签名 key 由**主 token + `webuiPassword` 一起派生**（`HMAC(serverToken, "webui-session\0" + webuiPassword)`），所以任一变化都会让已登录的浏览器失效；没有第三个需要保存的 secret（headless 用 `CRAFT_WEBUI_PASSWORD`）。与端口 / TLS 一样，改口令需要重启后生效。
+  - 设备 token：一个设备一份。在 **Settings → Server → Add device** 里创建的是**待绑定坑位**（`deviceId: null`），待连接期间明文随记录保存在 `device-tokens.json`（0600），设备列表里可以随时复制；被第一台设备认领后明文即清除，只留 hash。第一次用它的握手会把它绑定到握手携带的 `deviceId`，此后只接受同一台设备，**不过期、不能转移**；换设备等于删掉坑位再建一个。**Test Connection 不会认领**：它用 `clientInfo.probe` 发起一次握手，hub 只校验凭据并在 `handshake_ack` 里返回 `tokenScope`，不绑定、不登记客户端、也不允许调用任何通道；真正的认领发生在保存后的连接第一次真实握手，此时 `allowedRoots` 一并声明（有目录才宣称设备能力，没有目录就什么都不提供，hub 也不会为它建记录）。删除坑位会立即拒绝新握手并断开它的在线连接。握手之后客户端继续用原 token 重连，不会重新签发。
+- **scope 只回答一件事：这次配对能不能开窗口**。`device` 不能（它只借自己，不连进来）；`client` 和 `both` 可以。向外发 RPC 的能力仍按凭据分：`device` 方向只能应答 `client:device:*` / `client:browser:invoke`，向服务端发起 RPC 一律 `SCOPE_FORBIDDEN`。
+- **借不借不由凭据决定**：客户端这边没有“允许本机被使用”这种开关，**可访问目录列表就是全部**（空列表 = 什么都不提供）。服务端这边也没有第二个开关：有了这条配对就允许使用，设备自己的授权才是唯一的门。设备记录只为真正提供了能力的机器创建：纯窗口连接不会在设备列表里留下条目。
+- **scope 在握手上就检查，不是逐请求**：一条连接的用途写在它声明的能力里（设备链路声明 `client:device:*` / `client:browser:invoke`，窗口声明打开外链 / 对话框那几项）。凭据的 scope 不允许这条连接要做的事时，握手直接拒绝并关闭（4005 + 原因），而不是让它连上再让每个请求各自报 `SCOPE_FORBIDDEN`。判定只有一份：`scopePermits(scope, capabilities)`（`server-core/transport/capabilities.ts`），它同时也是 `SET_DEVICE_TOKEN_SCOPE` 的撤销谓词。probe 不声明能力、也不登记为客户端，因此这道门在 probe 之后才检查——Test Connection 要能告出"这个凭据现在只能当设备"。
+- **改 scope 按连接生效，不按凭据**：一份凭据干两件事（窗口驱动 hub、本机借给 hub），所以 `setDeviceTokenScope` 用 `revalidateTokenClients(tokenId, stillPermitted)` 逐条重问，只断开新 scope 不再允许的那些——关掉远端访问时设备链路一次都不断，关掉设备外借时窗口不受影响。
+- **删除是实时的**：删除设备坑位后立即拒绝新握手，`disconnectTokenClients(tokenId)` 断开该凭据的**全部**在线连接并丢弃重放缓冲——删除等于解除配对，两个方向一起走。
+- 设备 token 由用户带外交给那台机器；**保存一台服务器 = 允许它把本机当设备**（exec / 文件 / 浏览器；可访问目录在保存或编辑时单独勾选）。删除即撤销；界面上的「在线状态点」读的就是这条链路的真实状态。
 - TLS：保存的 origin 允许自签证书（`trustServerOrigin` + `tlsRejectUnauthorized: false`），等价于 SSH 的首次信任，但**没有指纹展示/固定**。
 - `allowRemoteEvaluate`（默认开）可关闭「远程 agent 在本机浏览器上执行 evaluate」。
-- 设备文件/命令请求必须带 hub + workspace 两个标识，缺一即拒绝：不存在「没有 hub 上下文就操作本机工作区」的回退。
+- 设备文件/命令请求必须带 hub + workspace 两个标识，缺一即拒绝：不存在「没有 hub 上下文就操作本机工作区」的回退。这里的 workspace 是 **hub 的工作区 id**，只用于隔离每个 (hub, workspace) 的默认 `.hub` 工作目录，不是授权依据；请求只能落在该连接显式授权的目录内，其余路径一律拒绝。
 - 敏感文件名（`.env`、密钥、`credentials.json` 等）在 hub 的读写边界内统一拦截。
 
 ---

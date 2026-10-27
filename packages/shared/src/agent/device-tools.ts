@@ -91,19 +91,21 @@ function optionalBoolean(args: Record<string, unknown>, key: string): boolean | 
 
 function formatDevices(devices: DeviceToolInfo[]): string {
   if (devices.length === 0) {
-    return 'No devices are connected. Connect another client to this hub; this machine\'s own tools need no device.';
+    return 'No devices are available. A device must be connected, allow this server on its side, and be enabled here (Settings → Server → Devices).'
   }
   const lines = [`${devices.length} device${devices.length === 1 ? '' : 's'}:`];
   for (const device of devices) {
     const allowed = (Object.keys(device.capabilities) as Array<keyof DeviceToolInfo['capabilities']>)
       .filter((key) => device.capabilities[key])
+    const label = device.alias ? `${device.alias} (${device.name})` : device.name
     lines.push(
-      `- ${device.name} (${device.id})` +
+      `- ${label} (${device.id})` +
       ` · ${device.platform ?? 'unknown platform'}` +
       (device.version ? ` · v${device.version}` : '') +
       ` · ${allowed.length > 0 ? allowed.join(', ') : 'no access'}`,
     )
-    for (const root of device.workspaceRoots) lines.push(`  root: ${root}`)
+    for (const root of device.allowedRoots) lines.push(`  root: ${root}`)
+    if (device.defaultRoot) lines.push(`  default: ${device.defaultRoot}`)
   }
   return lines.join('\n')
 }

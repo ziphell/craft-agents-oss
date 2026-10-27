@@ -285,12 +285,12 @@ export interface ISessionManager {
    * Being connected is not the same as being usable; `device_tool` uses {@link getAgentDevices}.
    */
   getConnectedDevices(): DeviceToolInfo[]
-  /** Devices the agent may use right now (connected, allowed by the device, enabled here). */
-  getAgentDevices(): DeviceToolInfo[]
+  /** Devices the agent may use right now (connected and allowed by the device). */
+  getAgentDevices(workspaceId?: string): DeviceToolInfo[]
   /** Whether `device_tool` should be advertised at all. */
   hasAvailableDevices(): boolean
-  /** Persist the hub-side switch for one device and return its updated row. */
-  setDeviceUse(deviceId: string, use: boolean): DeviceToolInfo
+  /** Set the person's own name for a device (`null` clears it) and return its updated row. */
+  setDeviceAlias(deviceId: string, alias: string | null): DeviceToolInfo
   /** Forget an offline device record. */
   forgetDevice(deviceId: string): void
 
