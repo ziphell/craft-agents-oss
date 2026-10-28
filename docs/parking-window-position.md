@@ -218,13 +218,28 @@ hasOwner          = false
 | M1 | ✅ | `getOpacity()` 读回 `0`，`opacityWorks: true` |
 | M2 | ✅ | rAF **24–25 / 400ms**；`capturePage` **1800×1280 / 411677 B** |
 | M3 | ✅ | 盖一扇 `screen-saver` 层级、铺满 `workArea` 的不透明窗：`visibility` 仍 `visible`，rAF 24–25，截图**逐字节相同** |
-| M4 | ⬜ 未测 | 需要真的切 Space |
-| M5 | ⬜ 未测 | 需要肉眼；注意**产品目前没有调 `setHiddenInMissionControl`**，只有 demo 调了 |
+| M4 | ✅ | 切到另一个 Space 停 5 秒再切回：47 秒里每 5.25 秒 **≈316 帧**（≈60fps）连续增长，`vis` 始终 `visible`，**零次 stall** |
+| M5 | ✅ | 肉眼：`Ctrl+↑` 的 Mission Control 里**没有**那块紫色矩形（`setHiddenInMissionControl(true)` 生效） |
 | M6 | ✅ | 真实人手点击，`top(down/up) = 0/0`、`bottom = 3/3`：点击**真的穿过去了**。做法与两条前提见下 |
 | M7 | ✅ | `isFocused: false`，`BrowserWindow.getFocusedWindow()` 为 `null` |
 | M8 | ✅ | `screenX/Y = 120/105`（DIP，= 窗口位置）、`inner = outer = 900×640`、`avail = 1440×802`、`dpr = 2` |
-| M9 | ⬜ 未核对 | `skipTaskbar: true` 已设，Dock 里没看到图标（未逐项核对） |
+| M9 | ➖ 不适用 | macOS 的 Dock 项是**按应用**的，不按窗口；真正的对应面是 Window 菜单（`excludedFromShownWindowsMenu`）与 Mission Control（M5） |
 | M10 | ✅ | `capturePage` 非空；screencast 见 `agent-first-shot`：**119 帧 / 2s** |
+
+**M4 是怎么量的**：一扇与停车窗同配置的窗常驻（`0.55` 透明、`floating`、`focusable:false`、忽略鼠标），
+每 400ms 读一次 `window.__raf` 与 `visibilityState`，每 5 秒打一个心跳（心跳是为了让"没有输出"能当证据用）：
+
+```
+WATCH_BEAT t=5.3s  raf=348    vis=visible
+WATCH_BEAT t=10.5s raf=663    vis=visible
+WATCH_BEAT t=15.8s raf=979    vis=visible   ← 这附近切走、停 5 秒、切回
+WATCH_BEAT t=21.0s raf=1295   vis=visible
+…
+WATCH_BEAT t=47.3s raf=2873   vis=visible
+```
+
+每个 5.25 秒区间都是 ≈316 帧，等于 60fps 没有中断；采样循环每 400ms 一次，任何一次 `raf` 没涨都会打 `stalled=true`，一次都没有。
+这是 C 唯一一条**功能性**风险（窗口所在 Space 不活动 → Chromium 判 `hidden` → 标签页停渲染 → 截图超时/直播黑屏），现在关掉了。
 
 **M6 是怎么量的**（`parking-click-through-macos.cjs`，需要人点一次）：两扇窗完全重叠，下面一扇普通窗、
 上面一扇与停车窗同配置（`opacity 0.55` + `alwaysOnTop floating` + `focusable:false` + `setIgnoreMouseEvents(true)`），
@@ -251,11 +266,9 @@ hasOwner          = false
 D 组还暴露了一条值得记住的次序：**屏外窗口光 `moveTop()` 不够**。同一扇窗，在 `moveTop()` 之前先做一次 CDP `attach` + `Runtime.evaluate`，页面才从 `hidden/0×0` 变成 `visible/1800×1280`；没有那一步时 `moveTop()` 之后仍是 `hidden`、`capturePage` 报 `Current display surface not available for capture`。
 这和 `agent-first-shot.cjs` 的读法一致（它在那一步之前也 attach 了 debugger），也和产品 `capturePageWithRecovery` 先走 `getViewportMetrics` 的顺序一致 —— 但意味着"屏外有 surface"依赖的是一次**叫醒**，不是一次 `moveTop`。
 
-**对方案 C 的判断（macOS）**：M1/M2/M3/M6/M7/M8/M10 全过，屏内透明窗在这台机器上是"完全正常的一扇窗"——被更高层级的窗口整块盖住也不停帧，
-导航后不补 `moveTop` 也不掉合成，点击真的穿到下面的窗口，`screenX` 在 `workArea` 内、`inner == outer`。
-C 在 macOS 上**没有挡路的技术问题**，剩下的都是"新的可见性代价"：M4/M5/M9（Space / Mission Control / Dock 里露不露）。
-真实风险从"出不了图"换成了"用户在某个系统界面里看见一个空窗口"，以及产品现在**没有** `focusable:false` / `setIgnoreMouseEvents` / `setHiddenInMissionControl`，
-这三个都要在 C 里新加。
+**对方案 C 的判断（macOS）**：M1–M8、M10 全过（M9 不适用），屏内透明窗在这台机器上是"完全正常的一扇窗"——被更高层级的窗口整块盖住也不停帧，
+切 Space 回来不停帧，导航后不补 `moveTop` 也不掉合成，点击真的穿到下面的窗口，Mission Control 里看不到它，
+`screenX` 在 `workArea` 内、`inner == outer`。**在 macOS 上，C 已经没有已知的未验项**；产品里也已按这套选项实现（`focusable:false` / `setIgnoreMouseEvents` / `setHiddenInMissionControl`，见计划文档 §12）。
 
 ---
 
@@ -300,6 +313,6 @@ node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/electron/sp
 > "跑 `docs/parking-window-position.md` 第 6 节的清单，从 M1 到 M10，报告文件另存为 `-macos-<场景>.json`；
 > 顺带把 `docs/parking-surface-macos-handoff.md` 的 Q1–Q5 一起跑掉。"
 
-**2026-10-28 已跑，结果见 [§6.1](#61-macos-实测结果2026-10-28)**：M1/M2/M3/M6/M7/M8/M10 通过（M6 由人点了一次，`top 0/0`、`bottom 3/3`），剩 M4（切 Space 后帧是否继续）/ M5（Mission Control）/ M9（Dock）三个人工项。
+**2026-10-28 已跑，结果见 [§6.1](#61-macos-实测结果2026-10-28)**：M1–M8、M10 全部通过（M6 由人点了一次，`top 0/0`、`bottom 3/3`；M4 切 Space 后仍 60fps；M5 Mission Control 里看不到），M9 在 macOS 上不适用。
 
 如果 M2 或 M3 失败（alpha=0 不出帧 / 被判 occluded），那么 macOS 上就退回 **离屏 + 小边距（48）**，Windows 侧仍可用透明方案 —— 两个平台分开决策，不要为了统一而选更差的那个。
