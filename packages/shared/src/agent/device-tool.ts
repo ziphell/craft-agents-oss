@@ -8,6 +8,7 @@
  */
 
 import type { BrowserPaneFns } from './browser-pane.ts'
+import type { ComputerPaneFns } from './computer-pane.ts'
 
 /** One connected device, as `device_tool {"tool":"devices"}` reports it. */
 export interface DeviceToolInfo {
@@ -40,12 +41,15 @@ export interface DeviceToolInfo {
     shell: boolean
     files: boolean
     browser: boolean
+    /** This device offers **its own** desktop to a hub. Served by the remote bridge. */
+    computer: boolean
   }
   /** Offered capabilities that are usable right now (`available ? offered : false`). */
   capabilities: {
     shell: boolean
     files: boolean
     browser: boolean
+    computer: boolean
   }
 }
 
@@ -127,4 +131,11 @@ export interface DeviceToolFns {
    * The device must advertise browser capability.
    */
   getBrowserFns(device: string): Promise<BrowserPaneFns>
+  /**
+   * That device's desktop, through the remote bridge.
+   *
+   * Not this process's: the local desktop is `computer_tool`, and the two doors stay orthogonal —
+   * a device is only ever asked about its own machine.
+   */
+  getComputerFns(device: string): Promise<ComputerPaneFns>
 }

@@ -107,6 +107,7 @@ import { extractWorkspaceSlug } from '../utils/workspace.ts';
 
 // LLM tool types
 import { LLM_QUERY_TIMEOUT_MS, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
+import { executeComputerToolCommand } from './computer-commands.ts';
 import { executeBrowserToolCommand } from './browser-commands.ts';
 import type { BrowserCommandImage } from './command-cli.ts';
 import { executeVideoToolCommand } from './video-commands.ts';
@@ -126,6 +127,7 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'device_tool',
   'video_tool',
   'drawio_tool',
+  'computer_tool',
 ]);
 
 /**
@@ -1802,6 +1804,26 @@ export class PiAgent extends BaseAgent {
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           return { content: `spawn_session failed: ${msg}`, isError: true };
+        }
+      }
+
+      // The desktop door: its own tool, its own command table. Not a device capability — the
+      // device door answers "which machine", this one drives *this* machine's GUI.
+      if (toolName === 'computer_tool') {
+        const getFns = getSessionScopedToolCallbacks(this._sessionId)?.getComputerPaneFns
+        if (!getFns) {
+          return { content: 'Desktop control is not available on this host.', isError: true }
+        }
+        try {
+          const fns = await getFns()
+          const result = await executeComputerToolCommand({
+            command: (args.command as string | string[]) ?? '',
+            fns,
+          })
+          return { content: this.withCommandImages(result.output, result), isError: false }
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error)
+          return { content: `computer_tool failed: ${msg}`, isError: true }
         }
       }
 

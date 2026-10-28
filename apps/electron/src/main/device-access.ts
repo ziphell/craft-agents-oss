@@ -15,7 +15,8 @@ import { mkdirSync, promises as fsp } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { hubWorkspaceRoot } from '@craft-agent/shared/config'
 import type { DeviceExecRequest, DeviceExecResponse, DeviceFsRequest, DeviceFsResponse, DeviceHubContext, BrowserCapabilityRequest } from '@craft-agent/server-core/transport'
-import { CLIENT_BROWSER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '@craft-agent/server-core/transport'
+import { CLIENT_BROWSER_INVOKE, CLIENT_COMPUTER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '@craft-agent/server-core/transport'
+import { dispatchComputerCapability, type ComputerCapabilityRequest, type ComputerPaneFns } from '@craft-agent/shared/agent'
 import type { WsRpcClient } from '../transport/client'
 import type { DeviceFsEntry, DeviceFsMatch } from '@craft-agent/shared/agent/device-tool'
 
@@ -339,6 +340,7 @@ export async function runFs(req: DeviceFsRequest, allowedRoots: readonly string[
 export function attachDeviceCapabilities(
   client: WsRpcClient,
   browserPaneManager: () => { dispatchCapability(req: BrowserCapabilityRequest, connectionId?: string | null): Promise<unknown> } | null,
+  computerUseManager: () => { fnsForSession(sessionId: string): Promise<ComputerPaneFns> } | null,
   connectionId: string,
   allowedRoots: readonly string[],
 ): void {
@@ -354,5 +356,15 @@ export function attachDeviceCapabilities(
     const manager = browserPaneManager()
     if (!manager) throw new Error('This app has no browser to drive')
     return await manager.dispatchCapability(req, connectionId)
+  })
+  // This machine's desktop, for a hub that asked for it. The session id is the **connection**, so a
+  // remote hub holds the same 90 s lease a local conversation does — and two hubs cannot both drive
+  // this pointer, which is the whole point of the lease.
+  client.handleCapability(CLIENT_COMPUTER_INVOKE, async (req: ComputerCapabilityRequest): Promise<unknown> => {
+    if (!req || req.v !== 1) throw new Error('Unsupported computer request')
+    const manager = computerUseManager()
+    if (!manager) throw new Error('This app has no desktop to drive')
+    const fns = await manager.fnsForSession(`remote:${connectionId}`)
+    return await dispatchComputerCapability(fns, req.method, req.args ?? [])
   })
 }

@@ -66,6 +66,9 @@ const DRAWIO_TOOLS_DOC_PATH = resolve(join(CONFIG_DIR, 'docs', 'drawio-tools.md'
 /** Global designs guide required before authoring a design (`create_design` / `update_design`). */
 const DESIGNS_DOC_PATH = resolve(join(CONFIG_DIR, 'docs', 'designs.md'));
 
+/** Global desktop guide required before the first `computer` call on a device. */
+const COMPUTER_USE_DOC_PATH = resolve(join(CONFIG_DIR, 'docs', 'computer-use.md'));
+
 // ============================================================
 // Rules
 // ============================================================
@@ -108,6 +111,23 @@ const RULES: PrerequisiteRule[] = [
     },
     blockMessage:
       'You must read the source guide before using this tool. Please read the file at {filePath} first, then retry.',
+  },
+
+  // Desktop control: require computer-use.md before the first `computer` call.
+  //
+  // What is behind this gate is a surface whose failures are quiet: `press_key` reports success on a
+  // session with no foreground window, element tokens expire as soon as the window is read again,
+  // and `type` without an element writes into nothing. None of that is visible in the tool's schema,
+  // so the guide is a prerequisite rather than a hint.
+  {
+    toolMatcher: (toolName: string) =>
+      toolName === 'computer_tool' || toolName === 'mcp__session__computer_tool',
+    resolveRequiredPath: () => {
+      return existsSync(COMPUTER_USE_DOC_PATH) ? COMPUTER_USE_DOC_PATH : null;
+    },
+    blockMessage:
+      'You must read the desktop guide before driving a GUI. Please read the file at {filePath} first, then retry.',
+    strict: true,
   },
 
   // Built-in browser tool: require browser-tools.md first.

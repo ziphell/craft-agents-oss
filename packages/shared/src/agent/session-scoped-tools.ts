@@ -35,6 +35,7 @@ import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
 import { createBrowserTools } from './browser-tools.ts';
 import { getBrowserHostState } from './browser-host-state.ts';
+import { createComputerTools } from './computer-tools.ts';
 import { createDeviceTools } from './device-tools.ts';
 import { createVideoTools } from './video-tools.ts';
 import { createDrawioTools } from './drawio-tools.ts';
@@ -324,6 +325,20 @@ export function getSessionScopedTools(
         }),
       );
     }
+
+    // The desktop door — its own tool beside the browser's, because driving a GUI and reaching
+    // another machine are different questions. Registered unconditionally: a host without a
+    // desktop answers with a sentence, so the schema is worth advertising either way.
+    tools.push(
+      ...createComputerTools({
+        sessionId,
+        workspaceRootPath,
+        getComputerPaneFns: async () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.getComputerPaneFns?.();
+        },
+      }),
+    );
 
     // Device meta-tool — one door onto this machine or another connected one. Omitted entirely
     // while no device is connected, allowed by the device, and enabled on this server: the schema

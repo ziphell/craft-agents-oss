@@ -13,7 +13,9 @@
  * A link exists exactly while its server is in the saved list, and reconnects on its own.
  */
 
-import { DEVICE_CAPABILITIES } from '@craft-agent/server-core/transport'
+import { CLIENT_COMPUTER_INVOKE, DEVICE_CAPABILITIES } from '@craft-agent/server-core/transport'
+import type { ComputerPaneFns } from '@craft-agent/shared/agent'
+import { isComputerUseAdvertised } from './computer-use-manager'
 import type { RemoteConnection } from '@craft-agent/shared/config/client-config'
 import type { TransportConnectionStatus } from '../shared/types'
 import { WsRpcClient } from '../transport/client'
@@ -38,6 +40,8 @@ export interface HubConnectionDeps {
   identity: () => HubClientIdentity
   /** The browser this process runs, if one exists yet. */
   browserPaneManager: () => BrowserPaneManager | null
+  /** This machine's desktop, offered to hubs only once a driver actually answered. */
+  computerUseManager: () => { fnsForSession(sessionId: string): Promise<ComputerPaneFns> } | null
 }
 
 interface Link {
@@ -110,14 +114,26 @@ export function syncHubConnections(
       token: connection.token,
       autoReconnect: true,
       mode: 'remote',
-      clientCapabilities: deviceUseEnabled ? [...DEVICE_CAPABILITIES] : [],
+      // Fail-closed: a desktop is offered only when this build has a driver that answered. Listing
+      // it without one advertises a door whose every command fails.
+      clientCapabilities: deviceUseEnabled
+        ? DEVICE_CAPABILITIES.filter(
+            (capability) => capability !== CLIENT_COMPUTER_INVOKE || isComputerUseAdvertised(),
+          )
+        : [],
       clientInfo,
       // The person typed this URL, so a hub with a self-signed certificate is accepted — the same
       // policy a window's hub connection uses.
       tlsRejectUnauthorized: false,
     })
     if (deviceUseEnabled) {
-      attachDeviceCapabilities(client, connectionDeps.browserPaneManager, connection.id, allowedRoots)
+      attachDeviceCapabilities(
+        client,
+        connectionDeps.browserPaneManager,
+        connectionDeps.computerUseManager,
+        connection.id,
+        allowedRoots,
+      )
     }
     client.connect()
     links.set(id, { client, url: connection.url, token: connection.token, allowedRoots, deviceUseEnabled })

@@ -4,8 +4,13 @@ export * from './conversation-summary.ts';
 
 // Export PiAgent for direct use
 export { PiAgent, PiBackend } from './pi-agent.ts';
-// Device meta-tool types (`device_tool` runs shell/files/browser on a named device)
+// Device meta-tool types (`device_tool` runs shell/files/browser/computer on a named device)
 export * from './device-tool.ts';
+// Desktop-driving surface and its command language (`device_tool {"tool":"computer"}`)
+export * from './computer-pane.ts';
+export * from './computer-commands.ts';
+export * from './computer-bridge.ts';
+export { createComputerTools } from './computer-tools.ts';
 export * from './errors.ts';
 export * from './options.ts';
 

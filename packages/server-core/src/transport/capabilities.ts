@@ -36,6 +36,16 @@ export const CLIENT_DEVICE_EXEC = 'client:device:exec'
 export const CLIENT_DEVICE_FS = 'client:device:fs'
 
 /**
+ * Capability: let a hub drive this device's **desktop**.
+ *
+ * Distinct from the shell/files grant: this moves the person's pointer. It is also distinct from
+ * `computer_tool`, which drives the desktop of the process it runs in — this capability is what the
+ * *remote* bridge (`RemoteComputerPaneManager`) needs on the far side.
+ */
+export const CLIENT_COMPUTER_INVOKE = 'client:computer:invoke'
+
+
+/**
  * The capabilities only a device link advertises — this machine lending itself to a server rather
  * than asking it for something.
  *
@@ -47,6 +57,9 @@ export const DEVICE_CAPABILITIES = [
   CLIENT_DEVICE_EXEC,
   CLIENT_DEVICE_FS,
   CLIENT_BROWSER_INVOKE,
+  // Answering this is `attachDeviceCapabilities` → `ComputerUseManager`; the two ship together,
+  // because a capability advertised without a handler is a promise the far side cannot keep.
+  CLIENT_COMPUTER_INVOKE,
 ] as const
 
 /** Whether these capabilities include any this machine lends to a server. */

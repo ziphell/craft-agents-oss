@@ -272,6 +272,7 @@ export type {
 // Tool definitions — single source of truth
 export {
   // Individual Zod schemas
+  ComputerToolSchema,
   SubmitPlanSchema,
   ConfigValidateSchema,
   SkillValidateSchema,

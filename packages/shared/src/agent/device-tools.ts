@@ -4,8 +4,8 @@
  * One call names a **device** and the **nested tool** to run there, so the device is an argument
  * of the tool rather than a flag repeated on every operation. The nested vocabulary is the one an
  * agent already knows from its own shell/file/browser tools (`bash`, `read`, `write`, `edit`,
- * `list`, `stat`, `glob`, `grep`, `browser`), which is what keeps a remote machine from needing a
- * second dialect.
+ * `list`, `stat`, `glob`, `grep`, `browser`), which is what keeps a remote machine from
+ * needing a second dialect.
  *
  * Nothing here decides whether a path or a command is allowed: the device does, against its own
  * workspace roots. This file formats what came back.
@@ -15,6 +15,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { TOOL_DESCRIPTIONS, DeviceToolSchema } from '@craft-agent/session-tools-core';
 import type { BrowserCommandImage } from './command-cli.ts';
 import { executeBrowserToolCommand, BROWSER_RELEASE_HINT } from './browser-commands.ts';
+import { executeComputerToolCommand, COMPUTER_RELEASE_HINT } from './computer-commands.ts';
 import type {
   DeviceFsArgs,
   DeviceFsResult,
@@ -32,7 +33,9 @@ export type DeviceToolName =
   | 'stat'
   | 'glob'
   | 'grep'
-  | 'browser';
+  | 'browser'
+  /** The device's own desktop, served by the remote bridge on the far side. */
+  | 'computer';
 
 const FS_TOOLS = new Set<DeviceToolName>(['read', 'write', 'edit', 'list', 'stat', 'glob', 'grep']);
 
@@ -240,6 +243,20 @@ export async function executeDeviceProxyCommand(
     })
     return {
       output: result.appendReleaseHint ? result.output + BROWSER_RELEASE_HINT : result.output,
+      ...(result.image ? { image: result.image } : {}),
+      ...(result.images ? { images: result.images } : {}),
+    }
+  }
+
+  if (opts.tool === 'computer') {
+    const command = args.command
+    if (typeof command !== 'string' && !Array.isArray(command)) {
+      throw new Error('"command" is required for the computer tool on a device (e.g. "status").')
+    }
+    const fns = await opts.fns.getComputerFns(device)
+    const result = await executeComputerToolCommand({ command: command as string | string[], fns })
+    return {
+      output: result.appendReleaseHint ? result.output + COMPUTER_RELEASE_HINT : result.output,
       ...(result.image ? { image: result.image } : {}),
       ...(result.images ? { images: result.images } : {}),
     }

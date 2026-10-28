@@ -67,6 +67,8 @@ export interface SessionScopedToolCallbacks {
    * tool says so instead of guessing.
    */
   deviceFns?: DeviceToolFns;
+  /** This machine's desktop, for `computer_tool`. Absent on a host without one. */
+  getComputerPaneFns?: () => Promise<import('./computer-pane.ts').ComputerPaneFns>;
 
   /**
    * Whether at least one device is usable right now (connected, allowed by the device, and enabled

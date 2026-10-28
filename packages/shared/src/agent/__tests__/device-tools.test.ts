@@ -18,8 +18,8 @@ function makeFns(overrides: Partial<DeviceToolFns> = {}): DeviceToolFns {
       online: true,
       deviceAllows: true,
       available: true,
-      offered: { shell: true, files: true, browser: true },
-      capabilities: { shell: true, files: true, browser: true },
+      offered: { shell: true, files: true, browser: true, computer: true },
+      capabilities: { shell: true, files: true, browser: true, computer: true },
     }],
     exec: async () => ({
       stdout: 'ok',
@@ -31,6 +31,9 @@ function makeFns(overrides: Partial<DeviceToolFns> = {}): DeviceToolFns {
     }),
     fs: async (_device, args) => ({ op: args.op, path: args.path, content: 'hello' }),
     getBrowserFns: async () => {
+      throw new Error('not used')
+    },
+    getComputerFns: async () => {
       throw new Error('not used')
     },
     ...overrides,

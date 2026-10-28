@@ -113,6 +113,8 @@ import { initializeBackendHostRuntime } from '@craft-agent/shared/agent/backend'
 import { setPowerShellValidatorRoot } from '@craft-agent/shared/agent'
 import { handleDeepLink } from './deep-link'
 import { BrowserPaneManager } from './browser-pane-manager'
+import { ComputerUseManager, loadDefaultCuaDriver, setComputerUseAdvertised } from './computer-use-manager'
+import { createDesktopControlIndicator, type DesktopControlIndicator } from './desktop-control-indicator'
 import { OAuthFlowStore } from '@craft-agent/shared/auth'
 import { registerPrivilegedSchemes, registerThumbnailHandler } from './thumbnail-protocol'
 import { drawioOriginUrl } from './drawio-host'
@@ -247,6 +249,8 @@ const DEEPLINK_SCHEME = process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'
 let windowManager: WindowManager | null = null
 let sessionManager: SessionManager | null = null
 let browserPaneManager: BrowserPaneManager | null = null
+let computerUseManager: ComputerUseManager | null = null
+let desktopControlIndicator: DesktopControlIndicator | null = null
 let oauthFlowStore: OAuthFlowStore | null = null
 let moduleSink: EventSink | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
@@ -735,6 +739,24 @@ app.whenReady().then(async () => {
     // Initialize browser pane manager (always — even in headless, for deps wiring)
     browserPaneManager = new BrowserPaneManager()
     browserPaneManager.setWindowManager(windowManager)
+    // The desktop driver is optional and probed lazily; until it resolves, no device link
+    // announces `computer` (see isComputerUseAdvertised).
+    // The pill that cannot be missed: shown while a session holds the desktop, and the one way out
+    // that works even when the agent's cursor is on another monitor.
+    desktopControlIndicator = createDesktopControlIndicator({
+      release: () => computerUseManager?.release(),
+      log: (message) => console.log(`[computer-use] ${message}`),
+    })
+    computerUseManager = new ComputerUseManager({
+      log: (message, details) => console.log(`[computer-use] ${message}`, details ?? ''),
+      loadDriver: () => loadDefaultCuaDriver((message, details) =>
+        console.log(`[computer-use] ${message}`, details ?? '')),
+      onLeaseChange: (sessionId) => {
+        if (sessionId) desktopControlIndicator?.show(sessionId)
+        else desktopControlIndicator?.hide()
+      },
+    })
+    void computerUseManager.available().then(setComputerUseAdvertised)
     // A browser partition is created per workspace, on first use — after the proxy settings were
     // applied. This is how such a partition still gets them.
     browserPaneManager.setProxyApplier(applyConfiguredProxyToSession)
@@ -804,6 +826,7 @@ app.whenReady().then(async () => {
     syncHubConnections(getRemoteConnections(), {
       identity: clientIdentity,
       browserPaneManager: () => browserPaneManager,
+      computerUseManager: () => computerUseManager,
     })
 
     // Transport diagnostics bridge — preload reports remote WS connection state changes
@@ -1035,6 +1058,10 @@ app.whenReady().then(async () => {
         createSessionManager: () => {
           const sm = new SessionManager()
           sm.setBrowserPaneManager(browserPaneManager!)
+          sm.setComputerPaneFns((sessionId) => {
+            if (!computerUseManager) throw new Error('The desktop driver is not initialised.')
+            return computerUseManager.fnsForSession(sessionId)
+          })
           // Tweaks are installed from here too: the browser window that runs them belongs to
           // this process, and the injector lives beside it (see tweaks-injector.ts). The
           // watcher calls this on every tweak write, so the registration a new document is
@@ -1543,6 +1570,7 @@ app.whenReady().then(async () => {
       syncHubConnections(getRemoteConnections(), {
         identity: clientIdentity,
         browserPaneManager: () => browserPaneManager,
+      computerUseManager: () => computerUseManager,
       })
 
       // Windows opened before the edit hold the target they loaded with. Hand them the new one
@@ -1566,6 +1594,7 @@ app.whenReady().then(async () => {
       syncHubConnections(getRemoteConnections(), {
         identity: clientIdentity,
         browserPaneManager: () => browserPaneManager,
+      computerUseManager: () => computerUseManager,
       })
     })
 

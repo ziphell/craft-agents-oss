@@ -1,7 +1,8 @@
 import type { EventSink, RpcServer, DeviceFsRequest } from '@craft-agent/server-core/transport'
-import { CLIENT_BROWSER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '@craft-agent/server-core/transport'
+import { CLIENT_BROWSER_INVOKE, CLIENT_COMPUTER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
+import { RemoteComputerPaneManager } from './RemoteComputerPaneManager'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { createScopedLogger, CONSOLE_LOGGER, type PlatformServices, type Logger } from '@craft-agent/server-core/runtime'
 import { basename, dirname, join, posix, resolve, win32 } from 'path'
@@ -9,7 +10,7 @@ import { hostname } from 'node:os'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName, setBrowserProfilePromptState, setBrowserHostState, clearBrowserProfilePromptState, clearBrowserHostState, type DeviceToolFns, type DeviceToolInfo, type DeviceExecArgs, type DeviceExecResult, type DeviceFsArgs, type DeviceFsResult } from '@craft-agent/shared/agent'
+import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, type ComputerPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName, setBrowserProfilePromptState, setBrowserHostState, clearBrowserProfilePromptState, clearBrowserHostState, type DeviceToolFns, type DeviceToolInfo, type DeviceExecArgs, type DeviceExecResult, type DeviceFsArgs, type DeviceFsResult } from '@craft-agent/shared/agent'
 import type { BrowserTabInfo } from '@craft-agent/shared/agent/browser-pane'
 import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo, ConnectedClientInfo } from '@craft-agent/shared/protocol'
 import { sameTask, workOfSession } from '@craft-agent/shared/protocol'
@@ -1245,6 +1246,46 @@ export class SessionManager implements ISessionManager {
     this.eventSink = sink
   }
 
+  /**
+   * The desktop this server can drive, when it has one.
+   *
+   * Supplied by the application rather than opened here: only the process that owns the machine's
+   * accessibility session can drive its pointer, and a server without one must not advertise the
+   * capability at all. `null` is a real answer — the `computer` tool then refuses, and no device
+   * lists it as offered.
+   */
+  private computerPaneFnsForSession: ((sessionId: string) => Promise<ComputerPaneFns>) | null = null
+
+  /** One remote bridge per device connection; its desktop is that device's, not this process's. */
+  private readonly remoteComputerPanes = new Map<string, RemoteComputerPaneManager>()
+
+  private cacheRemoteComputerPane(clientId: string): RemoteComputerPaneManager {
+    const existing = this.remoteComputerPanes.get(clientId)
+    if (existing) return existing
+    if (!this.rpcServer) throw new Error('Devices are not reachable from this server.')
+    const pane = new RemoteComputerPaneManager({
+      rpcServer: this.rpcServer,
+      getHostClient: () => clientId,
+    })
+    this.remoteComputerPanes.set(clientId, pane)
+    return pane
+  }
+
+  /**
+   * Supplied with the session, not once: a desktop is held by **one** session at a time, so the
+   * provider is where that session is named (and where a second one is refused).
+   */
+  setComputerPaneFns(provider: ((sessionId: string) => Promise<ComputerPaneFns>) | null): void {
+    this.computerPaneFnsForSession = provider
+  }
+
+  private async requireComputerPaneFns(sessionId: string): Promise<ComputerPaneFns> {
+    if (!this.computerPaneFnsForSession) {
+      throw new Error('No desktop is available to drive from this server.')
+    }
+    return await this.computerPaneFnsForSession(sessionId)
+  }
+
   setBrowserPaneManager(bpm: IBrowserPaneManager): void {
     this.browserPaneManager = bpm
   }
@@ -1390,13 +1431,13 @@ export class SessionManager implements ISessionManager {
    */
   private deviceEntries(workspaceId?: string): Array<{
     info: DeviceToolInfo
-    offered: { shell: boolean; files: boolean; browser: boolean }
+    offered: DeviceToolInfo['offered']
     clients: Array<{ clientId: string; workspaceId: string | null }>
   }> {
     const clients = this.rpcServer?.getConnectedClients?.() ?? []
     const entries = new Map<string, {
       info: DeviceToolInfo
-      offered: { shell: boolean; files: boolean; browser: boolean }
+      offered: DeviceToolInfo['offered']
       clients: Array<{ clientId: string; workspaceId: string | null }>
     }>()
 
@@ -1413,8 +1454,10 @@ export class SessionManager implements ISessionManager {
         shell: client.capabilities.includes(CLIENT_DEVICE_EXEC),
         files: client.capabilities.includes(CLIENT_DEVICE_FS),
         browser: client.capabilities.includes(CLIENT_BROWSER_INVOKE),
+        // Served by the remote bridge only: a device that offers its desktop, not this process's.
+        computer: client.capabilities.includes(CLIENT_COMPUTER_INVOKE),
       }
-      const allows = offered.shell || offered.files || offered.browser
+      const allows = offered.shell || offered.files || offered.browser || offered.computer
       // Rows are saved records, not a picture of the connections. A connection only annotates the
       // record written when that machine connected as a device; a read must never create or
       // resurrect one, so deleting a device stays deleted even while it is still linked.
@@ -1429,6 +1472,7 @@ export class SessionManager implements ISessionManager {
         existing.offered.shell ||= offered.shell
         existing.offered.files ||= offered.files
         existing.offered.browser ||= offered.browser
+        existing.offered.computer ||= offered.computer
         existing.info.deviceAllows ||= allows
         if (defaultRoot && !existing.info.defaultRoot) existing.info.defaultRoot = defaultRoot
         for (const root of roots) {
@@ -1454,7 +1498,7 @@ export class SessionManager implements ISessionManager {
           available: false,
           lastSeenAt: record.lastSeenAt,
           offered,
-          capabilities: { shell: false, files: false, browser: false },
+          capabilities: { shell: false, files: false, browser: false, computer: false },
         },
         offered,
         clients: [{ clientId: client.clientId, workspaceId: client.workspaceId }],
@@ -1476,10 +1520,10 @@ export class SessionManager implements ISessionManager {
           deviceAllows: false,
           available: false,
           lastSeenAt: record.lastSeenAt,
-          offered: { shell: false, files: false, browser: false },
-          capabilities: { shell: false, files: false, browser: false },
+          offered: { shell: false, files: false, browser: false, computer: false },
+          capabilities: { shell: false, files: false, browser: false, computer: false },
         },
-        offered: { shell: false, files: false, browser: false },
+        offered: { shell: false, files: false, browser: false, computer: false },
         clients: [],
       })
     }
@@ -1489,7 +1533,7 @@ export class SessionManager implements ISessionManager {
       entry.info.available = entry.info.online && entry.info.deviceAllows
       entry.info.capabilities = entry.info.available
         ? { ...entry.offered }
-        : { shell: false, files: false, browser: false }
+        : { shell: false, files: false, browser: false, computer: false }
     }
     return result.sort((a, b) =>
       Number(b.info.online) - Number(a.info.online)
@@ -1577,7 +1621,7 @@ export class SessionManager implements ISessionManager {
    */
   private resolveDevice(
     ref: string,
-    capability: 'shell' | 'files' | 'browser',
+    capability: 'shell' | 'files' | 'browser' | 'computer',
   ): { info: DeviceToolInfo; clientId: string } {
     const wanted = ref.trim()
     const entries = this.deviceEntries()
@@ -1625,10 +1669,11 @@ export class SessionManager implements ISessionManager {
     return { info: entry.info, clientId: server.clientId }
   }
 
-  private clientHasCapability(clientId: string, capability: 'shell' | 'files' | 'browser'): boolean {
+  private clientHasCapability(clientId: string, capability: 'shell' | 'files' | 'browser' | 'computer'): boolean {
     const channel = capability === 'shell'
       ? CLIENT_DEVICE_EXEC
-      : capability === 'files' ? CLIENT_DEVICE_FS : CLIENT_BROWSER_INVOKE
+      : capability === 'files' ? CLIENT_DEVICE_FS
+        : capability === 'browser' ? CLIENT_BROWSER_INVOKE : CLIENT_COMPUTER_INVOKE
     return this.rpcServer?.hasClientCapability(clientId, channel) ?? false
   }
 
@@ -1722,6 +1767,12 @@ export class SessionManager implements ISessionManager {
         // work, is an error here — never a reason to use this conversation's own browser instead.
         const { clientId } = this.resolveDevice(device, 'browser')
         return getBrowserFnsForDevice(clientId)
+      },
+      getComputerFns: async (device: string) => {
+        // The remote bridge, and nothing else: this process's own desktop is `computer_tool`.
+        const { clientId } = this.resolveDevice(device, 'computer')
+        return this.remoteComputerPanes.get(clientId)
+          ?? this.cacheRemoteComputerPane(clientId)
       },
     }
   }
@@ -4888,6 +4939,9 @@ export class SessionManager implements ISessionManager {
           // server's browser.
           deviceFns: this.createDeviceToolFns(managed.workspace.id, (clientId) =>
             buildBrowserPaneFns(undefined, this.browserPaneManagerForClient(sid, clientId))),
+          // The desktop door is its own tool (`computer_tool`), not a device capability: the device
+          // door answers "which machine", this one answers "this machine's GUI".
+          getComputerPaneFns: () => this.requireComputerPaneFns(sid),
           // Read at tool-registration time: `device_tool` is omitted entirely while no device is
           // connected, allowed by the device, and enabled here.
           hasAvailableDevices: () => this.hasAvailableDevices(),

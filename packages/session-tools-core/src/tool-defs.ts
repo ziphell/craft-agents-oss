@@ -202,7 +202,7 @@ export const BrowserToolSchema = z.object({
 // Device tool schema — one meta-tool: name the device, then the tool to run there.
 export const DeviceToolSchema = z.object({
   tool: z
-    .enum(['devices', 'bash', 'read', 'write', 'edit', 'list', 'stat', 'glob', 'grep', 'browser'])
+    .enum(['devices', 'bash', 'read', 'write', 'edit', 'list', 'stat', 'glob', 'grep', 'browser', 'computer'])
     .describe('The tool to run. Use "devices" first to see the devices you can reach.'),
   device: z
     .string()
@@ -215,7 +215,9 @@ export const DeviceToolSchema = z.object({
       'Arguments for the nested tool. bash: {command, cwd?, timeoutMs?}. ' +
       'read: {path, offset?, limit?}. write: {path, content}. edit: {path, oldString, newString, replaceAll?}. ' +
       'list/stat: {path}. glob: {path, pattern}. grep: {path, pattern, glob?, ignoreCase?, maxResults?}. ' +
-      'browser: {command} — the same command line browser_tool takes.',
+      'browser: {command} — the same command line browser_tool takes. ' +
+      // That device's own desktop — this process's desktop is the separate `computer_tool`.
+      'computer: {command} — that device\'s desktop (docs/computer-use.md).',
     ),
 });
 
@@ -225,6 +227,14 @@ export const VideoToolSchema = z.object({
     z.string(),
     z.array(z.string()),
   ]).describe('Video command as a string (e.g., "sample demo.mp4") or array (e.g., ["sample", "demo.mp4", "--out", "frames"]). One command per call — batches are not supported here.'),
+});
+
+// Desktop tool schema — the same CLI-like shape, one command per call (no batching).
+export const ComputerToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Desktop command as a string (e.g., "snapshot") or array (e.g., ["windows", "snapshot"]). One command per call.'),
 });
 
 // Drawio tool schema — the same CLI-like shape, one command per call (no batching).
@@ -581,8 +591,8 @@ proxy below is the browser door here, and \`{"command":"--help"}\` is its comman
 
 Two kinds of call, and they are never mixed:
 - **Meta** — \`{"tool":"devices"}\` — what devices exist: id, name, platform, which capabilities each
-  one allows (shell / files / browser), and the workspace directories that may be touched. Names no
-  device.
+  one allows (shell / files / browser / computer), and the workspace directories that may be touched.
+  Names no device.
 - **Proxy** — \`{"device":"…","tool":"bash"|…,"args":{…}}\` — runs exactly on the device that was
   named, and nowhere else.
 
@@ -747,6 +757,17 @@ Examples:
 - \`record-start --tab tab-3 --ttl 30s\`
 - \`record-start --tab tab-3 --ttl 1m --wait\`
 - \`record-stop --tab tab-3\``,
+
+  computer_tool: `Drive this machine's desktop — read a window's accessibility tree, act on an element
+by the token that snapshot printed, and fall back to coordinates only where no tree exists
+(one command per call — string or array input, no batching).
+
+Read **docs/computer-use.md** before the first call: command table, token rules, and the sessions
+that refuse input (locked, remote). \`status\` answers what this session can do before you plan.
+
+  computer_tool "status"
+  computer_tool "snapshot"
+  computer_tool ["click s00000001:12", "snapshot"]`,
 
   video_tool: `Read a recording — by asking a model about it, or by looking at its frames yourself
 (one command per call — string or array input, no batching).
@@ -1035,6 +1056,8 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'device_tool', description: TOOL_DESCRIPTIONS.device_tool, inputSchema: DeviceToolSchema, executionMode: 'backend', safeMode: 'block', handler: null },
   // Video tool (backend-specific — the same pane runtime, decoding a recording in a hidden window)
   { name: 'video_tool', description: TOOL_DESCRIPTIONS.video_tool, inputSchema: VideoToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Desktop door (backend-specific — needs this machine's accessibility session)
+  { name: 'computer_tool', description: TOOL_DESCRIPTIONS.computer_tool, inputSchema: ComputerToolSchema, executionMode: 'backend', safeMode: 'block', handler: null },
   { name: 'drawio_tool', description: TOOL_DESCRIPTIONS.drawio_tool, inputSchema: DrawioToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
   // Session self-management tools (registry — use context callbacks to reach SessionManager)
   { name: 'set_session_labels', description: TOOL_DESCRIPTIONS.set_session_labels, inputSchema: SetSessionLabelsSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionLabels },
