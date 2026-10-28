@@ -300,6 +300,6 @@ node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/electron/sp
 > "跑 `docs/parking-window-position.md` 第 6 节的清单，从 M1 到 M10，报告文件另存为 `-macos-<场景>.json`；
 > 顺带把 `docs/parking-surface-macos-handoff.md` 的 Q1–Q5 一起跑掉。"
 
-**2026-10-28 已跑，结果见 [§6.1](#61-macos-实测结果2026-10-28)**：M1/M2/M3/M7/M8/M10 通过，M4/M5/M6/M9 仍需人工或辅助功能权限。
+**2026-10-28 已跑，结果见 [§6.1](#61-macos-实测结果2026-10-28)**：M1/M2/M3/M6/M7/M8/M10 通过（M6 由人点了一次，`top 0/0`、`bottom 3/3`），剩 M4（切 Space 后帧是否继续）/ M5（Mission Control）/ M9（Dock）三个人工项。
 
 如果 M2 或 M3 失败（alpha=0 不出帧 / 被判 occluded），那么 macOS 上就退回 **离屏 + 小边距（48）**，Windows 侧仍可用透明方案 —— 两个平台分开决策，不要为了统一而选更差的那个。
