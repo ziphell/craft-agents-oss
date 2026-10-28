@@ -1,6 +1,6 @@
 # 停车窗位置：改动方案（待 macOS 实测后一起评估）
 
-> 状态：**B 已实施**（2026-10-28，见 §10）。C 仍是备选，等 macOS 的人工项（M4–M6、M9）测完再定。
+> 状态：**B 与 C 都已实施**（2026-10-28）。C 是默认路径，B 退为回退（Linux 等 `setOpacity` 不生效的平台）；B 的三处改动都还在，见 §10、§12。
 > 写于 2026-10-28。所有"实测"引用均来自该文档 §2（Windows 11 / Electron 39.2.7 / RDP / 单屏 1440×960 @2x）。
 > 评估门槛：先跑完该文档 §6 的 **M1–M10**（以及 [parking-surface-macos-handoff.md](./parking-surface-macos-handoff.md) 的 Q1–Q5），再按本文 §7 的决策门选择 A / B / C。
 
@@ -258,7 +258,10 @@ macOS 实测（本机，见 `parking-onscreen-macos.cjs` 的 D2 行）：
 
 ## 11. 要不要再往前走到 C（2026-10-28 决策）
 
-**结论：继续，但 M6 是硬门槛——M6 未过之前不动手。**
+**结论：继续。M6 已于 2026-10-28 实测通过（§11.6），代码未动，等一句话就能按 §11.4 开工。**
+
+> 更新（2026-10-28 傍晚）：§11.2–§11.3 写的是"M6 还没验"时的状态，保留作记录；
+> 实际结果与两条测试前提见 **§11.6**。现在挡在 C 前面的只剩 M4 / M5 / M9 三个"会不会被看见"的人工项。
 
 ### 11.1 macOS 那轮数据改变了什么
 
@@ -304,3 +307,68 @@ node_modules/electron/dist/Electron.app/Contents/MacOS/Electron \
 ### 11.5 为什么不能"顺手"切
 
 C 需要给停车窗新加三个 API（`focusable:false`、`setIgnoreMouseEvents`、`setHiddenInMissionControl`），产品现在一个都没有。它改的是每个浏览器窗口的停车窗行为，不是一处调用点；而 M6 未验时，最坏结果是"看不见的点击吞噬层"。所以：**M6 通过之前，代码不动。**
+
+### 11.6 M6 结果：通过（2026-10-28）
+
+用 `apps/electron/spike/parking-click-through-macos.cjs` 量的——两扇窗完全重叠，下面一扇普通窗、
+上面一扇与停车窗同配置（`opacity 0.55` + `alwaysOnTop floating` + `focusable:false` + `setIgnoreMouseEvents(true)`），
+两边都数 `mousedown`，由人点一次紫色区域：
+
+```
+M6_RESULT {"top":{"down":0,"up":0,"move":142},"bottom":{"down":3,"up":3,"move":156}}
+M6_PASS
+```
+
+- 上面那扇 `down 0 / up 0`，下面那扇 `down 3 / up 3` → **点击确实穿过透明窗**，M6 通过。
+- 量之前踩了两个坑，都改的是测试脚手架而不是结论：
+  1. 这个 demo 应用必须是**活动应用**，否则普通层级的下面那扇排在终端后面，点击穿过透明窗后落进终端，
+     计数窗当然是 0（第一轮就是这个假阴性）；
+  2. 下面那扇要 `acceptFirstMouse: true`，否则第一次按下只用于激活窗口。
+- 附带发现：`setIgnoreMouseEvents(true)` 只挡**点击**，`mousemove` 仍进那扇透明窗的页面（142 次 move / 0 次 down）。
+  对 `opacity: 0` 没有视觉后果，但如果要防"页面自己发现被悬停"，得单独处理。
+
+**所以 C 的功能前提已经齐了**：出帧（M2）、不被遮挡（M3）、不抢焦点（M7）、几何合法（M8）、点击穿透（M6）。
+仍缺的三项都是"会不会被看见"：M5（Mission Control）、M9（Dock）、M4（切 Space 后是否继续出帧）。
+
+---
+
+## 12. C 实施记录（2026-10-28）
+
+按 §11.4 落地，默认走 C，B 整套留作回退。改动仍然只在
+[browser-pane-manager.ts](file:///Users/ryan/code/craft-agents-oss/apps/electron/src/main/browser-pane-manager.ts)：
+
+| # | 做了什么 |
+|---|---|
+| 1 | `parkingWindowFor()` 造窗时：位置 = 主屏 `workArea` 左上角；`focusable:false`、`hasShadow:false`、`title:''`；造完立刻 `setOpacity(0)`，读回决定模式 |
+| 2 | 读回 `getOpacity() !== 0`（Linux）→ 记进 `parkingOffDisplay`、搬到 `offscreenSpot()`；B 的边距/换侧/`keepOffEveryDisplay` 全保留 |
+| 3 | `hideFromWindowLists()` 加 `setHiddenInMissionControl(true)`（darwin）——C 的窗口**在屏上**，这条现在是主线不是保险 |
+| 4 | `setIgnoreMouseEvents(true)` 在造窗时设一次，`keepShowing()` 每次 `show` 之后再设（实测 `show` 会丢） |
+| 5 | 新增 `keepParkingInWorkArea()`：C 的窗口被屏幕变化丢到所有显示器之外时，搬回 `workArea`；`keepParkingWhereItBelongs()` 按模式二选一，挂到 `move`/`resize`/显示变化上 |
+
+**删掉的一处**（B 的第三处改动）：`keepOffEveryDisplay` 里"移动前临时透明、移完恢复"的包裹。
+C 之后它是死的——会走到那里搬窗口的，只有 `setOpacity` 不生效的平台，而那条路径上同一个 API 也是 no-op。
+B 的位置逻辑（边距 48、下→上→左→右、`parkingStuck` 重试保护）全部保留。
+
+单测（`browser-pane-manager.test.ts`）改成按模式分的三条，并给 mock 补了 `getPrimaryDisplay`、
+`setIgnoreMouseEvents`、`setHiddenInMissionControl` 和"`setOpacity` 不生效"的开关：
+
+- C：窗口在 `workArea` 左上角、`opacity 0`、`focusable:false`、忽略鼠标、不进 Window 菜单/Mission Control；
+  屏幕变化不搬它，但被丢到所有显示器之外时搬回原处；`minimize`/`hide` 之后仍关闭鼠标；透明只请求一次；
+- B：`getOpacity()` 读回 1 时搬到屏外、贴着边缘（≤64），插屏/被拖回屏上都会被搬走；
+- 两种模式共用：`destroyAll` 之后丢掉屏幕订阅。
+
+真机验证（macOS，`/tmp` 里的一次性脚本，按 §11.4 的选项造窗、**不先 attach debugger**）：
+
+```
+C_SUMMARY {"opacity":0,"bounds":{"x":0,"y":25,"width":900,"height":640},
+           "first":{"capture":{"size":{"width":1800,"height":1280},"bytes":380444},"vis":"visible","screenX":0,"screenY":25},
+           "afterNavigate":{"width":1800,"height":1280,"bytes":380416},
+           "afterResize":{"width":1800,"height":1280,"bytes":380416}}
+```
+
+- 冷启动第一张图就答得出来（屏外方案在这一步要"叫醒"才肯出图）；
+- 导航之后、`setContentSize` 之后都还能截；
+- 页面读到 `screenX 0 / screenY 25`（= `workArea` 原点）、`inner == outer`、`vis visible`、`hasFocus false`。
+
+**仍未做**：这次改动只在本机跑过（macOS 单屏）。Windows 真机、以及插拔屏 / 缩放切换那些人工项，
+仍然按 §5.2 的清单跑；M4/M5/M9 三个"会不会被看见"的人工项也还没看。

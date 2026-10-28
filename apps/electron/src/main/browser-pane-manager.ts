@@ -190,6 +190,11 @@ const VIEW_QUIET_MS = 1_500
  * wholly off the display, while 1440 + 48 = 1488 is a state that really happens — a window left
  * outside after a second screen was unplugged. It only has to be enough to clear the display;
  * `keepOffEveryDisplay` is what actually holds the window off the screens.
+ *
+ * Only the **fallback** uses this now: a parking window that can be made transparent stays in the
+ * work area and nobody sees it there (`parkingWindowFor`), which is the better answer on every count
+ * — no screen can arrive on top of it, and the page reads an ordinary position. This is what is left
+ * for platforms where `setOpacity` does nothing.
  */
 const OFFSCREEN_PARK_MARGIN = 48
 /**
@@ -1435,6 +1440,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * is what a person changing displays again can do — see `keepOffEveryDisplay`).
    */
   private parkingStuck = new WeakSet<BrowserWindow>()
+  /**
+   * Parking windows that **cannot** be hidden by opacity, and so have to be taken off every display
+   * instead — the fallback for platforms where `setOpacity` is a no-op (Linux).
+   *
+   * Membership is decided once, when the window is made, by reading the opacity back: a window that
+   * says it is not 0 would be a window the person can see, so it is moved out of reach and watched
+   * (`keepOffEveryDisplay`). Everything else stays on a display and is invisible by being
+   * transparent — see `parkingWindowFor` for why that is the default.
+   */
+  private parkingOffDisplay = new WeakSet<BrowserWindow>()
   /** The one `screen` subscription that keeps parking windows off the displays, if any is live. */
   private displayWatcher: (() => void) | null = null
   /**
@@ -4602,7 +4617,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * first shown).
    *
    * `addChildView` raises a view among its siblings, `moveTop` raises a window among windows, and
-   * neither takes focus — the window is off every display, so raising it is invisible.
+   * neither takes focus — the window is invisible (transparent on a display, or off every display on
+   * a platform that cannot make it transparent), so raising it is invisible too.
    */
   private raiseParkedView(instance: BrowserInstance, tab: BrowserTab): void {
     const parking = instance.parkingWindow
@@ -4687,6 +4703,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Hold a window nobody may see **off every display**: check where it actually is, and put it back
    * out if a display is under it.
    *
+   * This is the fallback, for windows that cannot be made transparent (`parkingOffDisplay`) — a
+   * transparent one **belongs** on a display and returns from here immediately.
+   *
    * Nothing about this can be left to the placement that made the window: the person can plug a
    * screen in beside the spot, change scaling (which rescales the coordinates themselves), and the
    * desktop itself will bring a window back onto a screen when it thinks nobody can reach it. So it
@@ -4695,14 +4714,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * Getting here means the window **is** on a display right now, so someone may be looking at it —
    * the desktop does not move a window when a new screen is plugged in, the new screen encompasses
-   * it. It is therefore made transparent, moved, and only then given its opacity back, so the move
-   * itself cannot be seen. Measured: `opacity: 0` does not stop the page drawing or `capturePage`
-   * from answering (`parking-window-position.md` §2.2), so the milliseconds this takes cost nothing
-   * but a frame nobody was meant to see; and on Linux, where `setOpacity` does nothing, the read-back
-   * says so and this degrades to the visible flicker it is today.
+   * it. It used to be faded out for the instant of the move; that is gone, and it is worth saying
+   * why: the only windows that get here are the ones whose platform will not make them transparent
+   * (`parkingOffDisplay`), so the fade was an ask that the same platform ignores. A window that
+   * *can* be faded never needs moving — it is already invisible where it stands.
    */
   private keepOffEveryDisplay(window: BrowserWindow): void {
     if (window.isDestroyed()) return
+    // A window that hides behind `opacity: 0` **belongs** on a display: moving it out would take away
+    // the one thing that makes it cheap (a window in the work area keeps its surface without being
+    // ordered and re-ordered). Only the platforms that cannot make it transparent are held off.
+    if (!this.parkingOffDisplay.has(window)) return
     const rect = window.getBounds()
     if (!this.overlapsADisplay(rect)) {
       this.parkingStuck.delete(window)
@@ -4713,15 +4735,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (this.parkingStuck.has(window)) return
 
     const spot = this.offscreenSpot({ width: rect.width, height: rect.height })
-
-    const opacity = window.getOpacity()
-    const dimmed = opacity !== 0
-    if (dimmed) window.setOpacity(0)
-    try {
-      window.setPosition(spot.x, spot.y)
-    } finally {
-      if (dimmed && !window.isDestroyed()) window.setOpacity(opacity)
-    }
+    window.setPosition(spot.x, spot.y)
 
     const landed = window.getBounds()
     const stillOnADisplay = this.overlapsADisplay(landed)
@@ -4734,6 +4748,24 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
+   * Keep a parking window that hides behind `opacity: 0` **inside a display**.
+   *
+   * Where it is does not matter to the person — it is transparent — but it matters to the page:
+   * `window.screenX` / `screenY` are numbers a page can read, and being outside every display is the
+   * state this window is not supposed to be in any more. A screen unplugged or a resolution change
+   * can leave it out there without anyone asking, so it is put back at the top-left of the work area.
+   *
+   * One comparison in the ordinary case: only a screen change (or a move of ours) can make it a move.
+   */
+  private keepParkingInWorkArea(window: BrowserWindow): void {
+    if (window.isDestroyed()) return
+    if (this.overlapsADisplay(window.getBounds())) return
+    const area = screen.getPrimaryDisplay().workArea
+    window.setPosition(area.x, area.y)
+    mainLog.warn('[browser-pane] a screen change left the parking window outside every display; put it back in the work area')
+  }
+
+  /**
    * Take a window nobody may see out of the app's own window surfaces.
    *
    * macOS lists every *shown* window in two places the person reads: the application's Window menu
@@ -4743,12 +4775,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    *
    * `excludedFromShownWindowsMenu` takes it out of the menu. Mission Control hides a window whose
    * AppKit collection behaviour is `transient`, which is the default for any level other than
-   * `normal` — hence the float level. Neither call places the window; staying off every display is
-   * `enableLargerThanScreen` at construction (`parkingWindowFor`) plus `keepOffEveryDisplay`.
+   * `normal` — hence the float level — and `setHiddenInMissionControl` says so outright, because a
+   * parking window that is **on** a display (hidden behind `opacity: 0`) is otherwise exactly the
+   * kind of window Mission Control is for.
    */
   private hideFromWindowLists(window: BrowserWindow): void {
     window.excludedFromShownWindowsMenu = true
     window.setAlwaysOnTop(true, 'floating')
+    if (process.platform === 'darwin') window.setHiddenInMissionControl(true)
   }
 
   /**
@@ -6557,7 +6591,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * The window a tab that is not on screen lives in — outside every display, and **shown**.
+   * The window a tab that is not on screen lives in — **shown, and invisible**.
    *
    * Shown is the point: a view in a window that is never shown is never composited, and a view that
    * is not composited has **no viewport** — measured, for a view created at negative coordinates or
@@ -6565,19 +6599,36 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * input landing nowhere (`apps/electron/spike/background-viewport.ts` section E). So a frozen tab
    * is not "moved out of the window's way"; it is *housed* somewhere it can keep its layout.
    *
-   * Off every display (`offscreenSpot`), `skipTaskbar`, shown without being activated: nothing of it
-   * is visible, it is never in the taskbar, and it never takes anyone's focus. `frame: false` together
-   * with `enableLargerThanScreen` is part of *off every display* rather than a detail of the look: on
-   * macOS AppKit's `constrainFrameRect:toScreen:` brings a window it judges unreachable back onto a
+   * Invisible has two answers, and the first one is used wherever it works: **`opacity: 0` on a
+   * display**. The window sits in the primary display's work area like any other, draws, hands out
+   * surfaces and answers captures, and nobody sees it — measured on macOS and Windows
+   * (`parking-window-position.md` §2 and §6.1): `capturePage` answers byte-identically to the opaque
+   * case, a window of a higher level covering it whole does not stop it, a navigation does not cost
+   * it the surface, and the page's own `screenX`/`screenY` read back as an ordinary window position
+   * instead of the 16_383 (Windows, capped) / 21_440 (macOS) that "far off screen" produced.
+   *
+   * Being transparent is not the same as being away, so three things have to be said out loud:
+   * `focusable: false` (opacity hides a window, it does not stop it taking the keyboard),
+   * `setIgnoreMouseEvents(true)` (measured on both platforms: without it the window eats clicks and
+   * hover — with it, a person's click lands on whatever is underneath), and
+   * `setHiddenInMissionControl` on macOS, which is where a *shown* window would otherwise be listed.
+   *
+   * The second answer is **off every display** (`offscreenSpot`), held there by
+   * `keepOffEveryDisplay`: that is the fallback for platforms where `setOpacity` does nothing
+   * (Linux). Which one a window got is decided by reading the opacity back, not by asking the
+   * platform's name (`parkingOffDisplay`).
+   *
+   * Off screen, `frame: false` together with `enableLargerThanScreen` stops being cosmetic: on macOS
+   * AppKit's `constrainFrameRect:toScreen:` brings a window it judges unreachable back onto a
    * display, and Electron returns the frame untouched there **only** for a frameless window that set
    * the flag (measured in `electron_ns_window.mm`) — either of the two alone and the OS owns the spot.
+   * Both options stay on every parking window, because which answer a window gets is only known
+   * after it exists.
+   *
    * One per browser window, made when the first tab is parked and destroyed with the window. It
    * **follows the views in it** in both directions — `parkedViewsFit` — because a window clips its
    * children and a clipped view is a view with a smaller viewport, while anything larger than what it
    * holds is space nobody sees.
-   *
-   * "Off every display" is then **kept true** rather than assumed (`keepOffEveryDisplay`): the spot
-   * is only what the desktop was asked for, and the person can change their screens out from under it.
    */
   private parkingWindowFor(instance: BrowserInstance): BrowserWindow {
     const wanted = this.parkedViewsFit(instance)
@@ -6590,23 +6641,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (wanted.width !== width || wanted.height !== height) {
         existing.setContentSize(wanted.width, wanted.height)
       }
-      this.keepOffEveryDisplay(existing)
+      // Only a window that has to be off the displays is held there. A transparent one can be left
+      // outside them by a screen change, and that is the one thing about it the person could see.
+      this.keepParkingWhereItBelongs(existing)
       return existing
     }
 
-    const spot = this.offscreenSpot(wanted)
+    // On a display, at the top-left of the work area: where a window nobody has moved it would be.
+    const area = screen.getPrimaryDisplay().workArea
     const parking = new BrowserWindow({
-      x: spot.x,
-      y: spot.y,
+      x: area.x,
+      y: area.y,
       width: wanted.width,
       height: wanted.height,
       show: false,
       frame: false,
       // Frameless **and** `enableLargerThanScreen`: on macOS these two are what let a window stay
-      // where it was put. AppKit's `constrainFrameRect:toScreen:` is what brings a window it judges
-      // unreachable back onto a display, and Electron returns the frame untouched there only for a
-      // frameless window that asked for this (measured in `electron_ns_window.mm`). Without it the
-      // spot below is a request the OS overrules — the person's report: "停车窗被系统拉到可见区域了".
+      // where it was put, which the fallback below needs. AppKit's `constrainFrameRect:toScreen:` is
+      // what brings a window it judges unreachable back onto a display, and Electron returns the
+      // frame untouched there only for a frameless window that asked for this (measured in
+      // `electron_ns_window.mm`). Without it the spot below is a request the OS overrules — the
+      // person's report: "停车窗被系统拉到可见区域了".
       enableLargerThanScreen: true,
       // AppKit decides a window's default collection behaviour (and so whether Exposé / "Show All
       // Windows" hides it) from its level **when the window is created**; raising the level later is
@@ -6614,35 +6669,54 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // only repeats it for the Window menu flag.
       alwaysOnTop: true,
       skipTaskbar: true,
+      // A window at `opacity: 0` can still be focused, and a focused window takes the keyboard.
+      focusable: false,
+      hasShadow: false,
+      title: '',
       backgroundColor: getBackgroundColor(nativeTheme.shouldUseDarkColors),
     })
     instance.parkingWindow = parking
     this.hideFromWindowLists(parking)
+
+    // Invisible by being transparent. The read-back is the decision: a platform where `setOpacity`
+    // does nothing answers 1, and a window that says it is opaque would be a window the person can
+    // see, so that one is moved out of reach and watched instead.
+    parking.setOpacity(0)
+    const transparent = parking.getOpacity() === 0
+    if (!transparent) {
+      this.parkingOffDisplay.add(parking)
+      const off = this.offscreenSpot(wanted)
+      parking.setPosition(off.x, off.y)
+    }
+    // …and the mouse, for the same reason as the keyboard, and this one is measured on both
+    // platforms: a window that merely looks transparent still takes the clicks and the hover.
+    parking.setIgnoreMouseEvents(true)
+
     // Shown, or nothing inside it is composited — and never activated, so it cannot take the focus.
     parking.showInactive()
-    // Wherever it ended up (the desktop may have capped the spot), it may not be on a display; and it
-    // is watched from here on, because it can stop being clear of them without anyone asking us.
-    parking.on('move', () => this.keepOffEveryDisplay(parking))
-    parking.on('resize', () => this.keepOffEveryDisplay(parking))
+    // Only a window that has to be off the displays is watched for landing on one; a transparent one
+    // belongs there — but being *left outside* them is just as visible a mistake, so both are watched.
+    parking.on('move', () => this.keepParkingWhereItBelongs(parking))
+    parking.on('resize', () => this.keepParkingWhereItBelongs(parking))
     // …and it may not stop being shown either. A window that is not shown is not composited, and a
     // view that is not composited loses its viewport entirely (measured: `background-viewport.ts`
     // section E), which is the one thing this window exists to prevent. Nothing about it is the
-    // person's — it is off every display, out of their taskbar, never focused — so a shell-wide
+    // person's — it is invisible, out of their taskbar, never focused — so a shell-wide
     // "minimize everything" (or a stray `hide()` of ours) is not allowed to leave it that way.
     parking.on('minimize', () => this.keepShowing(parking))
     parking.on('hide', () => this.keepShowing(parking))
-    this.keepOffEveryDisplay(parking)
+    if (!transparent) this.keepOffEveryDisplay(parking)
     this.watchDisplays()
-    // Where it *is*, not where it was asked to go: the desktop caps that (measured: 16383 DIPs
-    // whatever you ask for), and the log is read by people debugging a window they can see.
+    // Where it *is*, not where it was asked to go: the desktop caps that on Windows, and the log is
+    // read by people debugging a window they can see.
     const landed = parking.getBounds()
-    mainLog.info(`[browser-pane] parking window up instance=${instance.id} at=${landed.x},${landed.y} size=${wanted.width}x${wanted.height}`)
+    mainLog.info(`[browser-pane] parking window up instance=${instance.id} at=${landed.x},${landed.y} size=${wanted.width}x${wanted.height} invisible=${transparent ? 'opacity' : 'off-display'}`)
     return parking
   }
 
   /**
-   * Put a window that has to be shown **back on screen** — off every display, never focused, but
-   * shown: that is the whole reason the views inside it are real (`background-viewport.ts` section E).
+   * Put a window that has to be shown **back where it belongs** — shown, invisible, never focused:
+   * that is the whole reason the views inside it are real (`background-viewport.ts` section E).
    *
    * Called when something minimizes or hides it. Measured: minimizing the person's own window does
    * **not** reach this one (separate top-level windows, no owner), so this is here for the things
@@ -6654,25 +6728,44 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (window.isMinimized()) {
       window.restore()
       cameBack = true
-      mainLog.warn('[browser-pane] the parking window was minimized; restored it off screen')
+      mainLog.warn('[browser-pane] the parking window was minimized; restored it')
     }
     if (!window.isVisible()) {
       window.showInactive()
       cameBack = true
-      mainLog.warn('[browser-pane] the parking window was hidden; showed it again off screen')
+      mainLog.warn('[browser-pane] the parking window was hidden; showed it again')
     }
     // Coming back is not being composited again: `restore` and `showInactive` do not order the window
-    // front, and a parking window that is not the top window hands its views no surface — it shares
-    // its spot with every other browser window's parking window (`offscreenSpot`). Only when it
+    // front, and a parking window that is not the top window hands its views no surface. Only when it
     // actually came back: re-ordering on every display change would put this one over the others
     // for nothing.
-    if (cameBack) window.moveTop()
-    this.keepOffEveryDisplay(window)
+    if (cameBack) {
+      // …and being shown again is not being invisible again, for the mouse either: measured on
+      // Windows, `show` drops `setIgnoreMouseEvents`, and a parking window that takes clicks is the
+      // one failure this window cannot have.
+      window.setIgnoreMouseEvents(true)
+      window.moveTop()
+    }
+    this.keepParkingWhereItBelongs(window)
   }
 
   /**
-   * Watch the displays, because "off every display" is a relation and the displays move: a screen
-   * plugged in beside the parking spot, a scaling change that rescales every coordinate.
+   * Put a parking window back where its own kind of invisibility wants it: off every display when the
+   * platform cannot make it transparent, and inside the work area when it can.
+   *
+   * One function because the two are the same question — "is this window where it is supposed to
+   * be?" — asked on the same events (a move, a resize, a screen change), and only the answer differs.
+   */
+  private keepParkingWhereItBelongs(window: BrowserWindow): void {
+    if (this.parkingOffDisplay.has(window)) this.keepOffEveryDisplay(window)
+    else this.keepParkingInWorkArea(window)
+  }
+
+  /**
+   * Watch the displays, because both answers to "invisible" are relations to them: a window held off
+   * every display can have one plugged in beside it, and a transparent one can be left outside every
+   * display by a screen going away. Either way the answer is the same — stay shown, and stay where the
+   * window's own mode wants it (`keepShowing`).
    *
    * Registered the first time a parking window exists, and dropped with the last one
    * (`stop`/`destroyAll`), so a manager that never parks anything subscribes to nothing.

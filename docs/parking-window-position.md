@@ -168,11 +168,11 @@ hasOwner          = false
   - `--keep`：常驻，Ctrl+C 结束
   - 默认：量完即退，读数写到 `topmost-transparent-window.report.<platform>.json`（`win32` / `darwin`，两台机器不再互相覆盖）
 
-计划改动（**B 已实施**，2026-10-28；C 待 M6）—— 详见 **[parking-window-position-plan.md](./parking-window-position-plan.md)**：
+计划改动（**B 与 C 均已实施**，2026-10-28；C 是默认，B 是回退）—— 详见 **[parking-window-position-plan.md](./parking-window-position-plan.md)**：
 
-- 方案 **B（倾向采用）**：边距 `20_000` → `48`、候选顺序改为 下→上→左→右、`keepOffEveryDisplay` 在“已被看见”那一瞬临时透明。
-- 方案 **C（备选）**：主屏 `workArea` + `opacity 0` + `alwaysOnTop` + `ignoreMouseEvents`；是否叠加由 macOS 的 M1–M3 结果和 Windows 真机插屏闪烁共同决定。
-- 方案 **A（现状）**：数字 `16383` 不可解释，仅作回退位。
+- 方案 **C（现已默认）**：主屏 `workArea` + `opacity 0` + `alwaysOnTop` + `ignoreMouseEvents` + `focusable:false`；读回 `getOpacity() !== 0` 的平台走 B。
+- 方案 **B（现为回退）**：边距 `20_000` → `48`、候选顺序改为 下→上→左→右、`keepOffEveryDisplay` 保持屏外。
+- 方案 **A（旧现状）**：数字 `16383` 不可解释，不再使用。
 
 决策门与验收标准都在计划文档 §6–§7。
 
@@ -218,13 +218,27 @@ hasOwner          = false
 | M1 | ✅ | `getOpacity()` 读回 `0`，`opacityWorks: true` |
 | M2 | ✅ | rAF **24–25 / 400ms**；`capturePage` **1800×1280 / 411677 B** |
 | M3 | ✅ | 盖一扇 `screen-saver` 层级、铺满 `workArea` 的不透明窗：`visibility` 仍 `visible`，rAF 24–25，截图**逐字节相同** |
-| M4 | ⬜ 未测 | 需要真的切 Space（本机没有辅助功能权限，见 M6） |
+| M4 | ⬜ 未测 | 需要真的切 Space |
 | M5 | ⬜ 未测 | 需要肉眼；注意**产品目前没有调 `setHiddenInMissionControl`**，只有 demo 调了 |
-| M6 | ⬜ 未测 | `osascript` 报 `-25211 不允许辅助访问`；下面窗口的基线也是 0，所以这一整组读数无效 |
+| M6 | ✅ | 真实人手点击，`top(down/up) = 0/0`、`bottom = 3/3`：点击**真的穿过去了**。做法与两条前提见下 |
 | M7 | ✅ | `isFocused: false`，`BrowserWindow.getFocusedWindow()` 为 `null` |
 | M8 | ✅ | `screenX/Y = 120/105`（DIP，= 窗口位置）、`inner = outer = 900×640`、`avail = 1440×802`、`dpr = 2` |
 | M9 | ⬜ 未核对 | `skipTaskbar: true` 已设，Dock 里没看到图标（未逐项核对） |
 | M10 | ✅ | `capturePage` 非空；screencast 见 `agent-first-shot`：**119 帧 / 2s** |
+
+**M6 是怎么量的**（`parking-click-through-macos.cjs`，需要人点一次）：两扇窗完全重叠，下面一扇普通窗、
+上面一扇与停车窗同配置（`opacity 0.55` + `alwaysOnTop floating` + `focusable:false` + `setIgnoreMouseEvents(true)`），
+两边都数 `mousedown`。人点紫色区域，读数：上面 `down 0 / up 0`、下面 `down 3 / up 3` → 穿透。
+
+两条前提，都是这轮踩出来的（**改的是测试，不是结论**）：
+
+1. 这个 demo 应用必须是**活动应用**（`app.focus({steal:true})` + `bottom.focus()`）。否则普通层级的下面那扇窗排在终端后面，
+   点击确实穿过了透明窗，但落进的是终端 —— 计数窗收不到，看起来像"没穿透"。第一轮 `down` 全是 0 就是这个原因。
+2. 下面那扇窗要 `acceptFirstMouse: true`。macOS 默认把"点一扇没有焦点的窗"的第一次按下只用于**激活**它，不送进页面。
+
+**注意一个 macOS 特有的细节**：`setIgnoreMouseEvents(true)` 只让**点击**过去，`mousemove` 仍然会送进那扇透明窗的页面
+（这一轮上面那扇记到了 142 次 move，而 down/up 是 0）。对一个 `opacity: 0` 的停车窗没有视觉后果，但意味着页面能读到自己被悬停过 ——
+如果以后要防"页面自己发现有人在上面动鼠标"，这条要单独量。
 
 补充的三组（`parking-onscreen-macos.cjs`）：
 
@@ -237,9 +251,9 @@ hasOwner          = false
 D 组还暴露了一条值得记住的次序：**屏外窗口光 `moveTop()` 不够**。同一扇窗，在 `moveTop()` 之前先做一次 CDP `attach` + `Runtime.evaluate`，页面才从 `hidden/0×0` 变成 `visible/1800×1280`；没有那一步时 `moveTop()` 之后仍是 `hidden`、`capturePage` 报 `Current display surface not available for capture`。
 这和 `agent-first-shot.cjs` 的读法一致（它在那一步之前也 attach 了 debugger），也和产品 `capturePageWithRecovery` 先走 `getViewportMetrics` 的顺序一致 —— 但意味着"屏外有 surface"依赖的是一次**叫醒**，不是一次 `moveTop`。
 
-**对方案 C 的判断（macOS）**：M1/M2/M3/M7/M8/M10 全过，屏内透明窗在这台机器上是"完全正常的一扇窗"——被更高层级的窗口整块盖住也不停帧，
-导航后不补 `moveTop` 也不掉合成，`screenX` 在 `workArea` 内、`inner == outer`。C 在 macOS 上**没有挡路的技术问题**，
-剩下的都是"新的可见性代价"而不是"能不能出帧"：M6（点击是否真穿透）、M4/M5/M9（Mission Control / Space / Dock 里露不露）。
+**对方案 C 的判断（macOS）**：M1/M2/M3/M6/M7/M8/M10 全过，屏内透明窗在这台机器上是"完全正常的一扇窗"——被更高层级的窗口整块盖住也不停帧，
+导航后不补 `moveTop` 也不掉合成，点击真的穿到下面的窗口，`screenX` 在 `workArea` 内、`inner == outer`。
+C 在 macOS 上**没有挡路的技术问题**，剩下的都是"新的可见性代价"：M4/M5/M9（Space / Mission Control / Dock 里露不露）。
 真实风险从"出不了图"换成了"用户在某个系统界面里看见一个空窗口"，以及产品现在**没有** `focusable:false` / `setIgnoreMouseEvents` / `setHiddenInMissionControl`，
 这三个都要在 C 里新加。
 
@@ -267,6 +281,7 @@ D 组还暴露了一条值得记住的次序：**屏外窗口光 `moveTop()` 不
 | `parking-topmost-onscreen.cjs` | `parking-topmost-onscreen.report.json` | 主屏 + 置顶 + 透明的聚焦 / 命中 / 窗口枚举 |
 | `topmost-transparent-window.cjs` | `topmost-transparent-window.report.<platform>.json` | 本文的主 demo（`--show` / `--through` / `--keep`） |
 | `parking-onscreen-macos.cjs` | `parking-onscreen-macos.report.json` | macOS 补充：更高层级遮挡 / 普通层级盖不住 / 真实点击穿透 / 屏外对照 / 导航后不补 `moveTop` |
+| `parking-click-through-macos.cjs` | 控制台 `M6_RESULT` / `M6_PASS` | macOS 点击穿透的**数字**（两扇重叠窗各数 `mousedown`，人要点一次） |
 | `anti-bot-fingerprint.ts` | `anti-bot-fingerprint.report.json` | 更早的指纹探针（`webdriver` / `brands` / 权限 / 焦点） |
 | `parking-surface.cjs` | `parking-surface.log` | `parking-surface-macos-handoff.md` 用的 macOS 清单脚本 |
 
