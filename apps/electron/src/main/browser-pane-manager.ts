@@ -8287,7 +8287,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         const extractThemeColor = ${THEME_COLOR_EXTRACTOR_FN};
 
         const w = window;
-        const previousCleanup = w.__CRAFT_THEME_OBSERVER_CLEANUP__;
+        // A registered symbol rather than a named property: the old name said Craft
+        // out loud, and any listing of window's own properties would carry it. A
+        // symbol is invisible to for-in, to JSON, and to getOwnPropertyNames, while
+        // still being the same key the next injection of this script looks up.
+        const cleanupKey = Symbol.for('themeObserverCleanup');
+        const previousCleanup = w[cleanupKey];
         if (typeof previousCleanup === 'function') {
           try { previousCleanup(); } catch {}
         }
@@ -8373,7 +8378,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         if (typeof mql.addEventListener === 'function') mql.addEventListener('change', onSchemeChange);
         else if (typeof mql.addListener === 'function') mql.addListener(onSchemeChange);
 
-        w.__CRAFT_THEME_OBSERVER_CLEANUP__ = () => {
+        w[cleanupKey] = () => {
           headObserver.disconnect();
           rootObserver.disconnect();
           w.removeEventListener('scroll', onScroll);
@@ -8655,22 +8660,54 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.permissionsReady.add(ses)
 
     /**
-     * Browser tabs here are driven by automation, so a permission prompt has no one to
-     * answer it — a page that asks would simply stall. Every permission is therefore
-     * granted outright, which is what lets automated flows use the camera, microphone,
-     * geolocation, clipboard, notifications and the rest without a prompt in the way.
+     * Which permissions a page gets without a prompt.
      *
-     * Screen capture is the one exception on the *source* side: granting the permission
-     * does not hand out the desktop. {@link setupDisplayMediaHandler} answers every
-     * getDisplayMedia call with a tab — the asking page's own, never the screen.
+     * A prompt has nobody to answer it here — the tabs are driven by
+     * automation — so the two handlers below must answer for themselves. What
+     * they must **not** do is answer `true` to everything: `granted` for
+     * camera, microphone, geolocation, notifications and MIDI all at once is a
+     * state no real browser profile is in, and `Notification.permission` /
+     * `navigator.permissions.query()` are two of the cheapest reads a page has
+     * for telling a real browser from a driven one (measured: every one of the
+     * eight answered `granted`, where a real Chrome answers `prompt`).
+     *
+     * So the list is what the **tools** need plus what a page cannot work
+     * without, and nothing else:
+     *
+     * - `clipboard-read` / `clipboard-sanitized-write` — `set-clipboard`,
+     *   `get-clipboard` and `paste` go through `navigator.clipboard`;
+     * - `display-capture` — {@link setupDisplayMediaHandler} answers every
+     *   `getDisplayMedia` with a tab; the permission itself still has to be
+     *   alive for that call to reach it;
+     * - `geolocation` — deliberately left on: local results and store locators
+     *   are a normal thing to ask a browsing session for, and a profile that
+     *   allowed location for one site is an ordinary profile. It is one
+     *   `granted` among otherwise-`denied` answers, which is a shape real
+     *   people have; `granted` for *everything* is the shape nobody has.
+     *
+     * A page that asks for anything else is told no, which is what a person who
+     * never granted it would look like. A page that merely *asks* the state
+     * (`navigator.permissions.query`) also reads `denied`, not the impossible
+     * `granted`-for-everything.
+     *
+     * Screen capture stays safe on the *source* side regardless: granting a
+     * permission never hands out the desktop, only a tab ({@link setupDisplayMediaHandler}).
      */
+    const withoutPrompt = new Set<string>([
+      'clipboard-read',
+      'clipboard-sanitized-write',
+      'display-capture',
+      'geolocation',
+    ])
+    const granted = (permission: string): boolean => withoutPrompt.has(permission)
+
     if (typeof ses.setPermissionCheckHandler === 'function') {
-      ses.setPermissionCheckHandler(() => true)
+      ses.setPermissionCheckHandler((_webContents, permission) => granted(permission))
     }
 
     if (typeof ses.setPermissionRequestHandler === 'function') {
-      ses.setPermissionRequestHandler((_webContents, _permission, callback) => {
-        callback(true)
+      ses.setPermissionRequestHandler((_webContents, permission, callback) => {
+        callback(granted(permission))
       })
     }
   }

@@ -344,10 +344,10 @@ describe('BrowserCDP', () => {
   })
 
   describe('fillElement', () => {
-    it('focuses, clears, and types characters', async () => {
-      const sentCommands: string[] = []
-      const wc = createMockWebContents(async (method) => {
-        sentCommands.push(method)
+    it('selects all and inserts through the input pipeline, never a synthetic event', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
         if (method === 'Accessibility.getFullAXTree') {
           return {
             nodes: [
@@ -369,11 +369,48 @@ describe('BrowserCDP', () => {
 
       await cdp.fillElement('@e1', 'ab')
 
-      expect(sentCommands).toContain('DOM.focus')
-      expect(sentCommands).toContain('Runtime.callFunctionOn')
-      // Two characters typed: 2 keyDown + 2 keyUp = 4 key events
-      const keyEvents = sentCommands.filter(c => c === 'Input.dispatchKeyEvent')
-      expect(keyEvents.length).toBe(4)
+      expect(sent.map((c) => c.method)).toContain('DOM.focus')
+
+      // 全选是一次真实的 Ctrl/Cmd+A（keyDown + keyUp），不是页面里的 select()
+      const keys = sent.filter((c) => c.method === 'Input.dispatchKeyEvent')
+      expect(keys).toHaveLength(2)
+      expect(keys[0]?.params?.key).toBe('a')
+      expect(keys[0]?.params?.type).toBe('keyDown')
+      expect(keys[0]?.params?.modifiers).toBe(process.platform === 'darwin' ? 4 : 2)
+
+      // 落值只有一条 insertText
+      const inserts = sent.filter((c) => c.method === 'Input.insertText')
+      expect(inserts).toHaveLength(1)
+      expect(inserts[0]?.params).toEqual({ text: 'ab' })
+
+      // 关键断言：整条路径里不存在被伪造的 DOM 事件（`isTrusted === false` 的来源）
+      const fabricated = sent.filter((c) => (
+        c.method === 'Runtime.callFunctionOn'
+        && String(c.params?.functionDeclaration ?? '').includes('new Event(')
+      ))
+      expect(fabricated).toHaveLength(0)
+    })
+  })
+
+  describe('typeText', () => {
+    it('types ASCII key by key and inserts what no key can produce', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      await cdp.typeText('a前')
+
+      // `a` 有物理键：一按一放，且按下与抬起之间有真实的按住时长
+      const keys = sent.filter((c) => c.method === 'Input.dispatchKeyEvent')
+      expect(keys.map((k) => k.params?.type)).toEqual(['keyDown', 'keyUp'])
+      expect(keys.map((k) => k.params?.key)).toEqual(['a', 'a'])
+
+      // 中文没有物理键：一次插入，而不是一个 code 为空的 keydown
+      const inserts = sent.filter((c) => c.method === 'Input.insertText')
+      expect(inserts.map((i) => i.params?.text)).toEqual(['前'])
     })
   })
 

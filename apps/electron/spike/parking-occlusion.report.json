@@ -1,0 +1,69 @@
+{
+ "allowOcclusion": false,
+ "occlusionDisabled": true,
+ "parkWindow": {
+  "bounds": {
+   "x": 200,
+   "y": 200,
+   "width": 900,
+   "height": 700
+  },
+  "opacity": 1
+ },
+ "uncovered": {
+  "raf": 34,
+  "visibility": "visible",
+  "hidden": false,
+  "hasFocus": false,
+  "screenX": 200,
+  "rafTicks": 13,
+  "window": 416,
+  "captureBytes": 452657,
+  "captureErr": null,
+  "screencastFrames": 1,
+  "screencastErr": null
+ },
+ "covered": {
+  "raf": 113,
+  "visibility": "visible",
+  "hidden": false,
+  "hasFocus": false,
+  "screenX": 200,
+  "rafTicks": 14,
+  "window": 418,
+  "captureBytes": 452657,
+  "captureErr": null,
+  "screencastFrames": 1,
+  "screencastErr": null
+ },
+ "coveredState": {
+  "coverFocused": true,
+  "parkFocused": false
+ },
+ "doubleCovered": {
+  "raf": 188,
+  "visibility": "visible",
+  "hidden": false,
+  "hasFocus": false,
+  "screenX": 200,
+  "rafTicks": 13,
+  "window": 405,
+  "captureBytes": 452657,
+  "captureErr": null,
+  "screencastFrames": 1,
+  "screencastErr": null
+ },
+ "revealed": {
+  "raf": 261,
+  "visibility": "visible",
+  "hidden": false,
+  "hasFocus": false,
+  "screenX": 200,
+  "rafTicks": 13,
+  "window": 406,
+  "captureBytes": 452657,
+  "captureErr": null,
+  "screencastFrames": 1,
+  "screencastErr": null
+ }
+}

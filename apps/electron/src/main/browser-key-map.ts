@@ -108,3 +108,56 @@ export function keyStroke(key: string, modifiers: readonly BrowserKeyModifier[] 
 
   return { key: raw, code: raw, windowsVirtualKeyCode: 0 }
 }
+
+/**
+ * How a string is typed: one step at a time, and not the same step for every
+ * character.
+ *
+ * A **physical key** produces one printable ASCII character (0x20–0x7E), which
+ * is what `keyStroke` can describe honestly. Everything else — Chinese, emoji,
+ * full-width punctuation, anything a dead key or an IME composes — has no key
+ * behind it: `keyStroke('前')` can only invent `{ key: '前', code: '' }`, which
+ * no keyboard sends and no IME sends either (an IME sends `key: 'Process'`,
+ * `code: 'KeyQ'`, `keyCode: 229`, plus a composition sequence). Measured on a
+ * real page: the event arrived as `key: '前'`, `code: ''`, `keyCode: 0`.
+ *
+ * So those characters go in as one `insert` run — `Input.insertText`, the same
+ * pipeline a paste takes — while ASCII is typed key by key, and a newline or a
+ * tab is the key that exists for it.
+ */
+export type TypeStep =
+  | { kind: 'char'; char: string }
+  | { kind: 'named'; key: string }
+  | { kind: 'insert'; text: string }
+
+export function typeSteps(text: string): TypeStep[] {
+  const steps: TypeStep[] = []
+  let pending = ''
+  const flush = () => {
+    if (!pending) return
+    steps.push({ kind: 'insert', text: pending })
+    pending = ''
+  }
+
+  for (const char of text) {
+    if (char === '\n' || char === '\r') {
+      flush()
+      steps.push({ kind: 'named', key: 'Enter' })
+      continue
+    }
+    if (char === '\t') {
+      flush()
+      steps.push({ kind: 'named', key: 'Tab' })
+      continue
+    }
+    const code = char.codePointAt(0) ?? 0
+    if (code >= 0x20 && code <= 0x7e) {
+      flush()
+      steps.push({ kind: 'char', char })
+      continue
+    }
+    pending += char
+  }
+  flush()
+  return steps
+}

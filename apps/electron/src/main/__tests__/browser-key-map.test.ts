@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { keyStroke, modifierMask } from '../browser-key-map'
+import { keyStroke, modifierMask, typeSteps } from '../browser-key-map'
 
 describe('browser key map', () => {
   it('maps the keys the browser tool documents, under their aliases too', () => {
@@ -46,5 +46,33 @@ describe('browser key map', () => {
 
   it('refuses an empty key rather than pressing nothing', () => {
     expect(() => keyStroke('  ')).toThrow('key requires a key name')
+  })
+  it('types only what a key can produce, and inserts the rest', () => {
+    const LF = String.fromCharCode(10)
+    const TAB = String.fromCharCode(9)
+
+    // ASCII 逐字按键；换行/制表符各走它们自己的那个键
+    expect(typeSteps(`ab${LF}c${TAB}d`)).toEqual([
+      { kind: 'char', char: 'a' },
+      { kind: 'char', char: 'b' },
+      { kind: 'named', key: 'Enter' },
+      { kind: 'char', char: 'c' },
+      { kind: 'named', key: 'Tab' },
+      { kind: 'char', char: 'd' },
+    ])
+
+    // 中文没有物理键：连续的一段合并成一次插入，中间的 ASCII 空格照常按键
+    expect(typeSteps('前端 dev')).toEqual([
+      { kind: 'insert', text: '前端' },
+      { kind: 'char', char: ' ' },
+      { kind: 'char', char: 'd' },
+      { kind: 'char', char: 'e' },
+      { kind: 'char', char: 'v' },
+    ])
+
+    // 表情、全角标点同理
+    expect(typeSteps('😀')).toEqual([{ kind: 'insert', text: '😀' }])
+    expect(typeSteps('，。')).toEqual([{ kind: 'insert', text: '，。' }])
+    expect(typeSteps('')).toEqual([])
   })
 })

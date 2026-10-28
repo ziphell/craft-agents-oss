@@ -1,0 +1,260 @@
+{
+ "electron": "39.2.7",
+ "chrome": "142.0.7444.235",
+ "displays": [
+  {
+   "id": 785745296,
+   "bounds": {
+    "x": 0,
+    "y": 0,
+    "width": 1440,
+    "height": 960
+   },
+   "workArea": {
+    "x": 0,
+    "y": 0,
+    "width": 1440,
+    "height": 912
+   }
+  }
+ ],
+ "A_offscreenParking": {
+  "asked": {
+   "x": 21440,
+   "y": 0
+  },
+  "actualBounds": {
+   "x": 16383,
+   "y": 0,
+   "width": 1102,
+   "height": 846
+  },
+  "probe": {
+   "screenX": 16383,
+   "screenY": 0,
+   "screenLeft": 16383,
+   "screenTop": 0,
+   "outer": [
+    1102,
+    846
+   ],
+   "inner": [
+    1100,
+    845
+   ],
+   "screen": [
+    1440,
+    960
+   ],
+   "avail": [
+    1440,
+    912
+   ],
+   "availLeft": 0,
+   "availTop": 0,
+   "hasFocus": false,
+   "visibility": "visible",
+   "hidden": false,
+   "dpr": 2
+  }
+ },
+ "B_cdpEmulation": {
+  "before": {
+   "screenX": 16383,
+   "screenY": 0,
+   "screenLeft": 16383,
+   "screenTop": 0,
+   "outer": [
+    1102,
+    846
+   ],
+   "inner": [
+    1100,
+    845
+   ],
+   "screen": [
+    1440,
+    960
+   ],
+   "avail": [
+    1440,
+    912
+   ],
+   "availLeft": 0,
+   "availTop": 0,
+   "hasFocus": false,
+   "visibility": "visible",
+   "hidden": false,
+   "dpr": 2
+  },
+  "afterMetrics": {
+   "screenX": 0,
+   "screenY": 0,
+   "screenLeft": 0,
+   "screenTop": 0,
+   "outer": [
+    1102,
+    846
+   ],
+   "inner": [
+    1100,
+    845
+   ],
+   "screen": [
+    1440,
+    912
+   ],
+   "avail": [
+    1440,
+    912
+   ],
+   "availLeft": 0,
+   "availTop": 0,
+   "hasFocus": false,
+   "visibility": "visible",
+   "hidden": false,
+   "dpr": 2
+  },
+  "afterSecond": {
+   "screenX": 0,
+   "screenY": 0,
+   "screenLeft": 0,
+   "screenTop": 0,
+   "outer": [
+    1102,
+    846
+   ],
+   "inner": [
+    1100,
+    845
+   ],
+   "screen": [
+    1440,
+    912
+   ],
+   "avail": [
+    1440,
+    912
+   ],
+   "availLeft": 0,
+   "availTop": 0,
+   "hasFocus": false,
+   "visibility": "visible",
+   "hidden": false,
+   "dpr": 2
+  }
+ },
+ "C_negativeX": {
+  "actualBounds": {
+   "x": -1500,
+   "y": 0,
+   "width": 1100,
+   "height": 846
+  },
+  "probe": {
+   "screenX": -1500,
+   "screenY": 0,
+   "screenLeft": -1500,
+   "screenTop": 0,
+   "outer": [
+    1100,
+    846
+   ],
+   "inner": [
+    1100,
+    845
+   ],
+   "screen": [
+    1440,
+    960
+   ],
+   "avail": [
+    1440,
+    912
+   ],
+   "availLeft": 0,
+   "availTop": 0,
+   "hasFocus": false,
+   "visibility": "visible",
+   "hidden": false,
+   "dpr": 2
+  }
+ },
+ "D_osr": {
+  "probe": {
+   "screenX": 0,
+   "screenY": 0,
+   "screenLeft": 0,
+   "screenTop": 0,
+   "outer": [
+    1100,
+    846
+   ],
+   "inner": [
+    1100,
+    846
+   ],
+   "screen": [
+    0,
+    0
+   ],
+   "avail": [
+    0,
+    0
+   ],
+   "availLeft": 0,
+   "availTop": 0,
+   "hasFocus": false,
+   "visibility": "visible",
+   "hidden": false,
+   "dpr": 2
+  },
+  "bounds": {
+   "x": 170,
+   "y": 33,
+   "width": 1100,
+   "height": 846
+  },
+  "isVisible": false
+ },
+ "E_jsPatch": {
+  "error": "Script failed to execute, this normally means an error was thrown. Check the renderer console for the error."
+ },
+ "F_legalCoords": {
+  "bounds": {
+   "x": 40,
+   "y": 40,
+   "width": 1100,
+   "height": 846
+  },
+  "opacity": 0,
+  "probe": {
+   "screenX": 40,
+   "screenY": 40,
+   "screenLeft": 40,
+   "screenTop": 40,
+   "outer": [
+    1100,
+    846
+   ],
+   "inner": [
+    1100,
+    845
+   ],
+   "screen": [
+    1440,
+    960
+   ],
+   "avail": [
+    1440,
+    912
+   ],
+   "availLeft": 0,
+   "availTop": 0,
+   "hasFocus": false,
+   "visibility": "visible",
+   "hidden": false,
+   "dpr": 2
+  }
+ }
+}

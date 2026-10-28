@@ -1,0 +1,140 @@
+{
+ "baseline": {
+  "screenX": 16383,
+  "screenLeft": 16383,
+  "screenY": 0,
+  "outer": [
+   1102,
+   846
+  ],
+  "inner": [
+   1100,
+   845
+  ],
+  "screen": [
+   1440,
+   960
+  ],
+  "avail": [
+   1440,
+   912
+  ],
+  "availLeft": 0,
+  "hasFocus": false,
+  "visibility": "visible",
+  "dpr": 2
+ },
+ "baselineEvent": "[120,300,16503,300]",
+ "variant1": {
+  "screenX": 0,
+  "screenLeft": 0,
+  "screenY": 0,
+  "outer": [
+   1102,
+   846
+  ],
+  "inner": [
+   1100,
+   845
+  ],
+  "screen": [
+   1440,
+   960
+  ],
+  "avail": [
+   1440,
+   960
+  ],
+  "availLeft": 0,
+  "hasFocus": true,
+  "visibility": "visible",
+  "dpr": 2
+ },
+ "variant1Event": "[240,400,16623,400]",
+ "variant2": {
+  "screenX": 0,
+  "screenLeft": 0,
+  "screenY": 0,
+  "outer": [
+   1102,
+   846
+  ],
+  "inner": [
+   1100,
+   845
+  ],
+  "screen": [
+   1440,
+   960
+  ],
+  "avail": [
+   1440,
+   960
+  ],
+  "availLeft": 0,
+  "hasFocus": true,
+  "visibility": "visible",
+  "dpr": 2
+ },
+ "variant3": {
+  "screenX": 137,
+  "screenLeft": 137,
+  "screenY": 41,
+  "outer": [
+   1102,
+   846
+  ],
+  "inner": [
+   1100,
+   845
+  ],
+  "screen": [
+   1440,
+   960
+  ],
+  "avail": [
+   1440,
+   960
+  ],
+  "availLeft": 0,
+  "hasFocus": true,
+  "visibility": "visible",
+  "dpr": 2
+ },
+ "afterClear": {
+  "screenX": 16383,
+  "screenLeft": 16383,
+  "screenY": 0,
+  "outer": [
+   1102,
+   846
+  ],
+  "inner": [
+   1100,
+   845
+  ],
+  "screen": [
+   1440,
+   960
+  ],
+  "avail": [
+   1440,
+   912
+  ],
+  "availLeft": 0,
+  "hasFocus": true,
+  "visibility": "visible",
+  "dpr": 2
+ },
+ "jsPatch": {
+  "before": {
+   "protoHasGetter": false,
+   "own": true
+  },
+  "afterSrc": "function screenX() { return 40 }",
+  "value": 16383,
+  "leftStillReal": 16383,
+  "eventSrcPatched": false,
+  "toStringOfToString": "function toString() { [native code] }"
+ }
+}

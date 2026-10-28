@@ -1,0 +1,225 @@
+# 停车窗位置：改动方案（待 macOS 实测后一起评估）
+
+> 状态：**未实施**。本文是待评估的方案记录，与 [parking-window-position.md](./parking-window-position.md) 配套使用。
+> 写于 2026-10-28。所有"实测"引用均来自该文档 §2（Windows 11 / Electron 39.2.7 / RDP / 单屏 1440×960 @2x）。
+> 评估门槛：先跑完该文档 §6 的 **M1–M10**（以及 [parking-surface-macos-handoff.md](./parking-surface-macos-handoff.md) 的 Q1–Q5），再按本文 §7 的决策门选择 A / B / C。
+
+---
+
+## 1. 决策摘要
+
+| 方案 | 一句话 | 当前状态 |
+|---|---|---|
+| **A** | 维持现状：离屏 + 边距 20000（实际落地 16383），不透明 | 现状 |
+| **B** | **离屏 + 边距 48 + 换侧（下→上→左→右）+ 追上瞬间临时透明** | **倾向采用** |
+| **C** | 屏内 `workArea` + `opacity: 0` + `alwaysOnTop` + `ignoreMouseEvents` | 备选，等 macOS 数据 |
+
+选择 B 的理由：改动集中在三个点、不引入新 API 依赖、不动 macOS 已知行为，同时把页面读到的几何从"不可能的 16383"变成"可解释的 1008/1488"。C 只在"真机插屏闪烁不可接受"时才值得为它付代价。
+
+---
+
+## 2. 为什么现在不用 A、也不用 C
+
+### 2.1 A（现状）的问题只有一个，但它是硬的
+
+`OFFSCREEN_PARK_MARGIN = 20_000` 的**意图无法被表达**——Windows 把窗口坐标钳到 16 位，20000/100000/1000000 全部落地为 **16383**（代码注释里已记录）。于是页面读到：
+
+```
+window.screenX = 16383    screen.availWidth = 1440
+event.screenX  = 16503    （= 16383 + clientX）
+```
+
+数字之间是**自洽**的（同源），但 `screenX` 比屏幕宽出 14943px —— 没有任何真实用户状态对应这个值，而 `16383` 恰好是 Windows 坐标上限的常数，任何做指纹的人看到它就知道"有程序在把窗口藏到屏幕外"。
+
+### 2.2 C（屏内透明）的代价（都已实测，但代价是新的失败模式）
+
+| 项 | 结论 | 来源 |
+|---|---|---|
+| `opacity: 0` 本身**不**穿透鼠标 | 不设 `setIgnoreMouseEvents` 时会吞点击/悬停 | §2.3 真实系统点击 |
+| `ignoreMouseEvents` 有焦点时仍收键盘 | 必须同时 `focusable:false` + `showInactive()`，且 `show()` 后要重设 | `electron.d.ts` 原文 |
+| Linux `setOpacity` 是 no-op | 必须 `getOpacity()` 读回校验并回退 | `electron.d.ts` 平台标注 |
+| 窗口会出现在可见顶层窗口枚举里 | `WS_EX_TOOLWINDOW` 未置位、无 owner；屏幕共享选择器可能列出空条目 | §2.4 |
+| macOS 行为全部未验证 | 见 [parking-window-position.md](./parking-window-position.md) §6 | — |
+
+C 的数字更好（`screenX` 完全在屏内、无任何出界），但它换来的是四个平台/系统层面的新面。**只有在 B 的闪烁不可接受时才值得。**
+
+---
+
+## 3. 改动清单（B）
+
+改动文件只有一个：`apps/electron/src/main/browser-pane-manager.ts`。
+
+### 3.1 边距：`20000` → `48`
+
+```ts
+// 现状（约 :188）
+const OFFSCREEN_PARK_MARGIN = 20_000
+
+// 改为
+/**
+ * 停车窗越过最后一块显示器多远。
+ *
+ * 它同时是两个东西：一个**请求**（桌面会钳位，见下）和一个**页面上能读到的数**
+ * （`window.screenX` / `event.screenX`）。曾经写 20_000 ——"远过任何桌面"——但坐标被钳到
+ * 16 383，于是页面读到的位置比屏幕还宽 14943px，一个任何真实状态都不对应的数。
+ *
+ * 48 是"刚好把窗口整个放到屏外"的量级：边框 + 阴影 + DPI 取整都在它之下，而 1440+48=1488
+ * 是一个真实存在的状态——"副屏被拔掉之后，窗口被留在了外面"。
+ */
+const OFFSCREEN_PARK_MARGIN = 48
+```
+
+**验收**：`window.screenX` 与 `screen.availWidth` 之差 ≤ 64（现状是 14943）。
+
+### 3.2 换侧：候选顺序改为 下 → 上 → 左 → 右
+
+```ts
+// 现状（约 :4649）
+const candidates = [
+  { x: right + OFFSCREEN_PARK_MARGIN, y: top },
+  { x: left - OFFSCREEN_PARK_MARGIN - size.width, y: top },
+  { x: left, y: bottom + OFFSCREEN_PARK_MARGIN },
+  { x: left, y: top - OFFSCREEN_PARK_MARGIN - size.height },
+]
+
+// 改为（把最容易被新显示器"包住"的左右放到最后）
+const candidates = [
+  { x: left, y: bottom + OFFSCREEN_PARK_MARGIN },                              // 下
+  { x: left, y: top - OFFSCREEN_PARK_MARGIN - size.height },                   // 上
+  { x: left - OFFSCREEN_PARK_MARGIN - size.width, y: top },                    // 左
+  { x: right + OFFSCREEN_PARK_MARGIN, y: top },                                // 右
+]
+```
+
+**理由**：边距缩到 48 之后，"新显示器把它包进来"从"几乎不可能"变成"可能"，而危险期只持续到 `display-added` 被处理完。用户接屏绝大多数发生在**左右两侧**，上下方向极少——把这个概率压下去，而不引入任何新机制。
+
+**副作用**：`screenY` 出界而不是 `screenX`（例如 `screenY = 912+48 = 960`，`availHeight = 912`）。两者对指纹检查是等价的（都要判断"窗口原点是否落在任一 display 矩形内"），解释力也相当（都是"副屏被拔了"）。而 `screenX` 反而变成完全合法的值。
+
+### 3.3 追上瞬间临时透明（只在"已经被看见"的那一瞬）
+
+```ts
+// keepOffEveryDisplay()（约 :4683）
+private keepOffEveryDisplay(window: BrowserWindow): void {
+  if (window.isDestroyed()) return
+  const rect = window.getBounds()
+  if (!this.overlapsADisplay(rect)) {
+    this.parkingStuck.delete(window)
+    return
+  }
+  if (this.parkingStuck.has(window)) return
+
+  const spot = this.offscreenSpot({ width: rect.width, height: rect.height })
+
+  // 它此刻就在某块屏上——用户可能正看着它（插屏那一刻，Windows 不会移动窗口，
+  // 是新屏把它包了进来）。所以先让它看不见，再搬；搬完已经在屏外，恢复不会闪第二次。
+  // 实测：opacity 0 不影响出帧与 capturePage（字节级一致），这几十毫秒里页面照画不误。
+  // Linux 上 setOpacity 是 no-op，读回不是 0 就跳过——退化成今天的"闪一下"。
+  const opacity = window.getOpacity()
+  const dimmed = opacity !== 0
+  if (dimmed) window.setOpacity(0)
+  try {
+    window.setPosition(spot.x, spot.y)
+  } finally {
+    if (dimmed && !window.isDestroyed()) window.setOpacity(opacity)
+  }
+
+  const landed = window.getBounds()
+  const stillOnADisplay = this.overlapsADisplay(landed)
+  if (stillOnADisplay) {
+    this.parkingStuck.add(window)
+    mainLog.warn(`[browser-pane] a window nobody may see could not be moved clear of the displays: it asked for ${spot.x},${spot.y} and is at ${landed.x},${landed.y}, which a display still covers`)
+    return
+  }
+  mainLog.warn(`[browser-pane] a window nobody may see was on a display at ${rect.x},${rect.y}; moved it back off every display to ${landed.x},${landed.y}`)
+}
+```
+
+**为什么这条路径足够安全**：`keepOffEveryDisplay` 先做一次 `overlapsADisplay` 比较就返回，所以"临时透明"只在**窗口确实落在某块屏上**时发生——正常运行时它一次都不会触发，`move`/`resize` 事件也不会误触。
+
+---
+
+## 4. 逐条风险与缓解
+
+| 风险 | 概率 | 缓解 |
+|---|---|---|
+| 插屏后 `display-added` 之前，停车窗被包进新屏 | 边距 48 后显著上升；左右最高 | §3.2 换侧把最常见的左右压到最低 + §3.3 临时透明 |
+| `parkingStuck` 永久放弃（窗口留在屏上） | 低：只有"四个方向全被占满"才会 | 不动现有逻辑；`stuck` 在任一次成功移回屏外时被清掉 |
+| `setPosition` 被桌面夹回（层叠/高 DPI 边界） | 低 | 现有 `landed` 复查 + warn 日志不变 |
+| 临时透明打断一帧 | 极低：仅异常路径 | 实测 opacity 0 画面照常；若真丢一帧，也在"用户正在插屏"的毫秒里 |
+| Linux 无 `setOpacity` | 确定（平台限制） | 读回 `getOpacity() !== 0` 即跳过；行为等同今天 |
+| 单屏用户升级后首次摆放位置变化 | 100%（这是目的） | 无数据影响；仅日志里的坐标变化 |
+| 多屏异形拼接（右/左/下都有屏） | 中 | `overlapsADisplay` 已过滤，自动退到还有空隙的一侧 |
+
+---
+
+## 5. 测试计划
+
+### 5.1 单测（`apps/electron/src/main/__tests__/browser-pane-manager.test.ts`）
+
+1. **边距不再被钳位**：mock 单屏 `{x:0,y:0,w:1440,h:960}`，断言 `offscreenSpot({w:900,h:640})` 的 `x` 或 `y` 距离最近屏边 ≤ 64。
+2. **不与任何显示器相交**：同上，`overlapsADisplay(spot+size) === false`。
+3. **候选顺序**：mock 一块屏在下方（`{y:960,...}`）时，选择退到"上/左/右"，而不是 `bottom + 48`。
+4. **追上即透明并恢复**：stub 一个已在屏内的 bounds，断言 `setOpacity` 的调用序列是 `0 → 原值`，且 `setPosition` 夹在中间。
+5. **正常路径不碰 opacity**：窗口在屏外时 `setOpacity` 零调用（防止 `move` 事件抖成手电筒）。
+
+### 5.2 手动（Windows 真机，本机是 RDP 测不了）
+
+| 步骤 | 期望 |
+|---|---|
+| 插一块屏到**右侧** | 停车窗不可见；日志出现 "was on a display … moved it back off every display"；无可见闪烁 |
+| 插一块屏到**下方** | 同上（这是换侧之后最可能被包住的方向，重点看） |
+| 拔掉所有副屏 | 无残留窗口；无卡死 |
+| 100% ↔ 200% 缩放切换 | 坐标重算后仍不可见 |
+| 拖主窗到副屏 | 停车窗不跟随、不露出 |
+| 视口 resize（`viewport-resize` 到 2560×1440） | 仍不可见；截图正常 |
+
+### 5.3 macOS
+
+直接跑 [parking-window-position.md](./parking-window-position.md) §6 的 M1–M10。**B 方案本身不含平台分支**，所以 macOS 的 M1–M10 只用于决定"要不要叠加 C"，不影响 B 是否可以上。
+
+---
+
+## 6. 验收标准（可判定的）
+
+- [ ] 页面读到的 `window.screenX` / `screenY` 中，**只有一个轴**出界，且出界量 ≤ 64
+- [ ] 另一个轴严格落在 `[availLeft, availLeft+availWidth)` 内
+- [ ] `event.screenX - clientX === window.screenX`（同源自洽未被破坏）
+- [ ] `overlapsADisplay(parkingBounds) === false`（每个 display 事件之后）
+- [ ] 显示器变化后一个事件循环内完成归位（日志时间戳差 < 100ms）
+- [ ] 出帧不回退：`rafTicksIn400ms ≥ 8`、`wc.capturePage()` 非空
+- [ ] `browser-pane-manager.test.ts` 全绿，且新增 5 条断言在列
+
+---
+
+## 7. 决策门（等 macOS 数据）
+
+```
+M1–M3 全过（alpha=0 出帧、不判 occluded）
+├─ 是 → C 在 macOS 上成立的候选成立
+│        └─ Windows 真机插屏闪烁是否明显？
+│             ├─ 明显 → 采用 B + 叠加 C（C 是保险层，不替换 B）
+│             └─ 不明显 → 停在 B
+└─ 否 → 停在 B（C 不可用，闪烁靠 §3.3 的临时透明压小）
+```
+
+无论哪条分支，**B 都是要做的**（它修的是"16383"这个数），C 只是可选叠加。
+
+---
+
+## 8. 回滚
+
+三处改动互相独立，可单独回退：
+
+1. `OFFSCREEN_PARK_MARGIN` 改回 `20_000` → 数字回退到 16383，其他行为不变；
+2. `candidates` 顺序改回 右→左→下→上 → 摆放位置回到右侧；
+3. `keepOffEveryDisplay` 去掉 opacity 包裹 → 回到"直接 setPosition"。
+
+无数据迁移、无配置项、无持久化影响。
+
+---
+
+## 9. 变更记录
+
+| 日期 | 内容 |
+|---|---|
+| 2026-10-28 | 首版：基于 parking-window-position.md §2 的 Windows 实测，确定 B + 两手补丁，C 列为备选 |

@@ -1,0 +1,64 @@
+{
+ "show": false,
+ "keep": false,
+ "display": {
+  "id": 785745296,
+  "workArea": {
+   "x": 0,
+   "y": 0,
+   "width": 1440,
+   "height": 912
+  },
+  "scaleFactor": 2
+ },
+ "transparent": {
+  "requested": 0,
+  "actual": 0,
+  "opacityWorks": true
+ },
+ "state": {
+  "raf": 38,
+  "screenX": 8,
+  "screenY": 8,
+  "screenLeft": 8,
+  "screenTop": 8,
+  "outer": [
+   900,
+   640
+  ],
+  "inner": [
+   900,
+   640
+  ],
+  "avail": [
+   1440,
+   912
+  ],
+  "screen": [
+   1440,
+   960
+  ],
+  "visibility": "visible",
+  "hidden": false,
+  "hasFocus": false,
+  "dpr": 2,
+  "rafTicksIn400ms": 14
+ },
+ "bounds": {
+  "x": 8,
+  "y": 8,
+  "width": 900,
+  "height": 640
+ },
+ "isVisible": true,
+ "isFocused": false,
+ "alwaysOnTop": true,
+ "capture": {
+  "size": {
+   "width": 1800,
+   "height": 1280
+  },
+  "bytes": 791261
+ },
+ "focusHolder": "(none)"
+}

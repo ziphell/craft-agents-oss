@@ -13,7 +13,23 @@ import type { WebContents } from 'electron'
 import type { PickedElement } from '@craft-agent/shared/protocol'
 import type { BrowserStreamInput, BrowserCaretRect } from '@craft-agent/shared/protocol'
 import { mainLog } from './logger'
-import { keyStroke, modifierMask, type BrowserKeyModifier } from './browser-key-map'
+import { keyStroke, modifierMask, typeSteps, type BrowserKeyModifier } from './browser-key-map'
+
+/**
+ * How long a typed string is allowed to take, and the interval floor and ceiling
+ * that budget works within.
+ *
+ * `type` is the path that looks like a person typing (see `typeText`); `fill` is
+ * the fast one. The budget is what keeps those two honest about their roles: a
+ * short search query gets ~150 ms a character, a paragraph gets squeezed toward
+ * the floor rather than becoming a one-minute keystroke recital.
+ */
+const TYPE_BUDGET_MS = 4_000
+const TYPE_PACE_MAX_MS = 180
+const TYPE_PACE_MIN_MS = 14
+
+/** A duration with the unevenness of a hand rather than the steadiness of a loop. */
+const jitter = (ms: number): number => Math.round(ms * (0.7 + Math.random() * 0.6))
 
 export interface AccessibilityNode {
   ref: string           // "@e1", "@e2", etc.
@@ -2241,17 +2257,20 @@ export class BrowserCDP {
   }
 
   /**
-   * Type one character, with the key identity a page expects.
+   * One keystroke: down, held for a moment, up.
    *
-   * `{ type: 'keyDown', text }` alone inserts the character but hands the page a
-   * `keydown` whose `e.key` is the empty string (measured: five presses, five
-   * empty strings), so a page that watches keys — a search box that filters on
-   * `keydown`, a canvas app — reads the typing as nothing at all. The mapped
-   * `key`/`code`/`windowsVirtualKeyCode` are what a real keystroke carries; the
-   * `text` stays exactly what it was, so what gets inserted is unchanged.
+   * The hold is not decoration — a real key is down for 25–150 ms, and back-to-back
+   * `keyDown`/`keyUp` 0.6 ms apart is what a loop does, not a hand (measured on a
+   * page: 0.6–0.8 ms between the two). It defaults to a plausible middle and is
+   * paced by `typeText` so that key-down → key-up → pause adds up to one interval.
    */
-  private async sendChar(char: string): Promise<void> {
+  private async sendChar(char: string, holdMs = 40): Promise<void> {
     const stroke = keyStroke(char)
+    await this.sendStroke(stroke, holdMs, stroke.text ?? char)
+  }
+
+  /** The shared shape of one key: the same parameters `pressKey` builds, without the probe. */
+  private async sendStroke(stroke: ReturnType<typeof keyStroke>, holdMs: number, text?: string): Promise<void> {
     const params = {
       key: stroke.key,
       code: stroke.code,
@@ -2259,13 +2278,50 @@ export class BrowserCDP {
       nativeVirtualKeyCode: stroke.windowsVirtualKeyCode,
       modifiers: 0,
     }
-    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', text: stroke.text ?? char, ...params })
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...(text !== undefined ? { text } : {}), ...params })
+    await new Promise(resolve => setTimeout(resolve, holdMs))
     await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
   }
 
+  /**
+   * Type text into whatever holds the focus — the `browser_tool type` path.
+   *
+   * Two things it is deliberate about, both measured on a real page:
+   *
+   * - **Not every character is a key.** Seven Chinese characters used to arrive
+   *   as seven `keydown`s carrying `key: '前'`, `code: ''`, `keyCode: 0` — a shape
+   *   no keyboard and no IME produces. Characters without a physical key now go
+   *   in as one `Input.insertText` run instead (see `typeSteps`), which is the
+   *   browser's own "insert this text" and the path a paste takes.
+   * - **Keys arrive at a hand's pace, not at the speed of a loop.** The same
+   *   seven characters landed inside 24 ms — 2.5–5.9 ms apart, which is 400
+   *   characters a second; anything measuring keystroke intervals sees that
+   *   instantly. Each interval is drawn around a pace rather than fixed, and the
+   *   pace shrinks for long text so a paragraph stays a paragraph: `fill` is the
+   *   path for bulk, and this one is for looking like a person typed it.
+   */
   async typeText(text: string): Promise<void> {
-    for (const char of text) {
-      await this.sendChar(char)
+    if (!text) return
+    // ~4 s for a whole string, never slower than 180 ms a character and never
+    // faster than 14 ms — which is still a machine, but only for text nobody
+    // would type by hand anyway.
+    const pace = Math.min(TYPE_PACE_MAX_MS, Math.max(TYPE_PACE_MIN_MS, Math.floor(TYPE_BUDGET_MS / text.length)))
+    const hold = Math.min(60, Math.max(8, Math.round(pace * 0.35)))
+
+    for (const step of typeSteps(text)) {
+      if (step.kind === 'insert') {
+        await this.send('Input.insertText', { text: step.text })
+        await new Promise(resolve => setTimeout(resolve, jitter(pace)))
+        continue
+      }
+      if (step.kind === 'named') {
+        const stroke = keyStroke(step.key)
+        await this.sendStroke(stroke, jitter(hold), stroke.text)
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, jitter(pace) - hold)))
+        continue
+      }
+      await this.sendChar(step.char, jitter(hold))
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, jitter(pace) - hold)))
     }
   }
 
@@ -2300,20 +2356,41 @@ export class BrowserCDP {
       ...(stroke.text !== undefined ? { text: stroke.text } : {}),
     }
 
-    const install = `(() => { window.__craftKeySeen = []; window.__craftKeyProbe = (e) => window.__craftKeySeen.push(e.key); addEventListener('keydown', window.__craftKeyProbe, true) })()`
-    const remove = `(() => { removeEventListener('keydown', window.__craftKeyProbe, true); delete window.__craftKeyProbe; delete window.__craftKeySeen })()`
+    // The probe lives in a **closure the install expression returns**, not on
+    // `window`: a page can list its own properties at any moment, and
+    // `__craftKeySeen` / `__craftKeyProbe` announced both that it was being driven
+    // and by whom. Counting and tearing down are calls on that handle, which
+    // leaves nothing behind either way.
+    const install = `(() => {
+      const seen = []
+      const probe = (e) => { seen.push(e.key) }
+      addEventListener('keydown', probe, true)
+      return () => { removeEventListener('keydown', probe, true); return seen.length }
+    })()`
 
-    await this.send('Runtime.evaluate', { expression: install })
+    let finish: string | null = null
     try {
+      const installed = await this.send('Runtime.evaluate', { expression: install })
+      finish = (installed as { result?: { objectId?: string } })?.result?.objectId ?? null
       await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...params })
       await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
-      const seen = await this.send('Runtime.evaluate', { expression: 'window.__craftKeySeen.length', returnByValue: true })
-      return { delivered: Number(seen?.result?.value ?? 0) }
+      if (!finish) return { delivered: 0 }
+      const settled = await this.send('Runtime.callFunctionOn', {
+        objectId: finish,
+        functionDeclaration: 'function() { return this() }',
+        returnByValue: true,
+      })
+      return { delivered: Number((settled as { result?: { value?: unknown } })?.result?.value ?? 0) }
+    } catch {
+      /* navigation mid-press: the page it was installed into is gone with it */
+      return { delivered: 0 }
     } finally {
-      try {
-        await this.send('Runtime.evaluate', { expression: remove })
-      } catch {
-        /* navigation mid-press: the page it was installed into is gone with it */
+      if (finish) {
+        try {
+          await this.send('Runtime.releaseObject', { objectId: finish })
+        } catch {
+          /* the context is gone; the handle went with it */
+        }
       }
     }
   }
@@ -2366,6 +2443,27 @@ export class BrowserCDP {
     }
   }
 
+  /**
+   * Replace a field's contents **through the browser's own input pipeline**.
+   *
+   * Not `this.value = ''` + `dispatchEvent(new Event('input'))`: a fabricated
+   * event is `isTrusted === false`, and that flag is on the very first thing
+   * this browser does to a page — a form validating on `input`, a framework's
+   * value tracker, or anything watching for automation can read it without any
+   * trick of its own (measured: `fill-spike.cjs`, `input:false` + `change:false`).
+   *
+   * A real `Ctrl/Cmd+A` followed by `Input.insertText` produces what a paste
+   * produces — `beforeinput` + `input`, both trusted, `inputType: 'insertText'`
+   * — and the `change` a field owes its page arrives by itself when focus
+   * leaves, which is when a browser actually sends it. (The old code fired one
+   * immediately, untrusted, at a moment no browser would.)
+   *
+   * The selection is verified rather than assumed: a page that swallows the key
+   * stroke (a rich editor with its own shortcut handling) leaves the caret where
+   * it was, and the insert would then append instead of replace. When the value
+   * that came back is not the one asked for, the field is selected in the page
+   * and the insert is repeated once.
+   */
   async fillElement(ref: string, value: string): Promise<ElementGeometry> {
     const backendNodeId = this.refMap.get(ref)
     if (!backendNodeId) {
@@ -2373,36 +2471,86 @@ export class BrowserCDP {
     }
 
     try {
-      // Focus the element first
       await this.send('DOM.focus', { backendNodeId })
 
-      // Clear existing content
-      const { object } = await this.send('DOM.resolveNode', { backendNodeId })
-      await this.send('Runtime.callFunctionOn', {
-        objectId: object.objectId,
-        functionDeclaration: `function() {
-          this.value = '';
-          this.dispatchEvent(new Event('input', { bubbles: true }));
-        }`,
-      })
+      await this.sendSelectAll()
+      await this.send('Input.insertText', { text: value })
 
-      // Type the new value character by character for realistic input
-      for (const char of value) {
-        await this.sendChar(char)
+      // `null` means "not a field this can read" — that is not a failed insert, so
+      // it is not a reason to insert a second time.
+      const landed = await this.readFieldValue(backendNodeId)
+      if (landed !== null && landed !== value) {
+        await this.selectFocusedContents(backendNodeId)
+        await this.send('Input.insertText', { text: value })
       }
-
-      // Dispatch change event
-      await this.send('Runtime.callFunctionOn', {
-        objectId: object.objectId,
-        functionDeclaration: `function() {
-          this.dispatchEvent(new Event('change', { bubbles: true }));
-        }`,
-      })
 
       return await this.getElementGeometry(ref)
     } catch (err) {
       mainLog.error(`[browser-cdp] Fill failed for ${ref}:`, err)
       throw new Error(`Failed to fill ${ref}: ${err}`)
+    }
+  }
+
+  /**
+   * `Ctrl+A` (`Cmd+A` on macOS) as a real key stroke, so the selection is made
+   * the way a person's would be: no page-side `select()` call, no synthetic
+   * event, and it works for a textarea, an `<input>` and a contenteditable alike.
+   */
+  private async sendSelectAll(): Promise<void> {
+    const modifier: BrowserKeyModifier = process.platform === 'darwin' ? 'meta' : 'control'
+    const stroke = keyStroke('a', [modifier])
+    const params = {
+      key: stroke.key,
+      code: stroke.code,
+      windowsVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      modifiers: modifierMask([modifier]),
+    }
+    // `keyDown`, not `rawKeyDown`: this file's own measurement (`pressKey` below)
+    // is that `rawKeyDown` reaches no page in this app even though the same
+    // payload delivers from a standalone Electron. The fallback in `fillElement`
+    // is what covers a page that swallows the stroke anyway.
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...params })
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
+  }
+
+  /**
+   * What the field actually holds now — `null` when it is not a field this can
+   * read, which is the answer that tells the caller not to bother correcting.
+   */
+  private async readFieldValue(backendNodeId: number): Promise<string | null> {
+    try {
+      const { object } = await this.send('DOM.resolveNode', { backendNodeId })
+      const res = await this.send('Runtime.callFunctionOn', {
+        objectId: object.objectId,
+        functionDeclaration: 'function() { if (typeof this.value === "string") return this.value; if (this.isContentEditable) return this.textContent; return null }',
+        returnByValue: true,
+      })
+      const read = (res as { result?: { value?: unknown } })?.result?.value
+      return typeof read === 'string' ? read : null
+    } catch {
+      return null
+    }
+  }
+
+  /** The fallback for a page that ate the key stroke: select inside the page, once. */
+  private async selectFocusedContents(backendNodeId: number): Promise<void> {
+    try {
+      const { object } = await this.send('DOM.resolveNode', { backendNodeId })
+      await this.send('Runtime.callFunctionOn', {
+        objectId: object.objectId,
+        functionDeclaration: `function() {
+          if (typeof this.select === 'function') { this.select(); return }
+          const selection = document.getSelection()
+          if (!selection) return
+          const range = document.createRange()
+          range.selectNodeContents(this)
+          selection.removeAllRanges()
+          selection.addRange(range)
+        }`,
+      })
+    } catch {
+      /* nothing to select: the insert that follows is still the best attempt */
     }
   }
 
