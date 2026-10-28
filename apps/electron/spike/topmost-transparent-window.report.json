@@ -2,12 +2,12 @@
  "show": false,
  "keep": false,
  "display": {
-  "id": 785745296,
+  "id": 1,
   "workArea": {
    "x": 0,
-   "y": 0,
+   "y": 25,
    "width": 1440,
-   "height": 912
+   "height": 802
   },
   "scaleFactor": 2
  },
@@ -17,11 +17,11 @@
   "opacityWorks": true
  },
  "state": {
-  "raf": 38,
+  "raf": 69,
   "screenX": 8,
-  "screenY": 8,
+  "screenY": 33,
   "screenLeft": 8,
-  "screenTop": 8,
+  "screenTop": 33,
   "outer": [
    900,
    640
@@ -32,21 +32,21 @@
   ],
   "avail": [
    1440,
-   912
+   802
   ],
   "screen": [
    1440,
-   960
+   900
   ],
   "visibility": "visible",
   "hidden": false,
   "hasFocus": false,
   "dpr": 2,
-  "rafTicksIn400ms": 14
+  "rafTicksIn400ms": 25
  },
  "bounds": {
   "x": 8,
-  "y": 8,
+  "y": 33,
   "width": 900,
   "height": 640
  },
@@ -58,7 +58,7 @@
    "width": 1800,
    "height": 1280
   },
-  "bytes": 791261
+  "bytes": 841537
  },
  "focusHolder": "(none)"
 }

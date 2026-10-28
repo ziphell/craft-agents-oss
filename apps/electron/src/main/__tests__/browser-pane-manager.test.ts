@@ -215,6 +215,7 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
   let winX = 40
   let winY = 40
   let skipTaskbar = false
+  let opacity = 1
   let visible = false
   let minimized = false
   let maximized = false
@@ -303,6 +304,11 @@ function createMockWindow(opts?: { width?: number; height?: number; minWidth?: n
     }),
     setSkipTaskbar: mock((skip: boolean) => { skipTaskbar = skip }),
     _skipTaskbar: () => skipTaskbar,
+    // Transparency is how a window that turns out to be on a display is moved without being seen
+    // (`keepOffEveryDisplay`), and it is only a request on some platforms — so the window keeps it
+    // and reports it back, the way `getOpacity` does.
+    getOpacity: mock(() => opacity),
+    setOpacity: mock((next: number) => { opacity = next }),
     hide: mock(() => {
       visible = false
       win._emit('hide')
@@ -2433,22 +2439,43 @@ describe('BrowserPaneManager', () => {
     // one of these per browser window all asking for the same spot.
     expect(parking.moveTop).toHaveBeenCalled()
 
-    // Put past the right edge of the only display (0..1920) — and far past it, not just past the
-    // window's own edge: this is a request the desktop may cap (measured: it lands at 16383 whatever
-    // you ask for), which is why where it ended up is checked rather than assumed.
-    expect(parking.getBounds().x).toBeGreaterThan(1920)
-    const whereItWasFirstPut = parking.getBounds().x
+    // Put off the only display (0..1920 × 0..1080), and only just past it: the margin is a number
+    // the page reads back (`window.screenX` / `event.screenX`), so it has to be one a real desktop
+    // produces, not a capped constant nobody can reach.
+    const sharesNoPixelWithAnyDisplay = (rect: { x: number; y: number; width: number; height: number }) => (
+      mockScreen.getAllDisplays().every((display: { bounds: { x: number; y: number; width: number; height: number } }) => (
+        rect.x >= display.bounds.x + display.bounds.width
+        || rect.x + rect.width <= display.bounds.x
+        || rect.y >= display.bounds.y + display.bounds.height
+        || rect.y + rect.height <= display.bounds.y
+      ))
+    )
+    expect(sharesNoPixelWithAnyDisplay(parking.getBounds())).toBe(true)
+    // …and close enough that it reads like a window left just outside the desktop.
+    expect(Math.hypot(
+      parking.getBounds().x - Math.max(0, Math.min(parking.getBounds().x, 1920)),
+      parking.getBounds().y - Math.max(0, Math.min(parking.getBounds().y, 1080)),
+    )).toBeLessThanOrEqual(64)
+    const whereItWasFirstPut = parking.getBounds()
 
-    // The person plugs a screen in that covers that spot, and the manager hears about it.
-    mockScreen.getAllDisplays.mockImplementation(() => [{ bounds: { x: 0, y: 0, width: 40_000, height: 1080 } }])
+    // The person plugs a screen in **under** the desk, which is where the window now sits, and the
+    // manager hears about it. (Windows and macOS both leave the window where it is and let the new
+    // display cover it — that is what the move below has to be invisible for.)
+    mockScreen.getAllDisplays.mockImplementation(() => [
+      { bounds: { x: 0, y: 0, width: 1920, height: 1080 } },
+      { bounds: { x: 0, y: 1080, width: 1920, height: 1080 } },
+    ])
+    const whereItWasWhenTheScreenArrived = parking.getBounds()
     mockScreen._emit('display-added')
-    expect(parking.getBounds().x).toBeGreaterThanOrEqual(40_000)
+    expect(sharesNoPixelWithAnyDisplay(parking.getBounds())).toBe(true)
+    expect(parking.getBounds()).not.toEqual(whereItWasWhenTheScreenArrived)
+    expect(parking.getBounds()).not.toEqual(whereItWasFirstPut)
 
     // And the desktop moving it back onto a screen — the other thing that happens without us: the
     // window is watched, so it goes back out.
     parking.setPosition(0, 0)
-    expect(parking.getBounds().x).toBeGreaterThanOrEqual(40_000)
-    expect(parking.getBounds().x).not.toBe(whereItWasFirstPut)
+    expect(sharesNoPixelWithAnyDisplay(parking.getBounds())).toBe(true)
+    expect(parking.getBounds()).not.toEqual(whereItWasFirstPut)
 
     // And it may not stop being **shown**: a window that is not shown is not composited, and the
     // views inside it lose the viewport the freeze is for. Nothing about it is the person's, so a
@@ -2470,6 +2497,105 @@ describe('BrowserPaneManager', () => {
     // The subscription is dropped with the last window, rather than outliving the manager.
     manager.destroyAll()
     expect(mockScreen.removeListener).toHaveBeenCalled()
+  })
+
+  /**
+   * The margin is a number the page can read back, and it has to be one a real desktop produces.
+   *
+   * The page sees where its window is (`window.screenX` / `screenY`, and the same origin through
+   * `event.screenX`), so "off screen" is not free to be any place: it used to be 20_000 DIPs, which
+   * Windows capped at **16_383** — a position 14_943 px wider than the screen that no state of a
+   * real desktop corresponds to. Just past the edge reads like what it is: a window left outside
+   * after a screen was unplugged.
+   */
+  it('puts a window nobody may see just past the edge, and on one axis only', () => {
+    mockScreen.getAllDisplays.mockImplementation(() => [{ bounds: { x: 0, y: 0, width: 1440, height: 960 } }])
+
+    const spot = (manager as any).offscreenSpot({ width: 900, height: 640 })
+
+    // Below the desk, by the margin and no more…
+    expect(spot).toEqual({ x: 0, y: 960 + 48 })
+    // …so one axis is out by less than a dragged window, and the other is entirely legal.
+    expect(spot.y - 960).toBeLessThanOrEqual(64)
+    expect(spot.x).toBe(0)
+    expect((manager as any).overlapsADisplay({ ...spot, width: 900, height: 640 })).toBe(false)
+  })
+
+  /**
+   * Below first, then above, then the sides: the margin is small enough that a screen arriving after
+   * the window was placed can encompass it, and people plug screens in beside the desk, not under it.
+   */
+  it('prefers the side a screen is least likely to arrive on', () => {
+    mockScreen.getAllDisplays.mockImplementation(() => [
+      { bounds: { x: 0, y: 0, width: 1440, height: 900 } },
+      { bounds: { x: 1440, y: -200, width: 1080, height: 1920 } },
+    ])
+
+    const spot = (manager as any).offscreenSpot({ width: 900, height: 640 })
+
+    // Below the lowest edge of the whole desk (the side display reaches y = 1720), not beside it.
+    const lowestEdge = Math.max(900, -200 + 1920)
+    expect(spot).toEqual({ x: 0, y: lowestEdge + 48 })
+    expect((manager as any).overlapsADisplay({ ...spot, width: 900, height: 640 })).toBe(false)
+  })
+
+  /**
+   * Being caught on a display is the one moment the person may be looking at it — a new screen is
+   * plugged in under the spot and the desktop does not move the window, the screen encompasses it. So
+   * the move happens while it is transparent, and the opacity goes back afterwards.
+   *
+   * `opacity: 0` does not stop the page drawing or the shot answering (measured, see
+   * `parking-window-position.md` §2.2), so this costs nothing but a frame nobody was meant to see.
+   */
+  it('moves a window that is caught on a display while it is transparent, then gives the opacity back', () => {
+    manager.createInstance('parking-dimmed')
+    const instance = (manager as any).instances.get('parking-dimmed')
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    manager.createTab('parking-dimmed', { url: 'https://behind.example.com/', activate: false })
+    const parking = instance.parkingWindow
+    expect(parking).toBeTruthy()
+
+    // The desktop puts it on the screen — the thing nobody asked for, and what this has to undo.
+    const opacityWhileBeingMoved: number[] = []
+    parking.on('move', () => opacityWhileBeingMoved.push(parking.getOpacity()))
+    parking.setOpacity.mockClear()
+    parking.setPosition(0, 0)
+
+    // It was transparent at the moment it was moved off the display…
+    expect(opacityWhileBeingMoved).toContain(0)
+    // …and opaque again afterwards, in that order: dim, move, restore.
+    expect(parking.setOpacity.mock.calls.map((call: any[]) => call[0])).toEqual([0, 1])
+    expect(parking.getOpacity()).toBe(1)
+    // And it is off the display again.
+    const landed = parking.getBounds()
+    expect(
+      landed.y >= 1080
+      || landed.x >= 1920
+      || landed.x + landed.width <= 0
+      || landed.y + landed.height <= 0,
+    ).toBe(true)
+  })
+
+  /**
+   * …and the ordinary case never touches opacity at all: this runs on every `move` and `resize`, and
+   * a window that is already off every display is not being looked at by anyone.
+   */
+  it('leaves opacity alone when a window nobody may see is already off every display', () => {
+    manager.createInstance('parking-untouched')
+    const instance = (manager as any).instances.get('parking-untouched')
+    instance.tabs[0].currentUrl = 'https://front.example.com/'
+    manager.createTab('parking-untouched', { url: 'https://behind.example.com/', activate: false })
+    const parking = instance.parkingWindow
+    expect(parking).toBeTruthy()
+
+    // Its own placement, and a resize: both go through `keepOffEveryDisplay`.
+    parking.setOpacity.mockClear()
+    parking.setContentSize(1000, 700)
+    parking._emit('resize')
+    parking.setPosition(parking.getBounds().x, parking.getBounds().y)
+
+    expect(parking.setOpacity).not.toHaveBeenCalled()
+    expect(parking.getOpacity()).toBe(1)
   })
 
   /**

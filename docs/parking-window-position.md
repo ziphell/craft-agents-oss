@@ -207,6 +207,42 @@ hasOwner          = false
 | `setHiddenInMissionControl(hidden)` | `darwin` |
 | `focusable` / `hasShadow` | macOS + Windows |
 
+### 6.1 macOS 实测结果（2026-10-28）
+
+> 机器：Apple M1 / macOS 15.6.1 (24G90) / Electron 39.2.7 / **单屏 1440×900 @2x**，`workArea` = `0,25,1440,802`。
+> 脚本：`topmost-transparent-window.cjs`（demo 原样）＋ 新加的 `parking-onscreen-macos.cjs`（补 M3 / M6 与几组对照）。
+> 读数：`topmost-transparent-window.report.json`、`parking-onscreen-macos.report.json`；`agent-first-shot.cjs` 也重跑了一次。
+
+| # | 结果 | 读数 |
+|---|---|---|
+| M1 | ✅ | `getOpacity()` 读回 `0`，`opacityWorks: true` |
+| M2 | ✅ | rAF **24–25 / 400ms**；`capturePage` **1800×1280 / 411677 B** |
+| M3 | ✅ | 盖一扇 `screen-saver` 层级、铺满 `workArea` 的不透明窗：`visibility` 仍 `visible`，rAF 24–25，截图**逐字节相同** |
+| M4 | ⬜ 未测 | 需要真的切 Space（本机没有辅助功能权限，见 M6） |
+| M5 | ⬜ 未测 | 需要肉眼；注意**产品目前没有调 `setHiddenInMissionControl`**，只有 demo 调了 |
+| M6 | ⬜ 未测 | `osascript` 报 `-25211 不允许辅助访问`；下面窗口的基线也是 0，所以这一整组读数无效 |
+| M7 | ✅ | `isFocused: false`，`BrowserWindow.getFocusedWindow()` 为 `null` |
+| M8 | ✅ | `screenX/Y = 120/105`（DIP，= 窗口位置）、`inner = outer = 900×640`、`avail = 1440×802`、`dpr = 2` |
+| M9 | ⬜ 未核对 | `skipTaskbar: true` 已设，Dock 里没看到图标（未逐项核对） |
+| M10 | ✅ | `capturePage` 非空；screencast 见 `agent-first-shot`：**119 帧 / 2s** |
+
+补充的三组（`parking-onscreen-macos.cjs`）：
+
+| 场景 | 读数 | 说明 |
+|---|---|---|
+| B 普通层级窗口去盖它 | `visibility` 仍 `visible`，rAF 24，截图不变 | `floating` 压过 `normal`，**用户窗口根本盖不住它** |
+| E 屏内透明窗**导航后不补 `moveTop`** | `visible`，rAF 24，截图变了（`414706 B`，说明确实是新文档） | 屏外方案在这种情况下会掉到 `hidden` / `0×0` |
+| D 现状（屏外 `right + 20000` + `moveTop`） | `screenX = 21440`、`screenY = 0`、`outer = 900×640` | macOS **不钳位**，页面直接读到 21440 —— 比 Windows 的 16383 更"程序化"（没有任何真实桌面对应这个数）。按方案 B 改成 `bottom + 48` 之后是 `screenX = 0`、`screenY = 948`，同样出帧（见计划文档 §10） |
+
+D 组还暴露了一条值得记住的次序：**屏外窗口光 `moveTop()` 不够**。同一扇窗，在 `moveTop()` 之前先做一次 CDP `attach` + `Runtime.evaluate`，页面才从 `hidden/0×0` 变成 `visible/1800×1280`；没有那一步时 `moveTop()` 之后仍是 `hidden`、`capturePage` 报 `Current display surface not available for capture`。
+这和 `agent-first-shot.cjs` 的读法一致（它在那一步之前也 attach 了 debugger），也和产品 `capturePageWithRecovery` 先走 `getViewportMetrics` 的顺序一致 —— 但意味着"屏外有 surface"依赖的是一次**叫醒**，不是一次 `moveTop`。
+
+**对方案 C 的判断（macOS）**：M1/M2/M3/M7/M8/M10 全过，屏内透明窗在这台机器上是"完全正常的一扇窗"——被更高层级的窗口整块盖住也不停帧，
+导航后不补 `moveTop` 也不掉合成，`screenX` 在 `workArea` 内、`inner == outer`。C 在 macOS 上**没有挡路的技术问题**，
+剩下的都是"新的可见性代价"而不是"能不能出帧"：M6（点击是否真穿透）、M4/M5/M9（Mission Control / Space / Dock 里露不露）。
+真实风险从"出不了图"换成了"用户在某个系统界面里看见一个空窗口"，以及产品现在**没有** `focusable:false` / `setIgnoreMouseEvents` / `setHiddenInMissionControl`，
+这三个都要在 C 里新加。
+
 ---
 
 ## 7. 仍未确认的事（不要当成结论）
@@ -230,6 +266,7 @@ hasOwner          = false
 | `parking-input-passthrough.cjs` | `parking-input-passthrough.report.json` | 真实系统点击的穿透测试（含 DPI 校准） |
 | `parking-topmost-onscreen.cjs` | `parking-topmost-onscreen.report.json` | 主屏 + 置顶 + 透明的聚焦 / 命中 / 窗口枚举 |
 | `topmost-transparent-window.cjs` | `topmost-transparent-window.report.json` | 本文的主 demo（`--show` / `--keep`） |
+| `parking-onscreen-macos.cjs` | `parking-onscreen-macos.report.json` | macOS 补充：更高层级遮挡 / 普通层级盖不住 / 真实点击穿透 / 屏外对照 / 导航后不补 `moveTop` |
 | `anti-bot-fingerprint.ts` | `anti-bot-fingerprint.report.json` | 更早的指纹探针（`webdriver` / `brands` / 权限 / 焦点） |
 | `parking-surface.cjs` | `parking-surface.log` | `parking-surface-macos-handoff.md` 用的 macOS 清单脚本 |
 
@@ -247,5 +284,7 @@ node_modules/electron/dist/Electron.app/Contents/MacOS/Electron apps/electron/sp
 
 > "跑 `docs/parking-window-position.md` 第 6 节的清单，从 M1 到 M10，报告文件另存为 `-macos-<场景>.json`；
 > 顺带把 `docs/parking-surface-macos-handoff.md` 的 Q1–Q5 一起跑掉。"
+
+**2026-10-28 已跑，结果见 [§6.1](#61-macos-实测结果2026-10-28)**：M1/M2/M3/M7/M8/M10 通过，M4/M5/M6/M9 仍需人工或辅助功能权限。
 
 如果 M2 或 M3 失败（alpha=0 不出帧 / 被判 occluded），那么 macOS 上就退回 **离屏 + 小边距（48）**，Windows 侧仍可用透明方案 —— 两个平台分开决策，不要为了统一而选更差的那个。

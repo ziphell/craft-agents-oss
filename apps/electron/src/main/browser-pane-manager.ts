@@ -180,12 +180,18 @@ const VIEW_QUIET_MS = 1_500
  * what this used to be — is about one dragged window away, so a second screen arriving put the
  * parking window on it (the person's report: "你的停车窗太靠近屏幕了").
  *
- * It is a request, not a fact: measured, the desktop caps it and quietly lands the window on its own
- * limit (20_000, 100_000 and 1_000_000 all came back as **16_383** DIPs), while a view that far out
- * still has its viewport and its picture exactly as it does at 400. So this constant only has to be
- * "more than any desk", and `keepOffEveryDisplay` is what actually holds the window off the screens.
+ * It is two things at once: a **request** (the desktop caps it, measured: Windows lands every
+ * request from 20_000 up at **16_383** DIPs) and a number the page can read back through
+ * `window.screenX` / `event.screenX`. It used to be 20_000 — "further than any desk" — which on
+ * Windows meant the page read a position 14_943 px wider than the screen, a constant no real state
+ * corresponds to and a sign to anyone fingerprinting that the window was hidden on purpose.
+ *
+ * 48 is "just past the edge": border, shadow and DPI rounding all fit below it, so the window is
+ * wholly off the display, while 1440 + 48 = 1488 is a state that really happens — a window left
+ * outside after a second screen was unplugged. It only has to be enough to clear the display;
+ * `keepOffEveryDisplay` is what actually holds the window off the screens.
  */
-const OFFSCREEN_PARK_MARGIN = 20_000
+const OFFSCREEN_PARK_MARGIN = 48
 /**
  * How long a profile's display name is trusted before the registry is read again.
  *
@@ -4634,10 +4640,17 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * A spot **off every display** for a window of this size, as far out as the desktop will let us ask
-   * (`OFFSCREEN_PARK_MARGIN`). Right of the desktop first, then left, then below, then above — the
-   * first side that has room off every display, since the desktop caps how far out a window may go
-   * and a desktop already at that cap has to be gone round rather than past.
+   * A spot **off every display** for a window of this size, just past the edge (`OFFSCREEN_PARK_MARGIN`).
+   * Below the desktop first, then above, then left, then right — the first side that has room off
+   * every display, since the desktop caps how far out a window may go and a desktop already at that
+   * cap has to be gone round rather than past.
+   *
+   * Below and above come first because the margin is now small enough that a screen arriving *after*
+   * the window was placed can encompass it. People plug screens in to the sides; almost never under
+   * or over the desk. Until `display-added` is handled the window is briefly reachable, and this is
+   * the cheapest way to make that overlap least likely — the exposed axis becomes `screenY`
+   * (`workArea.bottom + 48`), which reads exactly like a window left below the desktop after a screen
+   * was unplugged, while `screenX` stays entirely legal.
    */
   private offscreenSpot(size: { width: number; height: number }): { x: number; y: number } {
     const displays = screen.getAllDisplays()
@@ -4647,10 +4660,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const bottom = Math.max(...displays.map((display) => display.bounds.y + display.bounds.height))
 
     const candidates = [
-      { x: right + OFFSCREEN_PARK_MARGIN, y: top },
-      { x: left - OFFSCREEN_PARK_MARGIN - size.width, y: top },
       { x: left, y: bottom + OFFSCREEN_PARK_MARGIN },
       { x: left, y: top - OFFSCREEN_PARK_MARGIN - size.height },
+      { x: left - OFFSCREEN_PARK_MARGIN - size.width, y: top },
+      { x: right + OFFSCREEN_PARK_MARGIN, y: top },
     ]
     for (const candidate of candidates) {
       if (!this.overlapsADisplay({ ...candidate, ...size })) return candidate
@@ -4679,6 +4692,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * desktop itself will bring a window back onto a screen when it thinks nobody can reach it. So it
    * is called when the displays change and whenever the window moves, and it does nothing at all
    * unless the window is really on a display (one comparison in the ordinary case).
+   *
+   * Getting here means the window **is** on a display right now, so someone may be looking at it —
+   * the desktop does not move a window when a new screen is plugged in, the new screen encompasses
+   * it. It is therefore made transparent, moved, and only then given its opacity back, so the move
+   * itself cannot be seen. Measured: `opacity: 0` does not stop the page drawing or `capturePage`
+   * from answering (`parking-window-position.md` §2.2), so the milliseconds this takes cost nothing
+   * but a frame nobody was meant to see; and on Linux, where `setOpacity` does nothing, the read-back
+   * says so and this degrades to the visible flicker it is today.
    */
   private keepOffEveryDisplay(window: BrowserWindow): void {
     if (window.isDestroyed()) return
@@ -4692,7 +4713,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (this.parkingStuck.has(window)) return
 
     const spot = this.offscreenSpot({ width: rect.width, height: rect.height })
-    window.setPosition(spot.x, spot.y)
+
+    const opacity = window.getOpacity()
+    const dimmed = opacity !== 0
+    if (dimmed) window.setOpacity(0)
+    try {
+      window.setPosition(spot.x, spot.y)
+    } finally {
+      if (dimmed && !window.isDestroyed()) window.setOpacity(opacity)
+    }
+
     const landed = window.getBounds()
     const stillOnADisplay = this.overlapsADisplay(landed)
     if (stillOnADisplay) {

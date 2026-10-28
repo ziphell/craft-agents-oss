@@ -1,6 +1,6 @@
 # 停车窗位置：改动方案（待 macOS 实测后一起评估）
 
-> 状态：**未实施**。本文是待评估的方案记录，与 [parking-window-position.md](./parking-window-position.md) 配套使用。
+> 状态：**B 已实施**（2026-10-28，见 §10）。C 仍是备选，等 macOS 的人工项（M4–M6、M9）测完再定。
 > 写于 2026-10-28。所有"实测"引用均来自该文档 §2（Windows 11 / Electron 39.2.7 / RDP / 单屏 1440×960 @2x）。
 > 评估门槛：先跑完该文档 §6 的 **M1–M10**（以及 [parking-surface-macos-handoff.md](./parking-surface-macos-handoff.md) 的 Q1–Q5），再按本文 §7 的决策门选择 A / B / C。
 
@@ -223,3 +223,33 @@ M1–M3 全过（alpha=0 出帧、不判 occluded）
 | 日期 | 内容 |
 |---|---|
 | 2026-10-28 | 首版：基于 parking-window-position.md §2 的 Windows 实测，确定 B + 两手补丁，C 列为备选 |
+| 2026-10-28 | **B 落地**（§10）；macOS 上补测了 M1/M2/M3/M7/M8/M10（见 `parking-window-position.md` §6.1） |
+
+---
+
+## 10. 实施记录（B，2026-10-28）
+
+只改了 [browser-pane-manager.ts](file:///Users/ryan/code/craft-agents-oss/apps/electron/src/main/browser-pane-manager.ts) 的三处，与 §3 一致：
+
+1. `OFFSCREEN_PARK_MARGIN` = **48**（注释重写：这个常数同时是"请求"和"页面能读到的数"）；
+2. `offscreenSpot` 的候选顺序 = **下 → 上 → 左 → 右**；
+3. `keepOffEveryDisplay` 在**确实落在某块屏上**时先 `setOpacity(0)`、`setPosition`、再在 `finally` 里恢复读回的原值；Linux 上 `setOpacity` 是 no-op，读回仍是 1，行为退化成今天。
+
+单测（[browser-pane-manager.test.ts](file:///Users/ryan/code/craft-agents-oss/apps/electron/src/main/__tests__/browser-pane-manager.test.ts)）新增 4 条、改了 1 条旧断言，全部 195 条通过：
+
+- 边距不再被钳位：`offscreenSpot(900×640)` 在 1440×960 上 = `(0, 1008)`，`y - 960 ≤ 64`、`x = 0`、且不与任何 display 相交；
+- 候选顺序：下方/侧方都有屏时落在**最下方**屏的下边之外；
+- 被追上时：`setOpacity` 的调用序列是 `0 → 1`，`move` 事件里读到的 opacity 是 0（即"移动发生时是透明的"）；
+- 正常路径：窗口已在屏外时 `setOpacity` 零调用。
+
+macOS 实测（本机，见 `parking-onscreen-macos.cjs` 的 D2 行）：
+
+| 项 | 读数 |
+|---|---|
+| 请求 / 落点 | `(0, 948)`，**没有被系统拉回** |
+| 页面读到 | `screenX = 0`、`screenY = 948`（`availHeight` 802 / `screen.height` 900） |
+| 出帧 | rAF 24/400ms，`capturePage` 1800×1280、411677 B（与屏内那次逐字节相同） |
+
+即 §6 的验收：一个轴出界 48 ≤ 64，另一个轴严格在屏内。
+
+**没做的事**：Windows 真机的人工项（§5.2：左右/下方插屏、拔屏、缩放切换、拖主窗、view resize）需要在有物理显示器的 Windows 上跑，本机是 macOS + 单屏，做不了。
