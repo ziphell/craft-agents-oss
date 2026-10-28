@@ -22,15 +22,73 @@
 | 代码 | `apps/electron/src/main/browser-cdp.ts` `fillElement` / `sendSelectAll` / `readFieldValue` / `selectFocusedContents` |
 | 依据 | `apps/electron/spike/parking-input-passthrough.report.json` 同源手法；取值实测见会话期 `fill-spike.cjs` |
 
-### 1.2 权限不再"八项全 granted"
+### 1.2 权限：从"八项全 granted"到两层策略
 
 | | |
 |---|---|
 | 改前 | `setPermissionCheckHandler(() => true)` + 请求处理器 `callback(true)` → 8 类全 `granted` |
-| 改后 | 白名单：`clipboard-read` / `clipboard-sanitized-write` / `display-capture` / `geolocation`，其余拒绝 |
+| 改后 | **自己的 origin → 全放行**；**其他页面 → 地理位置、剪贴板读写**；摄像头与麦克风都是 `denied` |
 | 实测 | 改前 `notifications/geolocation/camera/microphone/clipboard-read/clipboard-write/midi/persistent-storage` 全部 `granted`；真实 Chrome 多为 `prompt` |
-| 代码 | `browser-pane-manager.ts` `setupSessionPermissions` |
-| 注意 | `geolocation` 是**有意放行**的（本地搜索结果/门店定位是正常诉求）；它成为"众多 denied 里的一个 granted"，这是真实用户会有的形状 |
+| 代码 | `browser-pane-manager.ts` `setupSessionPermissions` / `ownsOrigin` / `ownOrigins` / `ownsUrl` |
+
+**"自己的 origin"** = `file:` / `app:` / `localhost`·`127.0.0.1`·`::1` / `serverConfig.port` /
+`serverConfig.publicWsUrl` / `clientConfig.connections[].url`（`ws(s)://` 先映射成 `http(s)://`）。
+这份清单有 5 秒缓存：`navigator.permissions.query` 可以放在定时器里循环调用，而两个配置读取器都要读盘。
+
+三条来自实测的取舍：
+
+1. **`media`（摄像头 + 麦克风）留给第三方页面的是"未授予"** —— 而在 Electron 里那就是 `denied`。
+   Chromium 的第三态（"还没回答过"）**从这个 API 出不来**：实测三组（Electron 39.2.7）——
+
+   | handler | camera / microphone / geolocation / notifications | `Notification.permission` |
+   |---|---|---|
+   | 一个都不装 | **全部 `granted`** | `granted` |
+   | check 返回 `false` | 全部 `denied` | `denied` |
+   | check 返回 `true` | 全部 `granted` | `granted` |
+
+   `prompt` 一次都没出现；而且**不装 handler 时默认是 `granted`**（不是 `denied`）——这解释了"全放行"
+   为什么看起来像默认行为。所以"未决"只能落成 `denied`，代价是第三方页面据此藏起语音入口、
+   `getUserMedia` 回 `NotAllowedError`；自己的 origin 不受影响（全放行）。
+2. **`display-capture` 不给**——它**不 gate** `getDisplayMedia`。实测三组：权限 denied + 有
+   `setDisplayMediaRequestHandler` → 仍然拿到 1 条视频轨；权限 granted + 没有 handler → `NotSupportedError`。
+   决定能不能录的是 handler，而 handler 只会把**提问页自己的标签页**给出去，桌面永不出让。
+   给它 `granted` 只多一个状态可读，代价是"先 query 再决定要不要显示录制按钮"的站点会自断功能。
+3. **`geolocation` 有意放行**：本地搜索结果/门店定位是正常诉求，而"众多 denied 里的一个 granted"正是真实画像。
+
+**第三方页面的语音输入：暂时放弃（2026-10-28 决定）**，将来作为用户设置提供。
+现状是 `denied`，代价是这类页面藏起语音入口、`getUserMedia` 回 `NotAllowedError`——接受这个代价，
+换的是"未授予"这个更保守的状态。要做成开关时，接法已经清楚：
+
+- 一个偏好项（例如 `browser.allowThirdPartyMedia`，默认 `false`），放在 `packages/shared/src/config/preferences.ts`；
+- 权限回调里**读实时值**，不要在建会话时读一次——session 是长期存在的，改了设置要立刻生效；
+  `loadPreferences()` 已经很便宜，可以复用上面 `ownOrigins` 那种几秒缓存；
+- 打开时把 `media` 加进第三方集合即可（摄像头/麦克风分开的需求到时再看：`mediaTypes` 能分，但
+  `permissions.query` 只有 granted/denied 两个值，分开授权会让 `camera` 与 `microphone` 读作不同状态）；
+- 设置页放浏览器那一栏，和 profile 之类的放一起即可。
+
+### 这一层里，"状态"与"暴露"的界线
+
+`granted` 本身不是暴露：真实用户允许过某个站点的麦克风或定位，页面读到的就是这个字符串，
+所以第三方页看到 `microphone: granted` / `geolocation: granted` **无法**据此判断对面是不是人。
+真正不可能的画像是一次性把通知、摄像头、麦克风、定位、MIDI、剪贴板、持久存储**全都**答成 `granted`——
+那一组已经拆掉了。
+
+还剩一个弱信号，性质不同：**`granted` + 从未来过**。
+
+- Electron 的权限决定**不持久化**：装了 handler 之后，任何 origin 第一次问就得到 `granted`；
+- 于是一个全新 partition（`document.cookie` 空、`localStorage` 空、`storage.estimate()` 用量 0）上的站点，
+  第一次访问就报 `microphone: granted`；
+- 真实用户走到 `granted` 必须先被问过一次，而"被问过"通常留下痕迹。
+
+页面理论上能把这两件事对起来看。**有意不修**，因为三条可选做法都更差：
+
+| 做法 | 问题 |
+|---|---|
+| 首次也 `granted`（现状） | 上述二阶矛盾，很弱 |
+| 首次 `denied`，用户显式允许后才 `granted` | 语音输入首次不可用；产品没有权限提示 UI |
+| 首次 query 答 `prompt`、真请求时放行 | **制造新矛盾**：查到 `prompt` 却一调 `getUserMedia` 就成功、没有 prompt 事件——比现状更像自动化 |
+
+也就是说：这一层剩下的不是"消除暴露"，而是"不让状态彼此打架"，而现状是三种里唯一不制造矛盾的那个。
 
 ### 1.3 页面里的 `CRAFT` 全局名
 

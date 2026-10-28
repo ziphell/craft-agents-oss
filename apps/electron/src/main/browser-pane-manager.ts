@@ -47,7 +47,7 @@ import {
   type BrowserEmptyStateLaunchResult,
   type BrowserInstanceInfo,
 } from '../shared/types'
-import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate, loadPreferences, CONFIG_DIR, DEFAULT_BROWSER_PROFILE_ID, getBrowserProfiles } from '@craft-agent/shared/config'
+import { BACKGROUND_HEX, DEFAULT_THEME, getBackgroundColor, loadAppTheme, getAllowRemoteEvaluate, loadPreferences, CONFIG_DIR, DEFAULT_BROWSER_PROFILE_ID, getBrowserProfiles, getClientConfig, getServerConfig } from '@craft-agent/shared/config'
 import { browserWorkspaceKey } from '@craft-agent/shared/config/client-config'
 import { isBrowserUrl } from '@craft-agent/shared/utils/url-safety'
 import {
@@ -168,6 +168,95 @@ const VIEW_SEED_CDP_TIMEOUT_MS = 1_500
  * ~1.4fps is what a viewer gets while there is no compositor; a quiet page that *is* composited gets
  * nothing, so a still page costs one question per tick and no encodes.
  */
+/**
+ * `ws(s)://` → `http(s)://` and everything else kept as it is, as an origin. `null` when
+ * it does not parse, which is the answer that keeps the caller on the cautious tier.
+ */
+function originOfUrl(raw?: string | null): string | null {
+  if (!raw) return null
+  try {
+    const url = new URL(raw)
+    if (url.protocol === 'ws:') url.protocol = 'http:'
+    else if (url.protocol === 'wss:') url.protocol = 'https:'
+    return url.origin
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The origins that are this app rather than the open web.
+ *
+ * Four sources, because there are four ways a page gets here: the app's own documents
+ * (`file:`, `app:`, the dev server), this machine (`localhost` / `127.0.0.1` / `::1`),
+ * the server this window runs on (`serverConfig`: its port, or the public address the
+ * person configured for a tunnel) and the remote servers they added
+ * (`clientConfig.connections`).
+ *
+ * Cached for a few seconds: a permission decision can be reached in a loop
+ * (`navigator.permissions.query` inside a timer), and both getters read stored config.
+ */
+let ownOriginsCache: { at: number; origins: string[] } | null = null
+function ownOrigins(): string[] {
+  const now = Date.now()
+  if (ownOriginsCache && now - ownOriginsCache.at < 5_000) return ownOriginsCache.origins
+
+  const origins = new Set<string>()
+  const add = (raw?: string | null): void => {
+    const origin = originOfUrl(raw)
+    if (origin) origins.add(origin)
+  }
+
+  try {
+    const server = getServerConfig()
+    add(server.publicWsUrl)
+    if (server.port) {
+      origins.add(`http://localhost:${server.port}`)
+      origins.add(`http://127.0.0.1:${server.port}`)
+    }
+  } catch {
+    /* unreadable config: the tier simply has fewer entries, nothing breaks */
+  }
+  try {
+    for (const connection of getClientConfig().connections) add(connection.url)
+  } catch {
+    /* same */
+  }
+
+  ownOriginsCache = { at: now, origins: [...origins] }
+  return ownOriginsCache.origins
+}
+
+/**
+ * Whether a **URL** belongs to us — the same rule as {@link ownsOrigin}, for the places
+ * that hold a URL rather than an origin.
+ *
+ * Needed because `new URL('file:///…').origin` is the string `"null"`: a `file:` page
+ * has no origin to compare, so the scheme decides before the URL does. Without this the
+ * request handler would treat the app's own documents as third-party pages while the
+ * check handler (which is handed `"file://"`) treated them as ours.
+ */
+function ownsUrl(raw?: string | null): boolean {
+  if (!raw) return false
+  if (raw.startsWith('file:') || raw.startsWith('app:')) return true
+  return ownsOrigin(originOfUrl(raw) ?? undefined)
+}
+
+/** Whether this origin is one of ours — see {@link ownOrigins} for which ones. */
+function ownsOrigin(origin: string | undefined): boolean {
+  if (!origin) return false
+  // `file://` and Electron's own scheme have no usable `origin` (`new URL(...).origin`
+  // is the string "null"), so they are recognised by prefix.
+  if (origin.startsWith('file:') || origin.startsWith('app:')) return true
+  try {
+    const { hostname } = new URL(origin)
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]') return true
+  } catch {
+    return false
+  }
+  return ownOrigins().includes(origin)
+}
+
 const VIEW_STILL_POLL_MS = 700
 /** How long without a live frame counts as "the screencast has stopped", before the check acts. */
 const VIEW_QUIET_MS = 1_500
@@ -8792,54 +8881,74 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.permissionsReady.add(ses)
 
     /**
-     * Which permissions a page gets without a prompt.
+     * Which permissions a page gets without a prompt — and **for whom**.
      *
-     * A prompt has nobody to answer it here — the tabs are driven by
-     * automation — so the two handlers below must answer for themselves. What
-     * they must **not** do is answer `true` to everything: `granted` for
-     * camera, microphone, geolocation, notifications and MIDI all at once is a
-     * state no real browser profile is in, and `Notification.permission` /
-     * `navigator.permissions.query()` are two of the cheapest reads a page has
-     * for telling a real browser from a driven one (measured: every one of the
-     * eight answered `granted`, where a real Chrome answers `prompt`).
+     * A prompt has nobody to answer it here, so the two handlers below answer for
+     * themselves. Answering `true` to everything was wrong for a second reason beyond
+     * "too generous": `granted` for camera, microphone, geolocation, notifications and
+     * MIDI all at once is a state no real browser profile is in, and
+     * `Notification.permission` / `navigator.permissions.query()` are two of the
+     * cheapest reads a page has for telling a driven browser from a person's.
      *
-     * So the list is what the **tools** need plus what a page cannot work
-     * without, and nothing else:
+     * Two tiers, then:
      *
-     * - `clipboard-read` / `clipboard-sanitized-write` — `set-clipboard`,
-     *   `get-clipboard` and `paste` go through `navigator.clipboard`;
-     * - `display-capture` — {@link setupDisplayMediaHandler} answers every
-     *   `getDisplayMedia` with a tab; the permission itself still has to be
-     *   alive for that call to reach it;
-     * - `geolocation` — deliberately left on: local results and store locators
-     *   are a normal thing to ask a browsing session for, and a profile that
-     *   allowed location for one site is an ordinary profile. It is one
-     *   `granted` among otherwise-`denied` answers, which is a shape real
-     *   people have; `granted` for *everything* is the shape nobody has.
+     * - **Our own origins** — the app's own documents, this machine, the server this
+     *   window runs on and the remote servers the person added — get everything. Those
+     *   pages are the product; a prompt there would be a bug, not a feature.
+     * - **Any other page** gets `media`, `geolocation`, the clipboard and
+     *   `display-capture`. Voice input and location are things a page in a browsing
+     *   session may reasonably ask for; the cost is that their state reads `granted`
+     *   rather than `prompt`, which narrows the profile from "a browser that allows
+     *   everything" to "someone who allowed this site".
      *
-     * A page that asks for anything else is told no, which is what a person who
-     * never granted it would look like. A page that merely *asks* the state
-     * (`navigator.permissions.query`) also reads `denied`, not the impossible
-     * `granted`-for-everything.
+     * A page that asks for anything else is told no.
      *
-     * Screen capture stays safe on the *source* side regardless: granting a
-     * permission never hands out the desktop, only a tab ({@link setupDisplayMediaHandler}).
+     * `display-capture` is deliberately **not** on the list. It does not gate
+     * `getDisplayMedia` here — measured on Electron 39: with the permission denied and
+     * {@link setupDisplayMediaHandler} installed, the page still got its one video
+     * track; with the permission granted and no handler it got `NotSupportedError`.
+     * What decides a capture is the handler, and the handler never offers the desktop
+     * (it answers with the asking page's own tab). Granting the permission would only
+     * change what `navigator.permissions.query` reports — one more `granted` bought
+     * for nothing, at the cost of a page that pre-checks hiding its own record button.
      */
     const withoutPrompt = new Set<string>([
+      'geolocation',
       'clipboard-read',
       'clipboard-sanitized-write',
-      'display-capture',
-      'geolocation',
     ])
-    const granted = (permission: string): boolean => withoutPrompt.has(permission)
+
+    /**
+     * `media` is left **undecided**, and in Electron that means `denied`.
+     *
+     * A browser's third state — "you have not answered yet" — has no way out through
+     * these handlers: measured on Electron 39, `navigator.permissions.query()` answers
+     * `granted` when a handler says yes **and when no handler is installed at all**,
+     * and `denied` when it says no. `prompt` never appears. So the only way to leave a
+     * third-party page's camera and microphone ungranted is to deny them, which is what
+     * a person who never answered would show if Chromium had anything to ask with.
+     *
+     * The cost is real and is the reason this is worth revisiting: a page that pre-checks
+     * sees `denied` and hides its voice affordance, and `getUserMedia` answers
+     * `NotAllowedError`. Pages on our own origins are unaffected — they get everything.
+     */
+    const granted = (origin: string | undefined, permission: string): boolean =>
+      ownsOrigin(origin) || withoutPrompt.has(permission)
 
     if (typeof ses.setPermissionCheckHandler === 'function') {
-      ses.setPermissionCheckHandler((_webContents, permission) => granted(permission))
+      ses.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
+        granted(requestingOrigin, permission),
+      )
     }
 
     if (typeof ses.setPermissionRequestHandler === 'function') {
-      ses.setPermissionRequestHandler((_webContents, permission, callback) => {
-        callback(granted(permission))
+      ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+        // `requestingUrl` is on every member of the details union that matters here
+        // (`MediaAccessPermissionRequest` and friends extend `PermissionRequest`); the
+        // webContents' own URL is the fallback for the ones that do not carry it.
+        const requestingUrl = (details as { requestingUrl?: string } | undefined)?.requestingUrl
+        const own = ownsUrl(requestingUrl) || ownsUrl(webContents.getURL())
+        callback(own || withoutPrompt.has(permission))
       })
     }
   }
