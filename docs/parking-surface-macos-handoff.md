@@ -134,8 +134,11 @@ answered，包括 Q1/Q2 里 `hide()` 之前刚被 refuse 的 5 行。行内顺�
 **Q5**：**带 `enableLargerThanScreen` 的一律没被挪**（10 扇全部 `movedByTheDesktop: false`，
 包括请求 21440 的 `offscreen-product` —— 本机上并没有出现注释里说的"被限到 16383"）。
 **不带的 `offscreen-legacy` 被拉了回来**：请求 21440,0，landed 1400,25，与主屏重叠 40×620。
-这直接给旧 `parked` 行（`capturePage` 2800×1800、rAF 42）判了死刑 —— 它测的是**右侧露出 40 DIP**
-的一扇窗，不是"屏外"。
+这直接给旧 `parked` 行（`capturePage` 2800×1800、rAF 42）判了死刑 —— 它测的是**右侧露出 40 DIP** 的一扇窗，不是"屏外"。
+
+> 引用时注意别把这两行读成矛盾：`1400 = 1440 − 40` 正是代码注释里那句 `landed x=screenWidth-40` 的出处，
+> 而它是**不带 flag** 的对照组；`21440` 是**带 flag** 的那一次。单独引用任何一行都会得到相反结论，
+> 两行放在一起才是"这个 flag 是唯一开关"的完整证据。
 
 **结论 / 建议改动**：
 
