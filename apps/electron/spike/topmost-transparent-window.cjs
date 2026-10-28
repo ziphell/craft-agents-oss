@@ -23,7 +23,10 @@ const path = require('path')
 const SHOW = process.argv.includes('--show')
 const THROUGH = process.argv.includes('--through')
 const KEEP = process.argv.includes('--keep')
-const REPORT = path.join(__dirname, 'topmost-transparent-window.report.json')
+// By platform, not by hope: this demo is run on more than one machine (the macOS
+// checklist in docs/parking-window-position.md §6 runs the same file), and a shared
+// name means the last machine to run it overwrites the other's readings.
+const REPORT = path.join(__dirname, `topmost-transparent-window.report.${process.platform}.json`)
 const writeReport = (payload) => { try { fs.writeFileSync(REPORT, JSON.stringify(payload, null, 1)) } catch { /* 写不进去也不该让 demo 挂掉 */ } }
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
@@ -123,6 +126,8 @@ async function main() {
 
   console.log(JSON.stringify(report, null, 1))
   writeReport(report)
+  console.log(`
+readings written to ${path.relative(process.cwd(), REPORT)}`)
 
   if (SHOW && through) {
     console.log('')

@@ -166,7 +166,7 @@ hasOwner          = false
 - `apps/electron/spike/topmost-transparent-window.cjs`
   - `--show`：用 0.55 不透明度亮出来 6 秒（人工确认它存在、且点得到下面的窗口）
   - `--keep`：常驻，Ctrl+C 结束
-  - 默认：量完即退，读数是 `topmost-transparent-window.report.json`
+  - 默认：量完即退，读数写到 `topmost-transparent-window.report.<platform>.json`（`win32` / `darwin`，两台机器不再互相覆盖）
 
 计划改动（**B 已实施**，2026-10-28；C 待 M6）—— 详见 **[parking-window-position-plan.md](./parking-window-position-plan.md)**：
 
@@ -196,7 +196,7 @@ hasOwner          = false
 | M9 | Dock / 程序坞条目 | 看 Dock | 无图标 | — |
 | M10 | `webContents.capturePage` 与 CDP 截图 | demo 里两个都有 | 都不为空 | — |
 
-**记录方式**：每次跑完把 `apps/electron/spike/topmost-transparent-window.report.json` 另存成 `...-macos-<场景>.json`，便于和 Windows 的读数逐项对比。
+**记录方式**：每台机器跑完各写自己的 `apps/electron/spike/topmost-transparent-window.report.<platform>.json`，两份读数可以直接逐项对比。
 
 ### 已知的 macOS 差异（来自 `electron.d.ts` 39.2.7，未实测）
 
@@ -211,7 +211,7 @@ hasOwner          = false
 
 > 机器：Apple M1 / macOS 15.6.1 (24G90) / Electron 39.2.7 / **单屏 1440×900 @2x**，`workArea` = `0,25,1440,802`。
 > 脚本：`topmost-transparent-window.cjs`（demo 原样）＋ 新加的 `parking-onscreen-macos.cjs`（补 M3 / M6 与几组对照）。
-> 读数：`topmost-transparent-window.report.json`、`parking-onscreen-macos.report.json`；`agent-first-shot.cjs` 也重跑了一次。
+> 读数：`topmost-transparent-window.report.darwin.json`、`parking-onscreen-macos.report.json`；`agent-first-shot.cjs` 也重跑了一次。
 
 | # | 结果 | 读数 |
 |---|---|---|
@@ -265,7 +265,7 @@ D 组还暴露了一条值得记住的次序：**屏外窗口光 `moveTop()` 不
 | `parking-occlusion.cjs`（`--allow-occ` 为对照） | `parking-occlusion.report.json` / `parking-occlusion-allow.report.json` | 遮挡是否停帧 |
 | `parking-input-passthrough.cjs` | `parking-input-passthrough.report.json` | 真实系统点击的穿透测试（含 DPI 校准） |
 | `parking-topmost-onscreen.cjs` | `parking-topmost-onscreen.report.json` | 主屏 + 置顶 + 透明的聚焦 / 命中 / 窗口枚举 |
-| `topmost-transparent-window.cjs` | `topmost-transparent-window.report.json` | 本文的主 demo（`--show` / `--keep`） |
+| `topmost-transparent-window.cjs` | `topmost-transparent-window.report.<platform>.json` | 本文的主 demo（`--show` / `--through` / `--keep`） |
 | `parking-onscreen-macos.cjs` | `parking-onscreen-macos.report.json` | macOS 补充：更高层级遮挡 / 普通层级盖不住 / 真实点击穿透 / 屏外对照 / 导航后不补 `moveTop` |
 | `anti-bot-fingerprint.ts` | `anti-bot-fingerprint.report.json` | 更早的指纹探针（`webdriver` / `brands` / 权限 / 焦点） |
 | `parking-surface.cjs` | `parking-surface.log` | `parking-surface-macos-handoff.md` 用的 macOS 清单脚本 |
