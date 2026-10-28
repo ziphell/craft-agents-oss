@@ -10,15 +10,18 @@
  * 跑法（仓库根目录）：
  *   node_modules/electron/dist/electron.exe apps/electron/spike/topmost-transparent-window.cjs
  *   node_modules/electron/dist/electron.exe apps/electron/spike/topmost-transparent-window.cjs --show
+ *   node_modules/electron/dist/electron.exe apps/electron/spike/topmost-transparent-window.cjs --show --through
  *   node_modules/electron/dist/electron.exe apps/electron/spike/topmost-transparent-window.cjs --keep
  *
- *   （默认量完就退出；--show 用 0.55 的不透明度亮出来给你看一眼；--keep 常驻，Ctrl+C 结束）
+ *   （默认量完就退出；--show 用 0.55 的不透明度亮出来给你看一眼；--through 让那扇亮着的窗
+ *   仍然忽略鼠标 —— 这是 macOS 上唯一还没验过的前提（M6）：点一下它，下面的窗口应该收到。）
  */
 const { app, BrowserWindow, WebContentsView, screen } = require('electron')
 const fs = require('fs')
 const path = require('path')
 
 const SHOW = process.argv.includes('--show')
+const THROUGH = process.argv.includes('--through')
 const KEEP = process.argv.includes('--keep')
 const REPORT = path.join(__dirname, 'topmost-transparent-window.report.json')
 const writeReport = (payload) => { try { fs.writeFileSync(REPORT, JSON.stringify(payload, null, 1)) } catch { /* 写不进去也不该让 demo 挂掉 */ } }
@@ -80,7 +83,10 @@ async function main() {
   window.contentView.addChildView(view)
 
   // 3) 不打扰：忽略鼠标（穿透）+ 不抢焦点
-  if (!SHOW) window.setIgnoreMouseEvents(true)
+  //    --through 让"亮着的那扇窗"也忽略鼠标：一次人工点击就能回答 macOS 的 M6
+  //    （Windows 那边已用真实 SendInput 验过：不设就吞，设了就穿）。
+  const through = THROUGH || !SHOW
+  if (through) window.setIgnoreMouseEvents(true)
 
   window.showInactive()
   // 2) 置顶：先设层级再 raise，顺序无所谓，但两件都要做
@@ -117,6 +123,12 @@ async function main() {
 
   console.log(JSON.stringify(report, null, 1))
   writeReport(report)
+
+  if (SHOW && through) {
+    console.log('')
+    console.log('=== M6：点一下上面那块半透明的区域 ===')
+    console.log('下面的窗口（Finder / 终端 / 任何窗口）应该收到这次点击；收不到就是没穿透，C 方案在 macOS 上不成立。')
+  }
 
   if (KEEP) return // 常驻，Ctrl+C 结束
 

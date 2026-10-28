@@ -253,3 +253,54 @@ macOS 实测（本机，见 `parking-onscreen-macos.cjs` 的 D2 行）：
 即 §6 的验收：一个轴出界 48 ≤ 64，另一个轴严格在屏内。
 
 **没做的事**：Windows 真机的人工项（§5.2：左右/下方插屏、拔屏、缩放切换、拖主窗、view resize）需要在有物理显示器的 Windows 上跑，本机是 macOS + 单屏，做不了。
+
+---
+
+## 11. 要不要再往前走到 C（2026-10-28 决策）
+
+**结论：继续，但 M6 是硬门槛——M6 未过之前不动手。**
+
+### 11.1 macOS 那轮数据改变了什么
+
+三个原先只是"预期"的结论，现在有读数了（`parking-onscreen-macos.report.json`，M1/M2/M3/M7/M8/M10 全过）：
+
+| 发现 | 对决策的影响 |
+|---|---|
+| `opacity 0` 出帧正常：rAF 24–25/400ms、`capturePage` 1800×1280 / **411677 B**，与不透明那次**逐字节相同**；连 `screen-saver` 层级整块盖住也不变 | "透明会不会掉帧"这条风险**关闭** |
+| 场景 E：屏内透明窗**导航后不补 `moveTop`** 仍 `visible`、rAF 24、截图变化（414706 B，确是另一份文档） | **C 的最大隐收益**：删掉一个顺序敏感的"叫醒"依赖 |
+| 场景 D：屏外窗口光 `moveTop()` 不够——要先 CDP attach + 一次 `Runtime.evaluate` 把它叫醒，否则停在 `hidden` / `capturePage` 报 `Current display surface not available` | 暴露 **B 的隐性脆弱点**：屏外出帧依赖"叫醒"的次序 |
+
+第三条是关键：B 在运行时依赖一个"表面还在不在"的隐含状态，症状是截图超时而不是崩溃，很难查。C 把这整类状态删掉——窗口在屏内，导航、resize、切后台都不需要仪式。所以 C 不只是指纹更干净，**运行时也更简单**。
+
+### 11.2 为什么还被 M6 挡着
+
+`setIgnoreMouseEvents(true)` 是 C 的功能前提（Windows 已用真实 `SendInput` 验过：不设就吞点击与悬停，设了就穿透）。
+macOS 那轮 `osascript` 报 `-25211 不允许辅助访问`，连基线窗口都没收到点击 —— 整组读数无效，**等于零证据**。
+
+失败模式比指纹严重得多：**用户会得到一块看不见、却吃掉点击的窗口**。所以顺序只能是先验 M6，再上代码。
+
+### 11.3 M6 的 10 秒验法（不需要辅助功能权限）
+
+```bash
+# macOS，仓库根目录
+node_modules/electron/dist/Electron.app/Contents/MacOS/Electron \
+  apps/electron/spike/topmost-transparent-window.cjs --show --through --keep
+```
+
+会出现一块 0.55 不透明度的窗（`topmost-transparent-window.cjs` 新加的 `--through`：亮着，但忽略鼠标）。
+**在它上面点一下**：下面的 Finder / 终端应该收到这次点击。
+- 收到 → M6 通过，C 可以动工；
+- 收不到 → M6 失败，停在 B（已上线，§10 验收通过），把这条写进文档，别再试。
+
+顺带用同一扇窗看三件事（都不影响功能，只影响"会不会被看见"）：M5 Mission Control（`Ctrl+↑`）、M9 Dock 有无图标、M4 切 Space 后 rAF 是否继续。
+
+### 11.4 若 M6 通过，实施清单
+
+1. `parkingWindowFor()`：`focusable: false`、`hasShadow: false`、`setTitle('')`、`setIgnoreMouseEvents(true)`（**每次 `show` 之后重设**）、`setHiddenInMissionControl(true)`（darwin）、`setOpacity(0)`，置顶仍用现在的 `setAlwaysOnTop(true,'floating')` + `moveTop()`；
+2. `getOpacity() !== 0`（Linux）→ 回退到 B 的离屏 + 边距 48；
+3. `offscreenSpot` / `keepOffEveryDisplay` 只留在回退分支上（B 的三处改动保留，不删）；
+4. 断言：`show` 之后 `ignoreMouseEvents`/`alwaysOnTop` 仍成立；`setOpacity` 在读回不为 0 时不假装成功。
+
+### 11.5 为什么不能"顺手"切
+
+C 需要给停车窗新加三个 API（`focusable:false`、`setIgnoreMouseEvents`、`setHiddenInMissionControl`），产品现在一个都没有。它改的是每个浏览器窗口的停车窗行为，不是一处调用点；而 M6 未验时，最坏结果是"看不见的点击吞噬层"。所以：**M6 通过之前，代码不动。**

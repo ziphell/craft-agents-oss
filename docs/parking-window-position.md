@@ -168,7 +168,7 @@ hasOwner          = false
   - `--keep`：常驻，Ctrl+C 结束
   - 默认：量完即退，读数是 `topmost-transparent-window.report.json`
 
-计划改动（**尚未执行**）—— 详见 **[parking-window-position-plan.md](./parking-window-position-plan.md)**：
+计划改动（**B 已实施**，2026-10-28；C 待 M6）—— 详见 **[parking-window-position-plan.md](./parking-window-position-plan.md)**：
 
 - 方案 **B（倾向采用）**：边距 `20_000` → `48`、候选顺序改为 下→上→左→右、`keepOffEveryDisplay` 在“已被看见”那一瞬临时透明。
 - 方案 **C（备选）**：主屏 `workArea` + `opacity 0` + `alwaysOnTop` + `ignoreMouseEvents`；是否叠加由 macOS 的 M1–M3 结果和 Windows 真机插屏闪烁共同决定。
