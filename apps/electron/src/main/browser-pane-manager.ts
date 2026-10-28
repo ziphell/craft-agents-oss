@@ -224,7 +224,16 @@ const SCREENSHOT_CAPTURE_TIMEOUT_MARKER = 'capture did not come back'
  */
 const PAGE_VIEW_BACKDROP = '#ffffff'
 
-const THEME_COLOR_SIGNAL_PREFIX = '__craft_theme_color__:'
+/**
+ * The door the theme observer uses to get a word out of the page: a prefixed `console.info` that
+ * the pane manager recognises and consumes (see `installThemeObserver`).
+ *
+ * The prefix deliberately does not name us. This script is injected into **every** tab, so the
+ * message is there for any page that has replaced `console` — and a prefix reading "craft" told
+ * whoever was listening which tool it was. The channel itself is still observable, which is why
+ * the payload is a colour and nothing else; the rename only takes the sign off the door.
+ */
+const THEME_COLOR_SIGNAL_PREFIX = '~tcs~:'
 const THEME_COLOR_NULL_SENTINEL = '__NULL__'
 const THEME_OBSERVER_MIN_INTERVAL_MS = 120
 const EARLY_THEME_EXTRACTION_DELAY_MS = 100

@@ -131,8 +131,27 @@ import { bearerToken } from '@craft-agent/server-core/transport'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
 import { createWebuiHandler, nodeHttpAdapter, validateSession, deriveWebuiSessionKey, type WebuiHandler } from '@craft-agent/server-core/webui'
 
-// Initialize electron-log for renderer process support
-log.initialize()
+// Initialize electron-log for renderer process support — for the app's own window only.
+//
+// The second option is what keeps `__electronLog` out of other people's pages. It defaults to
+// true, and it is the switch that registers electron-log's preload on **every** session the app
+// creates. The browser panes create one session per profile (`browserPanePartition`), and that
+// preload ends with `contextBridge.exposeInMainWorld('__electronLog', …)` — which put an
+// enumerable `window.__electronLog` on whatever site a tab loaded. A risk-control script does
+// not have to guess the name: listing window's own properties is enough, and the name says
+// "electron" out loud.
+//
+// Nothing is lost by turning it off. Only `renderer/lib/logger.ts` and `renderer/lib/perf.ts`
+// import `electron-log/renderer`, and both are reachable only from `App.tsx` — the app window,
+// which lives in the default session and still gets the preload.
+//
+// Both spellings are passed on purpose: the implementation destructures `includeFutureSession`
+// (singular) while the shipped typings declare `includeFutureSessions` (plural), so whichever
+// one a future version honours, the answer is the same.
+log.initialize({
+  includeFutureSession: false,
+  includeFutureSessions: false,
+} as unknown as Parameters<typeof log.initialize>[0])
 
 // Diagnostic: report main-process i18n hydration result. We log here (not inline
 // at the hydration site above) because mainLog is only available after this point.

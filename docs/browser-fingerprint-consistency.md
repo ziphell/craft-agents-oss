@@ -37,11 +37,13 @@
 | 位置 | 改前 | 改后 |
 |---|---|---|
 | 主题观察器 | `window.__CRAFT_THEME_OBSERVER_CLEANUP__`（document 生命周期常驻） | `window[Symbol.for('themeObserverCleanup')]` |
+| 主题色回传通道 | `console.info('__craft_theme_color__:<token>:<color>')` —— **每个标签页都装**，站点 hook `console` 就能读到 | `console.info('~tcs~:<token>:<color>')` —— 通道仍可被观测（它就是 console），但不再自报是哪个工具；负载就一个颜色 |
 | 按键送达探针 | `window.__craftKeySeen` / `__craftKeyProbe`（**每次按键**都短暂出现） | 安装表达式返回的**闭包句柄** + `Runtime.callFunctionOn` + `releaseObject`，页面上不留任何属性 |
 
 代码：`browser-pane-manager.ts` `installThemeObserver`、`browser-cdp.ts` `pressKey`。
 
 ### 1.4 `type` 的按键事件与节律
+
 
 | | |
 |---|---|
@@ -50,6 +52,18 @@
 | 实测 | 新：ASCII 键间隔 **152ms**、按住 **47–58ms**；中文 **0 个 keydown**、只有 trusted `beforeinput`/`input` |
 | 代码 | `browser-key-map.ts` `typeSteps`；`browser-cdp.ts` `sendChar` / `sendStroke` / `typeText` |
 | 遗留 | 这**不是 IME 仿真**：真的中文输入是 `compositionstart/update/end` + `keyCode 229` + `inputType: insertCompositionText`。现在的中文是一次性插入（同粘贴管线），所以"未通过输入法输入中文"这条判据**仍然成立**，只是不再有不可能存在的事件 |
+
+### 1.5 `__electronLog` 不再进第三方页面
+
+| | |
+|---|---|
+| 现象 | 任意站点页面的**主世界**里都有可枚举的 `window.__electronLog`（对象，8 个方法：`sendToMain` / `log` / `error` / `warn` / `info` / `verbose` / `debug` / `silly`） |
+| 成因 | `log.initialize()` 的 `includeFutureSession` 默认 `true` → 每一个新 session 都被注册 electron-log 的 preload（`session.registerPreloadScript({type:'frame'})`）；浏览器窗格每个 profile 一个 partition（`browserPanePartition`），于是 preload 落到了第三方页面。该 preload 末尾是 `contextBridge.exposeInMainWorld('__electronLog', …)` → 名字进了主世界 |
+| 改后 | `log.initialize({ includeFutureSession: false, includeFutureSessions: false })` —— 只覆盖默认会话（app 自己的窗口），浏览器 partition 不再被注册 |
+| 为什么不掉日志 | 只有 `renderer/lib/logger.ts` 与 `renderer/lib/perf.ts` import `electron-log/renderer`，且二者只被 `App.tsx` 侧引用（默认会话）。工具栏 `browser-toolbar.tsx` 不碰它 |
+| 代码 | `src/main/index.ts`（`log.initialize` 处） |
+| 坑 | electron-log 5.4.3 的**实现**解构 `includeFutureSession`（单数），而**类型声明**写的是 `includeFutureSessions`（复数）。只传复数名能过类型检查但不生效；所以两个名字都传，并 `as unknown as Parameters<typeof log.initialize>[0]` |
+| 页面视图本身没有 preload | `tabView` 的 `webPreferences` 只有 `session` / `contextIsolation` / `sandbox`，没有 `preload` —— 所以之前页面上那个全局 100% 来自 session 级注入 |
 
 ---
 
@@ -97,6 +111,8 @@
 | 想验什么 | 跑什么 |
 |---|---|
 | 页面上还能读到哪些 craft 痕迹 | 在任意页 `Object.getOwnPropertyNames(window).filter(k => /craft/i.test(k))` |
+| **某个全局到底对站点可见吗** | 不能只在自己的求值环境里看 —— 它与页面主世界是两个 realm。用内联 `<script>`（一定在主世界执行）把结果写进 DOM 属性，再从求值侧读回来。反例：`browserToolbar` / `electronAPI` 在求值侧是 `undefined`（contextBridge 没暴露），但隔离世界里确有 electron-log 的东西 |
+| 页面上多了哪些注入物（而非"名字里带 craft"） | 主窗口与**同源空白 iframe** 的 `window` 各取一次 `Object.getOwnPropertyNames` 做差集；注意 iframe 也会被 `type:'frame'` 的 preload 命中，做基线时先确认它干净 |
 | `fill` / `type` 的事件形状 | `apps/electron/spike/parking-input-passthrough.cjs` 的探针写法；重点是 `isTrusted` 与 `code` |
 | 权限取值 | `navigator.permissions.query({name})` 逐项 + `Notification.permission` |
 | brands 生命周期 | 会话期脚本 `brands-spike.cjs`（attach/detach/导航三态） |
@@ -109,3 +125,5 @@
 | 日期 | 内容 |
 |---|---|
 | 2026-10-28 | 首版：`fill` / 权限 / craft 全局 / `type` 已修；`outer==inner` 与 `brands` 判定不改并记录依据 |
+| 2026-10-28 | 补 1.5：`__electronLog` 经 electron-log 的 future-session preload 注入到浏览器窗格的第三方页面；改为只覆盖默认会话。复核手法补"主世界 vs 求值世界"与"同源 iframe 差集"两条 |
+| 2026-10-28 | 主题色回传前缀 `__craft_theme_color__:` → `~tcs~:`（同一理由：常驻每个页面，名字不该报出工具；已同步 `browser-pane-manager.test.ts` 的 6 处字面量） |
