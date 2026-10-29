@@ -58,6 +58,7 @@ function makeFns(calls: string[]): ComputerPaneFns {
     status: async () => ({
       driver: { version: '0.28.1', contractVersion: '0.8.0' },
       permissions: ['UIA accessibility: available'],
+      windowCapture: 'available',
       desktopCapture: 'unavailable: BitBlt failed',
       injectedInput: 'unavailable (use element actions)',
       agentCursor: 'on',
@@ -122,6 +123,7 @@ describe('computer command execution', () => {
     const result = await executeComputerToolCommand({ command: 'status', fns: makeFns(calls) })
     expect(result.output).toContain('driver 0.28.1')
     expect(result.output).toContain('windows 22')
+    expect(result.output).toContain('window capture: available')
     expect(result.output).toContain('unavailable: BitBlt failed')
     expect(result.output).toContain('injected input: unavailable')
     expect(result.output).toContain('agent cursor: on')

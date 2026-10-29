@@ -358,6 +358,7 @@ async function runOne(
       const lines = [
         `driver ${status.driver.version} · contract ${status.driver.contractVersion}`,
         `windows ${status.windows}`,
+        `window capture: ${status.windowCapture}`,
         `desktop capture: ${status.desktopCapture}`,
         `injected input: ${status.injectedInput}`,
         `agent cursor: ${status.agentCursor}`,

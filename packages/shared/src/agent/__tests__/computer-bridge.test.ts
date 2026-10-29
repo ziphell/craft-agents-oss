@@ -18,6 +18,7 @@ function recordingFns(calls: unknown[][]): ComputerPaneFns {
       return {
         driver: { version: '0.28.1', contractVersion: '0.8.0' },
         permissions: [],
+        windowCapture: 'available',
         desktopCapture: 'available',
         injectedInput: 'available',
         agentCursor: 'off',

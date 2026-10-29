@@ -609,11 +609,28 @@ export class ComputerUseManager {
           const mac = await readMacComputerPermissions()
           if (mac) permissions.push(...macPermissionGuidance(mac))
         }
-        const capture = await tool(driver, 'get_desktop_state', {})
+        // Three questions, three probes. They are not the same question and they do not fail
+        // together: a window can be captured while the desktop cannot, and a session can capture
+        // everything while accepting no input at all (no foreground window). One probe standing in
+        // for another is how a machine ends up telling the model "cannot screenshot" when it can.
+        const desktopCapture = await tool(driver, 'get_desktop_state', {})
           .then(() => 'available')
           .catch((error: unknown) => `unavailable: ${String((error as Error).message ?? error).slice(0, 160)}`)
-        const injected = capture === 'available' ? 'available' : 'unavailable (use element actions)'
         if (this.windowIndex.size === 0) await listWindows()
+        const captureTarget = activeWindow(this.windowIndex)
+        const windowCapture = captureTarget
+          ? await tool(driver, 'get_window_state', {
+              ...scopeOf(captureTarget),
+              include_accessibility_tree: false,
+              include_screenshot: true,
+              max_dimension: 320,
+            })
+              .then(() => 'available')
+              .catch((error: unknown) => `unavailable: ${String((error as Error).message ?? error).slice(0, 160)}`)
+          : 'unavailable: no window to capture'
+        const injected = (await probeInjectedInput(driver))
+          ? 'available'
+          : 'unavailable (no interactive desktop: use element actions)'
         const listed = [...this.windowIndex.values()].filter(isWindowSurface).length
         return {
           driver: {
@@ -621,7 +638,8 @@ export class ComputerUseManager {
             contractVersion: String(meta.contractVersion ?? 'unknown'),
           },
           permissions,
-          desktopCapture: capture,
+          windowCapture,
+          desktopCapture,
           injectedInput: injected,
           agentCursor: this.cursorState,
           windows: listed || this.windowIndex.size,
@@ -976,14 +994,18 @@ function outcome(raw: unknown, fallback: 'background' | 'foreground'): ComputerA
   }
 }
 
-/** True when this desktop accepts injected input; measured once per session. */
+/**
+ * Whether this session has an **interactive desktop** — the thing injected input needs.
+ *
+ * Two independent signs, in order of cheapness: a cursor position (only an input desktop has one)
+ * and a desktop device context. Neither is a screenshot of the screen, which is a *third* question
+ * with its own answer: a disconnected RDP session can still capture a window while having no cursor
+ * and no foreground window at all.
+ */
 async function probeInjectedInput(driver: any): Promise<boolean> {
-  try {
-    await tool(driver, 'get_desktop_state', {})
-    return true
-  } catch {
-    return false
-  }
+  const cursor = await tool(driver, 'get_cursor_position', {}).then(() => true).catch(() => false)
+  if (cursor) return true
+  return await tool(driver, 'get_desktop_state', {}).then(() => true).catch(() => false)
 }
 
 /** Injected input is refused where the session cannot confirm it landed. */

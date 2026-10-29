@@ -162,7 +162,12 @@ export interface ComputerSessionStatus {
   driver: { version: string; contractVersion: string }
   /** Lines the driver reports about this machine (`check_permissions`). */
   permissions: string[]
-  /** `unavailable: …` when the desktop cannot be captured in this session (locked / RDP). */
+  /**
+   * Whether a **window** can be captured. Independent of `desktopCapture`: a disconnected RDP
+   * session has no desktop surface, yet the windows it owns still paint themselves.
+   */
+  windowCapture: string
+  /** `unavailable: …` when the whole desktop cannot be captured (no display surface). */
   desktopCapture: string
   /** Whether `key` / `click-at` / untargeted `type` can land at all in this session. */
   injectedInput: string
