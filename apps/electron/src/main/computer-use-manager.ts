@@ -35,6 +35,7 @@ import type {
 } from '@craft-agent/shared/agent'
 import { getComputerUseEnabled, getAllowRemoteDesktopDrive } from '@craft-agent/shared/config'
 import {
+  hasMacComputerPermissions,
   macPermissionGuidance,
   readMacComputerPermissions,
   requestMacComputerPermissions,
@@ -179,7 +180,24 @@ export class ComputerUseManager {
     const injected = await probeInjectedInput(driver)
     // macOS grants belong to the host application and the embedded driver will not prompt. Ask
     // lazily — on a person's first use of desktop control — and never block the session on it.
-    if (IS_MAC) void requestMacComputerPermissions(this.log)
+    //
+    // A **remote** session must never raise that dialog: the request arrives from another machine,
+    // where nobody can answer it, and a permission prompt nobody asked for is indistinguishable
+    // from something going wrong. Remote work therefore waits until this Mac has been granted
+    // locally, and is refused with a sentence that says how to grant it.
+    if (IS_MAC) {
+      if (sessionId.startsWith('remote:')) {
+        const status = await readMacComputerPermissions()
+        if (!hasMacComputerPermissions(status)) {
+          throw new Error(
+            'This Mac has not granted Accessibility and Screen Recording yet. Turn desktop control ' +
+            'on here, use it once from this machine, then retry from the server.',
+          )
+        }
+      } else {
+        void requestMacComputerPermissions(this.log)
+      }
+    }
     return this.buildFns(driver, sessionId, injected)
   }
 

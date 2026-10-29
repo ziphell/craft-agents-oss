@@ -372,6 +372,12 @@ when a client is constructed, so an open socket cannot be edited into offering l
 
 A hub cannot widen any of this from its side: both checks live in this process, re-read per call.
 
+On macOS there is an ordering rule that only exists once remote driving is possible: the TCC prompt
+(Accessibility, then Screen Recording) is raised by the **local** door only. A remote request that
+arrives before this Mac has been granted is refused — `This Mac has not granted Accessibility and
+Screen Recording yet…` — rather than opening a system dialog on a machine whose owner is not there
+to answer it.
+
 ## Showing that the desktop is being driven
 
 The lease has a visible half: while a session holds the desktop, the driver's **own cursor** is drawn
