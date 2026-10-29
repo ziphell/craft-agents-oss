@@ -2108,6 +2108,6 @@
   "workspace.serverAuthToken": "服务器认证令牌",
   "workspace.thisComputer": "本机",
   "workspace.underDefaultFolder": ".craft-agent 文件夹下",
-  "settings.client.browserEnabled": "浏览器",
-  "settings.client.computerEnabled": "桌面"
+  "settings.client.browserEnabled": "应用内浏览器",
+  "settings.client.computerEnabled": "本机桌面"
 }

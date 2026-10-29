@@ -2108,6 +2108,6 @@
   "workspace.serverAuthToken": "Server-Authentifizierungstoken",
   "workspace.thisComputer": "Dieser Computer",
   "workspace.underDefaultFolder": "im .craft-agent-Ordner",
-  "settings.client.browserEnabled": "Browser",
-  "settings.client.computerEnabled": "Desktop"
+  "settings.client.browserEnabled": "In-app browser",
+  "settings.client.computerEnabled": "Local desktop"
 }

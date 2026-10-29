@@ -2108,6 +2108,6 @@
   "workspace.serverAuthToken": "Szerver hitelesítési token",
   "workspace.thisComputer": "Ez a számítógép",
   "workspace.underDefaultFolder": "a .craft-agent mappában",
-  "settings.client.browserEnabled": "Browser",
-  "settings.client.computerEnabled": "Desktop"
+  "settings.client.browserEnabled": "In-app browser",
+  "settings.client.computerEnabled": "Local desktop"
 }
