@@ -69,13 +69,17 @@ export function tokenizeComputerCommand(line: string): string[] {
   let started = false
   for (let i = 0; i < line.length; i += 1) {
     const char = line[i]!
-    if (char === '\\' && i + 1 < line.length) {
-      current += line[i + 1]
-      started = true
-      i += 1
-      continue
-    }
+    // A backslash is a **path separator here, not an escape**. This door runs on Windows, where
+    // `C:\Users\me\shot.png` is the ordinary spelling; treating `\` as an escape ate them
+    // (`C:Usersmeshot.png`), which is how a path stopped being absolute. Write `""` for a literal
+    // quote inside quoted text.
     if (char === '"') {
+      if (quoted && line[i + 1] === '"') {
+        current += '"'
+        started = true
+        i += 1
+        continue
+      }
       quoted = !quoted
       started = true
       continue
