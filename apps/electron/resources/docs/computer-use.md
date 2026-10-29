@@ -85,6 +85,11 @@ and the "desktop is being driven" pill is **content-protected** — visible to t
 from screenshots and recordings (`NSWindowSharingNone` / `WDA_EXCLUDEFROMCAPTURE`). No hide/restore
 around a capture is needed, so there is no flicker and no race.
 
+**A backslash is a path separator, not an escape.** `--out C:\Users\me\shot.png` is written to exactly
+that path; if you need a literal `"` inside a quoted argument, write `""`. (Before this was fixed, `\`
+was consumed as an escape: the path lost its separators, stopped being absolute, and `--out` refused —
+with a message that looked like the command had been wrong.)
+
 `--out` writes the capture to disk as well, the same way `read --save` and `video_tool --out` do. A
 **directory** receives the next `screenshot-0001.png` (so repeated shots never overwrite each
 other); a **file path** is written exactly there, with its extension corrected to the image's real
