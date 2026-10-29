@@ -136,6 +136,20 @@ mac:
     # Pi agent server subprocess (for Pi SDK sessions).
     - from: resources/pi-agent-server
       to: app/resources/pi-agent-server
+    # Desktop driver (`computer_tool`): the JS SDK, its platform payload, and the
+    # N-API bridge it loads. Optional at build time — a machine without the
+    # package still produces an app that simply does not advertise `computer`.
+    # Same `app/node_modules` layout the runtime resolves from.
+    - from: ../../node_modules/@trycua/cua-driver
+      to: app/node_modules/@trycua/cua-driver
+    - from: ../../node_modules/@trycua/cua-driver-darwin-${arch}
+      to: app/node_modules/@trycua/cua-driver-darwin-${arch}
+    - from: ../../node_modules/@ubjs/core
+      to: app/node_modules/@ubjs/core
+    - from: ../../node_modules/@ubjs/node
+      to: app/node_modules/@ubjs/node
+    - from: ../../node_modules/@ubjs/node-darwin-${arch}
+      to: app/node_modules/@ubjs/node-darwin-${arch}
   # No platform-level `files` list here on purpose — see the note above `files`.
   # Use predictable naming for macOS packages (applies to zip; dmg uses its own config below)
   artifactName: "Craft-Agents-${arch}.${ext}"
@@ -211,6 +225,18 @@ win:
     # Pi agent server subprocess (for Pi SDK sessions).
     - from: resources/pi-agent-server
       to: app/resources/pi-agent-server
+    # Desktop driver (`computer_tool`) — optional at build time; absent means
+    # `computer` is simply not advertised. See the macOS block for the layout.
+    - from: ../../node_modules/@trycua/cua-driver
+      to: app/node_modules/@trycua/cua-driver
+    - from: ../../node_modules/@trycua/cua-driver-win32-${arch}-msvc
+      to: app/node_modules/@trycua/cua-driver-win32-${arch}-msvc
+    - from: ../../node_modules/@ubjs/core
+      to: app/node_modules/@ubjs/core
+    - from: ../../node_modules/@ubjs/node
+      to: app/node_modules/@ubjs/node
+    - from: ../../node_modules/@ubjs/node-win32-${arch}-msvc
+      to: app/node_modules/@ubjs/node-win32-${arch}-msvc
     # koffi — a Win32 FFI used only on Windows, to set the browser window's
     # AppUserModel.PreventPinning property (see docs/browser-taskbar-plan.md).
     # asar is off and node_modules is excluded from `files`, so like the SDK it

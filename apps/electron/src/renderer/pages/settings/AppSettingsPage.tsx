@@ -145,6 +145,7 @@ export default function AppSettingsPage() {
 
   // Tools state
   const [browserToolEnabled, setBrowserToolEnabled] = useState(true)
+  const [computerUseEnabled, setComputerUseEnabled] = useState(false)
 
   // Links and pages state
   const [openInAppBrowser, setOpenInAppBrowser] = useState(true)
@@ -174,16 +175,18 @@ export default function AppSettingsPage() {
   const loadSettings = useCallback(async () => {
     if (!window.electronAPI) return
     try {
-      const [notificationsOn, keepAwakeOn, browserToolOn, proxySettings, preferencesFile] = await Promise.all([
+      const [notificationsOn, keepAwakeOn, browserToolOn, computerUseOn, proxySettings, preferencesFile] = await Promise.all([
         window.electronAPI.getNotificationsEnabled(),
         window.electronAPI.getKeepAwakeWhileRunning(),
         window.electronAPI.getBrowserToolEnabled(),
+        window.electronAPI.getComputerUseEnabled(),
         window.electronAPI.getNetworkProxySettings(),
         window.electronAPI.readPreferences(),
       ])
       setNotificationsEnabled(notificationsOn)
       setKeepAwakeEnabled(keepAwakeOn)
       setBrowserToolEnabled(browserToolOn)
+      setComputerUseEnabled(computerUseOn)
       setOpenInAppBrowser(readOpenInAppBrowserFrom(preferencesFile.content))
       setRestoreBrowserTabs(readRestoreBrowserTabsFrom(preferencesFile.content))
       const form = toProxyFormState(proxySettings)
@@ -211,6 +214,14 @@ export default function AppSettingsPage() {
   const handleBrowserToolEnabledChange = useCallback(async (enabled: boolean) => {
     setBrowserToolEnabled(enabled)
     await window.electronAPI.setBrowserToolEnabled(enabled)
+  }, [])
+
+  const handleComputerUseEnabledChange = useCallback(async (enabled: boolean) => {
+    // Main is told as part of this call: turning it off releases a held desktop now, and turning
+    // it on makes the driver probe while still withholding every OS permission prompt until the
+    // first real command.
+    setComputerUseEnabled(enabled)
+    await window.electronAPI.setComputerUseEnabled(enabled)
   }, [])
 
   const handleOpenInAppBrowserChange = useCallback(async (enabled: boolean) => {
@@ -317,6 +328,12 @@ export default function AppSettingsPage() {
                     description={t("settings.tools.builtInBrowserDesc")}
                     checked={browserToolEnabled}
                     onCheckedChange={handleBrowserToolEnabledChange}
+                  />
+                  <SettingsToggle
+                    label={t("settings.tools.desktopControl")}
+                    description={t("settings.tools.desktopControlDesc")}
+                    checked={computerUseEnabled}
+                    onCheckedChange={handleComputerUseEnabledChange}
                   />
                 </SettingsCard>
               </SettingsSection>

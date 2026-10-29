@@ -56,6 +56,7 @@ export function createComputerTools(options: ComputerToolOptions) {
           const result = await executeComputerToolCommand({
             command: args.command ?? '',
             fns,
+            ...(options.workspaceRootPath ? { workspaceRootPath: options.workspaceRootPath } : {}),
           })
           return toToolResult(result.output, result)
         } catch (error) {

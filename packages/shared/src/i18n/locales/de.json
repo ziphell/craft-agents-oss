@@ -1541,6 +1541,8 @@
   "settings.shortcuts.title": "Tastaturkürzel",
   "settings.tools.builtInBrowser": "Integrierter Browser",
   "settings.tools.builtInBrowserDesc": "Deaktivieren, wenn Sie externe Browser-Werkzeuge wie Playwright, Puppeteer oder Browser-MCP-Server verwenden.",
+  "settings.tools.desktopControl": "Desktop-Steuerung",
+  "settings.tools.desktopControlDesc": "Erlaubt dem Agenten, Fenster dieses Computers zu lesen und zu bedienen. Standardmäßig aus; macOS fragt erst nach Bedienungshilfen und Bildschirmaufnahme, wenn du dies aktivierst und der Agent es nutzt.",
   "settings.tools.title": "Werkzeuge",
   "settings.workspace.advanced": "Erweitert",
   "settings.workspace.atLeast2Modes": "Mindestens 2 Modi erforderlich",

@@ -41,7 +41,7 @@ import { createVideoTools } from './video-tools.ts';
 import { createDrawioTools } from './drawio-tools.ts';
 import type { BrowserPaneFns } from './browser-pane.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
-import { getBrowserToolEnabled } from '../config/storage.ts';
+import { getBrowserToolEnabled, getComputerUseEnabled } from '../config/storage.ts';
 import { isDecisionFeatureActive } from '../decisions/resolve.ts';
 
 // Re-export types for backward compatibility
@@ -327,18 +327,21 @@ export function getSessionScopedTools(
     }
 
     // The desktop door — its own tool beside the browser's, because driving a GUI and reaching
-    // another machine are different questions. Registered unconditionally: a host without a
-    // desktop answers with a sentence, so the schema is worth advertising either way.
-    tools.push(
-      ...createComputerTools({
-        sessionId,
-        workspaceRootPath,
-        getComputerPaneFns: async () => {
-          const callbacks = getSessionScopedToolCallbacks(sessionId);
-          return callbacks?.getComputerPaneFns?.();
-        },
-      }),
-    );
+    // another machine are different questions. Opt-in: while the person has it off, the tool is
+    // not offered at all, so no schema suggests a capability that needs OS grants and a lease.
+    // Enabled on a host without a driver, it stays registered and refuses with a sentence.
+    if (getComputerUseEnabled()) {
+      tools.push(
+        ...createComputerTools({
+          sessionId,
+          workspaceRootPath,
+          getComputerPaneFns: async () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.getComputerPaneFns?.();
+          },
+        }),
+      );
+    }
 
     // Device meta-tool — one door onto this machine or another connected one. Omitted entirely
     // while no device is connected, allowed by the device, and enabled on this server: the schema

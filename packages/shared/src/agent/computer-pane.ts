@@ -78,6 +78,27 @@ export interface ComputerSnapshot {
 export interface ComputerScreenshotArgs {
   /** Omit for whatever the person is looking at. */
   windowId?: string
+  /** Leave this application's own windows out when choosing the default window. */
+  excludeSelf?: boolean
+}
+
+/** Which windows to leave out of a list. */
+export interface ComputerWindowListArgs {
+  /**
+   * Leave this application's own windows out — the Craft window the agent runs in, and the
+   * "desktop is being driven" pill. Off by default: the app's windows are ordinary targets, so an
+   * agent asked to operate Craft itself can. This is the explicit opt-out for when they must not
+   * be (a screenshot meant to show somebody else's screen, say).
+   */
+  excludeSelf?: boolean
+}
+
+/** Which window a read acts on. */
+export interface ComputerSnapshotArgs {
+  /** Omit for the frontmost window. */
+  windowId?: string
+  /** Leave this application's own windows out when choosing the default window. */
+  excludeSelf?: boolean
 }
 
 export interface ComputerScreenshotResult {
@@ -87,6 +108,15 @@ export interface ComputerScreenshotResult {
   width: number
   height: number
   windowId?: string
+  /**
+   * Screenshot pixels per window unit (points on macOS, the platform's window unit on Windows).
+   *
+   * The manager asks for the capture at the window's logical size, so this is normally `1` and a
+   * `click-at` coordinate is the same number an element frame or a window bound uses. It is below
+   * `1` only when the driver's long-edge cap is tighter than the window (a very large display);
+   * the reply then says so, so a caller can convert.
+   */
+  scale?: number
 }
 
 /**
@@ -148,9 +178,9 @@ export interface ComputerSessionStatus {
  * a caller may treat "returned" as "happened".
  */
 export interface ComputerPaneFns {
-  windows: () => Promise<ComputerWindowInfo[]>
+  windows: (args?: ComputerWindowListArgs) => Promise<ComputerWindowInfo[]>
   /** Read a window's tree. `windowId` omitted means the active window. */
-  snapshot: (args?: { windowId?: string }) => Promise<ComputerSnapshot>
+  snapshot: (args?: ComputerSnapshotArgs) => Promise<ComputerSnapshot>
   clickElement: (
     target: ComputerTarget,
     options?: { mode?: ComputerActionMode },
@@ -158,7 +188,7 @@ export interface ComputerPaneFns {
   /** For nodes that expose no action, and for canvases where no node exists. */
   clickAt: (
     point: { x: number; y: number; windowId?: string },
-    options?: { mode?: ComputerActionMode },
+    options?: { mode?: ComputerActionMode; excludeSelf?: boolean },
   ) => Promise<void>
   /** Perform one of the node's advertised `actions` (default `invoke`). */
   invoke: (target: ComputerTarget, action?: string) => Promise<ComputerActionOutcome>

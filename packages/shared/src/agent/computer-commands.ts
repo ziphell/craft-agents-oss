@@ -12,9 +12,17 @@
  *   can name what was acted on (`Button "Submit"`) rather than a coordinate.
  * - `click-at` / `type` / `key` / `scroll` are the pixel rung: real input, marked in the reply so a
  *   reader can tell them apart from an accessibility invocation.
+ *
+ * Reads that name no window (`windows` / `snapshot` / `screenshot` / `click-at`) act on the
+ * frontmost one, **including this app's own windows** — operating the app itself is a legitimate
+ * ask. `--exclude-self` is the explicit opt-out for the cases where it is not (a capture meant to
+ * show somebody else's screen).
  */
 
 import type { BrowserCommandImage } from './command-cli.ts'
+import { resolveLocalPath } from './command-cli.ts'
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, extname, join } from 'node:path'
 import type {
   ComputerActionOutcome,
   ComputerElement,
@@ -35,6 +43,11 @@ export interface ComputerToolCommandArgs {
   /** One command, or several run in order. */
   command: string | string[]
   fns: ComputerPaneFns
+  /**
+   * Where a relative `--out` path counts from — the same rule `read --save` follows. Omitted for
+   * probes and device calls with no workspace, where only an absolute path can be written.
+   */
+  workspaceRootPath?: string
 }
 
 export interface ComputerToolCommandResult {
@@ -90,6 +103,10 @@ interface ParsedCommand {
   windowRef?: string
   /** `--element <token>` — the field `type` should write into, instead of whatever has focus. */
   elementRef?: string
+  /** `--exclude-self` — leave this app's own windows out of the default-window choice. */
+  excludeSelf?: boolean
+  /** `--out <dir|file>` — also write a screenshot there. */
+  outRef?: string
 }
 
 const VERBS = new Set([
@@ -118,6 +135,8 @@ export function parseComputerCommand(line: string): ParsedCommand {
   const positional: string[] = []
   let windowRef: string | undefined
   let elementRef: string | undefined
+  let outRef: string | undefined
+  let excludeSelf = false
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i]!
     if (token === '--window') {
@@ -134,6 +153,17 @@ export function parseComputerCommand(line: string): ParsedCommand {
       i += 1
       continue
     }
+    if (token === '--out') {
+      const value = tokens[i + 1]
+      if (!value || value.startsWith('--')) throw new Error('--out needs a directory or file path.')
+      outRef = value
+      i += 1
+      continue
+    }
+    if (token === '--exclude-self') {
+      excludeSelf = true
+      continue
+    }
     positional.push(token)
   }
   return {
@@ -141,6 +171,8 @@ export function parseComputerCommand(line: string): ParsedCommand {
     positional,
     ...(windowRef !== undefined ? { windowRef } : {}),
     ...(elementRef !== undefined ? { elementRef } : {}),
+    ...(outRef !== undefined ? { outRef } : {}),
+    ...(excludeSelf ? { excludeSelf } : {}),
   }
 }
 
@@ -186,8 +218,10 @@ function formatWindows(windows: ComputerWindowInfo[]): string {
   }
   const lines = [`${windows.length} window${windows.length === 1 ? '' : 's'}:`]
   for (const window of windows) {
+    // macOS withholds window titles until Screen Recording is granted; an untitled window is still
+    // a real target, so say so instead of printing empty quotes next to the app name.
     lines.push(
-      `- w${window.id} · ${window.app || 'unknown app'} · "${window.title}"` +
+      `- w${window.id} · ${window.app || 'unknown app'} · "${window.title || '(no title)'}"` +
       (window.pid != null ? ` · pid ${window.pid}` : '') +
       (window.active ? ' · active' : '') +
       formatBounds(window.bounds),
@@ -205,7 +239,7 @@ function formatElement(element: ComputerElement): string {
 
 function formatSnapshot(snapshot: ComputerSnapshot): string {
   const header =
-    `w${snapshot.window.id} · ${snapshot.window.app || 'unknown app'} · "${snapshot.window.title}"` +
+    `w${snapshot.window.id} · ${snapshot.window.app || 'unknown app'} · "${snapshot.window.title || '(no title)'}"` +
     ` · source=${snapshot.source} · ${snapshot.elements.length} element(s)`
   const lines = [header]
   if (snapshot.note) lines.push(`note: ${snapshot.note}`)
@@ -240,12 +274,79 @@ function toImage(result: { data: string; mimeType: 'image/png' | 'image/jpeg' })
   }
 }
 
+/**
+ * The file `--out` means.
+ *
+ * A directory is created if needed and answered with the next `screenshot-0001.ext` (the numbering
+ * `video_tool --out` uses), so repeated captures never overwrite each other. Anything that looks
+ * like a file — it exists as one, or ends in an image extension — is written at that path; its
+ * extension is corrected to the image's real format rather than leaving PNG bytes in a `.jpg`.
+ */
+function screenshotOutputPath(
+  requested: string,
+  mimeType: 'image/png' | 'image/jpeg',
+  workspaceRootPath?: string,
+): string {
+  let resolved: string
+  try {
+    resolved = resolveLocalPath(requested, workspaceRootPath)
+  } catch {
+    throw new Error(
+      `--out: "${requested}" is not absolute and there is no workspace to count a relative path from. ` +
+      'Pass an absolute path.',
+    )
+  }
+  const ext = mimeType === 'image/jpeg' ? 'jpg' : 'png'
+  let existing: ReturnType<typeof statSync> | null = null
+  try {
+    existing = statSync(resolved)
+  } catch {
+    existing = null
+  }
+  const looksLikeFile = existing == null && /\.(png|jpe?g)$/i.test(extname(resolved))
+
+  if (existing?.isDirectory() || (existing == null && !looksLikeFile)) {
+    mkdirSync(resolved, { recursive: true })
+    for (let index = 1; ; index += 1) {
+      const candidate = join(resolved, `screenshot-${String(index).padStart(4, '0')}.${ext}`)
+      if (!existsSync(candidate)) return candidate
+    }
+  }
+
+  const givenExt = extname(resolved).toLowerCase()
+  const file = !givenExt
+    ? `${resolved}.${ext}`
+    : givenExt === `.${ext}` || (ext === 'jpg' && givenExt === '.jpeg')
+      ? resolved
+      : `${resolved.slice(0, -givenExt.length)}.${ext}`
+  mkdirSync(dirname(file), { recursive: true })
+  return file
+}
+
+/** Write the captured image and answer where it went. */
+function writeScreenshot(
+  shot: { data: string; mimeType: 'image/png' | 'image/jpeg' },
+  requested: string,
+  workspaceRootPath?: string,
+): string {
+  const file = screenshotOutputPath(requested, shot.mimeType, workspaceRootPath)
+  writeFileSync(file, Buffer.from(shot.data, 'base64'))
+  return file
+}
+
 // ============================================================================
 // Execution
 // ============================================================================
 
-async function runOne(parsed: ParsedCommand, fns: ComputerPaneFns): Promise<ComputerToolCommandResult> {
-  const { verb, positional, windowRef, elementRef } = parsed
+async function runOne(
+  parsed: ParsedCommand,
+  fns: ComputerPaneFns,
+  workspaceRootPath?: string,
+): Promise<ComputerToolCommandResult> {
+  const { verb, positional, windowRef, elementRef, outRef, excludeSelf } = parsed
+  if (outRef !== undefined && verb !== 'screenshot') {
+    throw new Error('--out only applies to screenshot.')
+  }
 
   switch (verb) {
     case 'status': {
@@ -262,15 +363,33 @@ async function runOne(parsed: ParsedCommand, fns: ComputerPaneFns): Promise<Comp
     }
 
     case 'windows':
-      return { output: formatWindows(await fns.windows()) }
+      return { output: formatWindows(await fns.windows(excludeSelf ? { excludeSelf: true } : undefined)) }
 
     case 'snapshot':
-      return { output: formatSnapshot(await fns.snapshot(windowRef ? { windowId: windowRef } : {})) }
+      return {
+        output: formatSnapshot(await fns.snapshot({
+          ...(windowRef ? { windowId: windowRef } : {}),
+          ...(excludeSelf ? { excludeSelf: true } : {}),
+        })),
+      }
 
     case 'screenshot': {
-      const shot = await fns.screenshot(windowRef ? { windowId: windowRef } : {})
+      const shot = await fns.screenshot({
+        ...(windowRef ? { windowId: windowRef } : {}),
+        ...(excludeSelf ? { excludeSelf: true } : {}),
+      })
       const where = shot.windowId ? `w${shot.windowId}` : 'the active window'
-      return { output: `Screenshot ${shot.width}×${shot.height} of ${where}.`, image: toImage(shot) }
+      const savedAt = outRef ? writeScreenshot(shot, outRef, workspaceRootPath) : null
+      const scaleNote = shot.scale != null && Math.abs(shot.scale - 1) > 0.01
+        ? ` · image scale ${shot.scale} px per window unit`
+        : ''
+      return {
+        output: `Screenshot ${shot.width}×${shot.height} of ${where}${scaleNote}.` +
+          (savedAt ? `\nSaved: ${savedAt}` : ''),
+        // `path` tells a backend that shows images from disk (Pi) to use this file rather than
+        // writing a second copy of the same capture.
+        image: { ...toImage(shot), ...(savedAt ? { path: savedAt } : {}) },
+      }
     }
 
     case 'click': {
@@ -296,7 +415,10 @@ async function runOne(parsed: ParsedCommand, fns: ComputerPaneFns): Promise<Comp
     case 'click-at': {
       const x = parseCoordinate(positional[0], 'x')
       const y = parseCoordinate(positional[1], 'y')
-      await fns.clickAt({ x, y, ...(windowRef ? { windowId: windowRef } : {}) }, { mode: 'auto' })
+      await fns.clickAt(
+        { x, y, ...(windowRef ? { windowId: windowRef } : {}) },
+        { mode: 'auto', ...(excludeSelf ? { excludeSelf: true } : {}) },
+      )
       return {
         output: `Done: click-at ${x},${y}${windowRef ? ` in w${windowRef}` : ''}.`,
         appendReleaseHint: true,
@@ -368,7 +490,7 @@ export async function executeComputerToolCommand(
   const images: BrowserCommandImage[] = []
   let appendReleaseHint = false
   for (const line of lines) {
-    const result = await runOne(parseComputerCommand(line), opts.fns)
+    const result = await runOne(parseComputerCommand(line), opts.fns, opts.workspaceRootPath)
     outputs.push(result.output)
     if (result.image) images.push(result.image)
     if (result.images) images.push(...result.images)

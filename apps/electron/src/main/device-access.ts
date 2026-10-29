@@ -13,7 +13,7 @@
 import { spawn } from 'node:child_process'
 import { mkdirSync, promises as fsp } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
-import { hubWorkspaceRoot } from '@craft-agent/shared/config'
+import { hubWorkspaceRoot, getComputerUseEnabled } from '@craft-agent/shared/config'
 import type { DeviceExecRequest, DeviceExecResponse, DeviceFsRequest, DeviceFsResponse, DeviceHubContext, BrowserCapabilityRequest } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE, CLIENT_COMPUTER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '@craft-agent/server-core/transport'
 import { dispatchComputerCapability, type ComputerCapabilityRequest, type ComputerPaneFns } from '@craft-agent/shared/agent'
@@ -362,6 +362,10 @@ export function attachDeviceCapabilities(
   // this pointer, which is the whole point of the lease.
   client.handleCapability(CLIENT_COMPUTER_INVOKE, async (req: ComputerCapabilityRequest): Promise<unknown> => {
     if (!req || req.v !== 1) throw new Error('Unsupported computer request')
+    // Capabilities are fixed at handshake, so a link opened while the switch was on can outlive it.
+    // Re-reading the switch here is what makes turning it off effective immediately, rather than
+    // at the next reconnect.
+    if (!getComputerUseEnabled()) throw new Error('Desktop control is turned off in Settings.')
     const manager = computerUseManager()
     if (!manager) throw new Error('This app has no desktop to drive')
     const fns = await manager.fnsForSession(`remote:${connectionId}`)

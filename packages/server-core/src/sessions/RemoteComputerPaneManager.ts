@@ -22,10 +22,13 @@ import type {
   ComputerActionOutcome,
   ComputerPaneFns,
   ComputerSessionStatus,
+  ComputerScreenshotArgs,
   ComputerScreenshotResult,
   ComputerSnapshot,
+  ComputerSnapshotArgs,
   ComputerTarget,
   ComputerWindowInfo,
+  ComputerWindowListArgs,
   ComputerCapabilityMethod,
   ComputerCapabilityRequest,
 } from '@craft-agent/shared/agent'
@@ -70,8 +73,8 @@ export class RemoteComputerPaneManager implements ComputerPaneFns {
   }
 
   status = (): Promise<ComputerSessionStatus> => this.call('status')
-  windows = (): Promise<ComputerWindowInfo[]> => this.call('windows')
-  snapshot = (args?: { windowId?: string }): Promise<ComputerSnapshot> => this.call('snapshot', args)
+  windows = (args?: ComputerWindowListArgs): Promise<ComputerWindowInfo[]> => this.call('windows', args)
+  snapshot = (args?: ComputerSnapshotArgs): Promise<ComputerSnapshot> => this.call('snapshot', args)
   clickElement = (target: ComputerTarget, options?: { mode?: ComputerActionMode }): Promise<ComputerActionOutcome> =>
     this.call('clickElement', target, options)
   invoke = (target: ComputerTarget, action?: string): Promise<ComputerActionOutcome> =>
@@ -80,7 +83,7 @@ export class RemoteComputerPaneManager implements ComputerPaneFns {
     this.call('setValue', target, value)
   clickAt = (
     point: { x: number; y: number; windowId?: string },
-    options?: { mode?: ComputerActionMode },
+    options?: { mode?: ComputerActionMode; excludeSelf?: boolean },
   ): Promise<void> => this.call('clickAt', point, options)
   typeText = (text: string, options?: { windowId?: string; token?: string }): Promise<void> =>
     this.call('typeText', text, options)
@@ -91,7 +94,7 @@ export class RemoteComputerPaneManager implements ComputerPaneFns {
     amount?: number,
     options?: { windowId?: string },
   ): Promise<void> => this.call('scroll', direction, amount, options)
-  screenshot = (args?: { windowId?: string }): Promise<ComputerScreenshotResult> =>
+  screenshot = (args?: ComputerScreenshotArgs): Promise<ComputerScreenshotResult> =>
     this.call('screenshot', args)
   launchApp = (name: string): Promise<{ pid: number | null; windowId?: string }> => this.call('launchApp', name)
   stop = (): Promise<void> => this.call('stop')

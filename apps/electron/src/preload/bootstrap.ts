@@ -217,6 +217,19 @@ const api = buildClientApi(client, CHANNEL_MAP, (ch) => client.isChannelAvailabl
   await ipcRenderer.invoke('client-mode:switch-workspace', workspaceId).catch(() => {})
 }
 
+/**
+ * Desktop control is a switch about **this machine**, so main has to hear it too: a held lease
+ * must be released the moment the person turns it off, and the device link must stop advertising
+ * `computer`. The preference itself is stored by the server the window is talking to, like every
+ * other tool setting. A remote window edits the hub's policy, so it does not touch this machine.
+ */
+;(api as ElectronAPI).setComputerUseEnabled = async (enabled: boolean) => {
+  await client.invoke(RPC_CHANNELS.tools.SET_COMPUTER_USE_ENABLED, enabled)
+  if (!windowTarget) {
+    await ipcRenderer.invoke('computer-use:set-enabled', enabled).catch(() => {})
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Transport connection state logging (for remote connections)
 // ---------------------------------------------------------------------------

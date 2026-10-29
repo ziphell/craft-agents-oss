@@ -1541,6 +1541,8 @@
   "settings.shortcuts.title": "Atajos",
   "settings.tools.builtInBrowser": "Navegador integrado",
   "settings.tools.builtInBrowserDesc": "Desactiva si usas herramientas de navegador externas como Playwright, Puppeteer o servidores MCP de navegador.",
+  "settings.tools.desktopControl": "Control del escritorio",
+  "settings.tools.desktopControlDesc": "Permite que el agente lea y opere las ventanas de este equipo. Desactivado por defecto; macOS solo solicita Accesibilidad y Grabación de pantalla después de activarlo y de que el agente lo use.",
   "settings.tools.title": "Herram.",
   "settings.workspace.advanced": "Avanzado",
   "settings.workspace.atLeast2Modes": "Se requieren al menos 2 modos",

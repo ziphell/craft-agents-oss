@@ -1541,6 +1541,8 @@
   "settings.shortcuts.title": "快捷键",
   "settings.tools.builtInBrowser": "内置浏览器",
   "settings.tools.builtInBrowserDesc": "如果使用外部浏览器工具 (如 Playwright、Puppeteer 或浏览器 MCP 服务器) 则禁用。",
+  "settings.tools.desktopControl": "桌面控制",
+  "settings.tools.desktopControlDesc": "允许智能体读取并操作这台电脑的窗口。默认关闭；开启并由智能体实际使用后，macOS 才会请求辅助功能与屏幕录制权限。",
   "settings.tools.title": "工具",
   "settings.workspace.advanced": "高级",
   "settings.workspace.atLeast2Modes": "至少需要 2 种模式",

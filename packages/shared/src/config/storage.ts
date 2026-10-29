@@ -96,6 +96,7 @@ export interface StoredConfig {
   richToolDescriptions?: boolean;  // Add intent/action metadata to all tool calls (default: true)
   // Tools
   browserToolEnabled?: boolean;  // Enable built-in browser tool (default: true). Disable for Playwright/Puppeteer.
+  computerUseEnabled?: boolean;  // Let the agent drive this desktop with computer_tool (default: false — opt-in; needs OS grants)
   allowRemoteEvaluate?: boolean;  // Allow remote agents to call `browser_tool evaluate` on local browser (default: true).
   // Prompt caching & context
   extendedPromptCache?: boolean;  // Use 1h prompt cache TTL instead of 5m (default: false)
@@ -146,6 +147,7 @@ const FALLBACK_CONFIG_DEFAULTS: ConfigDefaults = {
     richToolDescriptions: true,
     extendedPromptCache: false,
     browserToolEnabled: true,
+    computerUseEnabled: false,
     allowRemoteEvaluate: true,
   },
   workspaceDefaults: {
@@ -588,6 +590,40 @@ export function setBrowserToolEnabled(enabled: boolean): void {
 
   // Clear session tool caches so all sessions pick up the change immediately.
   // Lazy import to avoid circular dependency (storage ← session-scoped-tools ← storage).
+  import('../agent/session-scoped-tools.ts').then(m => m.invalidateAllSessionToolsCaches()).catch(() => {});
+}
+
+/**
+ * Whether the agent may drive this computer's desktop (`computer_tool`).
+ *
+ * Off by default. Driving a desktop needs OS-level grants (Accessibility / Screen
+ * Recording on macOS), so nothing is requested and the tool is not advertised until
+ * the person turns this on in Settings → App → Tools. A host without a desktop
+ * driver still advertises the schema while enabled and refuses each call with a
+ * sentence — that is a different state from "the person turned it off".
+ */
+export function getComputerUseEnabled(): boolean {
+  const config = loadStoredConfig();
+  if (config?.computerUseEnabled !== undefined) {
+    return config.computerUseEnabled;
+  }
+  const defaults = loadConfigDefaults();
+  return defaults.defaults.computerUseEnabled === true;
+}
+
+/**
+ * Turn desktop control on or off.
+ *
+ * Session tool caches are invalidated so the tool appears/disappears without a
+ * restart; the Electron main process reacts to the same switch by releasing a held
+ * desktop and re-announcing the device capability (see `computer-use:set-enabled`).
+ */
+export function setComputerUseEnabled(enabled: boolean): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.computerUseEnabled = enabled;
+  saveConfig(config);
+
   import('../agent/session-scoped-tools.ts').then(m => m.invalidateAllSessionToolsCaches()).catch(() => {});
 }
 

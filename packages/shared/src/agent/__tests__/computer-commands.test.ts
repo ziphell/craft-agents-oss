@@ -5,6 +5,9 @@
  * index is refused and that a token is passed through untouched.
  */
 import { describe, it, expect } from 'bun:test'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   parseComputerCommand,
   parseComputerRef,
@@ -84,6 +87,22 @@ describe('computer command parsing', () => {
     })
   })
 
+  it('reads --exclude-self as a flag, not a positional', () => {
+    expect(parseComputerCommand('windows --exclude-self')).toMatchObject({
+      verb: 'windows',
+      positional: [],
+      excludeSelf: true,
+    })
+  })
+
+  it('reads --out with its path', () => {
+    expect(parseComputerCommand('screenshot --out shots')).toMatchObject({
+      verb: 'screenshot',
+      positional: [],
+      outRef: 'shots',
+    })
+  })
+
   it('refuses an unknown verb by name', () => {
     expect(() => parseComputerCommand('double-click s00000001:1')).toThrow(/Unknown command "double-click"/)
   })
@@ -118,6 +137,38 @@ describe('computer command execution', () => {
     expect(calls).toEqual([])
   })
 
+  it('passes --exclude-self through to the primitives', async () => {
+    const calls: string[] = []
+    const fns: ComputerPaneFns = {
+      ...makeFns(calls),
+      windows: async (args) => {
+        calls.push(`windows:${args?.excludeSelf === true}`)
+        return []
+      },
+      snapshot: async (args) => {
+        calls.push(`snapshot:${args?.excludeSelf === true}`)
+        return {
+          snapshotId: 's1',
+          window: { id: '3', title: '', app: 'Craft', pid: 1, active: true },
+          source: 'none',
+          elements: [],
+        }
+      },
+      screenshot: async (args) => {
+        calls.push(`screenshot:${args?.excludeSelf === true}`)
+        return { data: 'AAAA', mimeType: 'image/png', width: 1, height: 1 }
+      },
+      clickAt: async (_point, options) => {
+        calls.push(`click-at:${options?.excludeSelf === true}`)
+      },
+    }
+    await executeComputerToolCommand({ command: 'windows --exclude-self', fns })
+    await executeComputerToolCommand({ command: 'snapshot --exclude-self', fns })
+    await executeComputerToolCommand({ command: 'screenshot --exclude-self', fns })
+    await executeComputerToolCommand({ command: 'click-at 10 20 --exclude-self', fns })
+    expect(calls).toEqual(['windows:true', 'snapshot:true', 'screenshot:true', 'click-at:true'])
+  })
+
   it('renders a snapshot with tokens and advertised actions', async () => {
     const calls: string[] = []
     const result = await executeComputerToolCommand({ command: 'snapshot', fns: makeFns(calls) })
@@ -150,6 +201,58 @@ describe('computer command execution', () => {
     const result = await executeComputerToolCommand({ command: 'screenshot', fns: makeFns(calls) })
     expect(result.image?.mimeType).toBe('image/png')
     expect(result.image?.sizeBytes).toBe(3)
+  })
+
+  it('states the image scale only when the capture was downscaled', async () => {
+    const scaled: ComputerPaneFns = {
+      ...makeFns([]),
+      screenshot: async () => ({ data: 'AAAA', mimeType: 'image/png', width: 500, height: 250, scale: 0.5 }),
+    }
+    const result = await executeComputerToolCommand({ command: 'screenshot', fns: scaled })
+    expect(result.output).toContain('image scale 0.5 px per window unit')
+  })
+
+  it('writes --out screenshots into a directory with sequential names', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'craft-computer-out-'))
+    try {
+      const first = await executeComputerToolCommand({
+        command: `screenshot --out "${dir}"`,
+        fns: makeFns([]),
+      })
+      await executeComputerToolCommand({ command: `screenshot --out "${dir}"`, fns: makeFns([]) })
+      expect(first.output).toContain('Saved:')
+      expect(existsSync(join(dir, 'screenshot-0001.png'))).toBe(true)
+      expect(existsSync(join(dir, 'screenshot-0002.png'))).toBe(true)
+      // The image still comes back inline: --out adds a file, it does not replace the reply.
+      expect(first.image?.mimeType).toBe('image/png')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('writes an exact file path, resolving a relative --out from the workspace', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'craft-computer-out-'))
+    try {
+      const absolute = join(dir, 'shots', 'login.png')
+      await executeComputerToolCommand({ command: `screenshot --out "${absolute}"`, fns: makeFns([]) })
+      expect(existsSync(absolute)).toBe(true)
+
+      await executeComputerToolCommand({
+        command: 'screenshot --out frames',
+        fns: makeFns([]),
+        workspaceRootPath: dir,
+      })
+      expect(existsSync(join(dir, 'frames', 'screenshot-0001.png'))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses --out on a command that produces no image', async () => {
+    await expect(executeComputerToolCommand({
+      command: 'windows --out shots',
+      fns: makeFns([]),
+    })).rejects.toThrow('--out only applies to screenshot.')
   })
 
   it('stops the batch on the first failure', async () => {

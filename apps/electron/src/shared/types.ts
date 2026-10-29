@@ -812,6 +812,8 @@ export interface ElectronAPI {
   // Tools settings
   getBrowserToolEnabled(): Promise<boolean>
   setBrowserToolEnabled(enabled: boolean): Promise<void>
+  getComputerUseEnabled(): Promise<boolean>
+  setComputerUseEnabled(enabled: boolean): Promise<void>
 
   // Appearance settings
   getRichToolDescriptions(): Promise<boolean>

@@ -360,6 +360,8 @@ export const RPC_CHANNELS = {
   tools: {
     GET_BROWSER_TOOL_ENABLED: 'tools:getBrowserToolEnabled',
     SET_BROWSER_TOOL_ENABLED: 'tools:setBrowserToolEnabled',
+    GET_COMPUTER_USE_ENABLED: 'tools:getComputerUseEnabled',
+    SET_COMPUTER_USE_ENABLED: 'tools:setComputerUseEnabled',
   },
   caching: {
     GET_EXTENDED_PROMPT_CACHE: 'caching:getExtendedPromptCache',

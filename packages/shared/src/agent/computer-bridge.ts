@@ -57,9 +57,9 @@ export async function dispatchComputerCapability(
     case 'status':
       return (await fns.status()) satisfies ComputerSessionStatus
     case 'windows':
-      return (await fns.windows()) satisfies ComputerWindowInfo[]
+      return (await fns.windows(args[0] as { excludeSelf?: boolean } | undefined)) satisfies ComputerWindowInfo[]
     case 'snapshot':
-      return (await fns.snapshot(args[0] as { windowId?: string } | undefined)) satisfies ComputerSnapshot
+      return (await fns.snapshot(args[0] as { windowId?: string; excludeSelf?: boolean } | undefined)) satisfies ComputerSnapshot
     case 'clickElement':
       return (await fns.clickElement(
         args[0] as ComputerTarget,
@@ -72,7 +72,7 @@ export async function dispatchComputerCapability(
     case 'clickAt':
       await fns.clickAt(
         args[0] as { x: number; y: number; windowId?: string },
-        args[1] as { mode?: ComputerActionMode } | undefined,
+        args[1] as { mode?: ComputerActionMode; excludeSelf?: boolean } | undefined,
       )
       return null
     case 'typeText':
@@ -89,7 +89,7 @@ export async function dispatchComputerCapability(
       )
       return null
     case 'screenshot':
-      return (await fns.screenshot(args[0] as { windowId?: string } | undefined)) satisfies ComputerScreenshotResult
+      return (await fns.screenshot(args[0] as { windowId?: string; excludeSelf?: boolean } | undefined)) satisfies ComputerScreenshotResult
     case 'launchApp':
       return await fns.launchApp(args[0] as string)
     case 'stop':

@@ -254,7 +254,11 @@ export async function executeDeviceProxyCommand(
       throw new Error('"command" is required for the computer tool on a device (e.g. "status").')
     }
     const fns = await opts.fns.getComputerFns(device)
-    const result = await executeComputerToolCommand({ command: command as string | string[], fns })
+    const result = await executeComputerToolCommand({
+      command: command as string | string[],
+      fns,
+      ...(opts.workspaceRootPath ? { workspaceRootPath: opts.workspaceRootPath } : {}),
+    })
     return {
       output: result.appendReleaseHint ? result.output + COMPUTER_RELEASE_HINT : result.output,
       ...(result.image ? { image: result.image } : {}),

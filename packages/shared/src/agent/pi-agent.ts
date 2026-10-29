@@ -98,7 +98,7 @@ import { parseError, type AgentError } from './errors.ts';
 // Centralized PreToolUse pipeline
 import { runPreToolUseChecks, type PreToolUseCheckResult } from './core/pre-tool-use.ts';
 import { getRtkPath } from './core/rtk-detector.ts';
-import { getRtkEnabled, getBrowserToolEnabled } from '../config/storage.ts';
+import { getRtkEnabled, getBrowserToolEnabled, getComputerUseEnabled } from '../config/storage.ts';
 import { getBrowserHostState } from './browser-host-state.ts';
 import type { RtkContext } from './core/rtk-rewrite.ts';
 
@@ -740,6 +740,12 @@ export class PiAgent extends BaseAgent {
     // Same gate as Claude: `device_tool` is only advertised while at least one device is usable.
     if (getSessionScopedToolCallbacks(this._sessionId)?.hasAvailableDevices?.() !== true) {
       sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__device_tool');
+    }
+
+    // Desktop control is opt-in. Claude hides `computer_tool` when it is off; Pi must hide the
+    // same proxy or the two backends would offer different tools for the same settings.
+    if (!getComputerUseEnabled()) {
+      sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__computer_tool');
     }
 
     // Patch call_llm description with provider-specific model hint
@@ -1810,6 +1816,9 @@ export class PiAgent extends BaseAgent {
       // The desktop door: its own tool, its own command table. Not a device capability — the
       // device door answers "which machine", this one drives *this* machine's GUI.
       if (toolName === 'computer_tool') {
+        if (!getComputerUseEnabled()) {
+          return { content: 'Desktop control is turned off in Settings → App → Tools.', isError: true }
+        }
         const getFns = getSessionScopedToolCallbacks(this._sessionId)?.getComputerPaneFns
         if (!getFns) {
           return { content: 'Desktop control is not available on this host.', isError: true }
@@ -1819,6 +1828,7 @@ export class PiAgent extends BaseAgent {
           const result = await executeComputerToolCommand({
             command: (args.command as string | string[]) ?? '',
             fns,
+            workspaceRootPath: this.config.workspace.rootPath,
           })
           return { content: this.withCommandImages(result.output, result), isError: false }
         } catch (error) {
@@ -1928,25 +1938,39 @@ export class PiAgent extends BaseAgent {
   ): string {
     let output = content
     if (result.image) {
-      const sessionPath = getSessionPath(this.config.workspace.rootPath, this._sessionId);
-      const imageBuffer = Buffer.from(result.image.data, 'base64');
       const ext = result.image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
-      const saved = saveBinaryResponse(sessionPath, `browser-screenshot.${ext}`, imageBuffer, result.image.mimeType);
-
-      if (saved.type === 'file_download') {
+      if (result.image.path) {
+        // The command already wrote the file (`screenshot --out`); the file is the record and the
+        // command text already named it, so show it from there rather than saving a second copy.
         output += [
-          '',
-          `Saved screenshot: ${saved.path}`,
           '',
           '```image-preview',
           JSON.stringify({
-            src: saved.path,
-            title: 'Browser Screenshot',
+            src: result.image.path,
+            title: 'Screenshot',
           }, null, 2),
           '```',
         ].join('\n');
       } else {
-        output += `\n\n[Screenshot captured (${Math.round(result.image.sizeBytes / 1024)}KB ${result.image.mimeType}) but failed to save: ${saved.error}]`;
+        const sessionPath = getSessionPath(this.config.workspace.rootPath, this._sessionId);
+        const imageBuffer = Buffer.from(result.image.data, 'base64');
+        const saved = saveBinaryResponse(sessionPath, `browser-screenshot.${ext}`, imageBuffer, result.image.mimeType);
+
+        if (saved.type === 'file_download') {
+          output += [
+            '',
+            `Saved screenshot: ${saved.path}`,
+            '',
+            '```image-preview',
+            JSON.stringify({
+              src: saved.path,
+              title: 'Browser Screenshot',
+            }, null, 2),
+            '```',
+          ].join('\n');
+        } else {
+          output += `\n\n[Screenshot captured (${Math.round(result.image.sizeBytes / 1024)}KB ${result.image.mimeType}) but failed to save: ${saved.error}]`;
+        }
       }
     }
 

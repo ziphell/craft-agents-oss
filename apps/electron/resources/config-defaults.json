@@ -10,6 +10,7 @@
     "richToolDescriptions": true,
     "extendedPromptCache": false,
     "browserToolEnabled": true,
+    "computerUseEnabled": false,
     "allowRemoteEvaluate": true
   },
   "workspaceDefaults": {

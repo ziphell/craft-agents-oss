@@ -21,6 +21,13 @@ export interface ConfigDefaults {
     extendedPromptCache: boolean;
     browserToolEnabled: boolean;
     /**
+     * Let the agent read and operate this computer's windows (`computer_tool`).
+     * Off by default: driving a desktop needs OS-level grants (Accessibility /
+     * Screen Recording on macOS), and a person should opt in before any prompt
+     * appears. While off the tool is not advertised at all.
+     */
+    computerUseEnabled: boolean;
+    /**
      * Allow remote agents to reach into this browser window themselves: `browser_tool evaluate
      * <expression>`, `pick`, and fetching a url through the window's own session (the request a
      * captured article's images are brought down with, which carries the person's cookies).

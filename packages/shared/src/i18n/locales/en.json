@@ -1541,6 +1541,8 @@
   "settings.shortcuts.title": "Shortcuts",
   "settings.tools.builtInBrowser": "Built-in browser",
   "settings.tools.builtInBrowserDesc": "Disable if you use external browser tools like Playwright, Puppeteer, or browser MCP servers.",
+  "settings.tools.desktopControl": "Desktop control",
+  "settings.tools.desktopControlDesc": "Let the agent read and operate this computer's windows. Off by default; macOS asks for Accessibility and Screen Recording only after you turn this on and the agent uses it.",
   "settings.tools.title": "Tools",
   "settings.workspace.advanced": "Advanced",
   "settings.workspace.atLeast2Modes": "At least 2 modes required",
