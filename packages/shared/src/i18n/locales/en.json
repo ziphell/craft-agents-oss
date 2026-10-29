@@ -1235,7 +1235,7 @@
   "settings.client.deviceAllowedRootsAdd": "Add folder",
   "settings.client.deviceAllowedRootsEmpty": "No folders.",
   "settings.client.deviceAllowedRootsWorkspaces": "This machine's workspaces",
-  "settings.client.deviceUseEnabled": "Files & commands",
+  "settings.client.deviceUseEnabled": "Commands & files",
   "settings.client.editServer": "Edit server",
   "settings.client.insecureUrl": "Not encrypted: the server token is sent in cleartext. Use wss:// on networks you do not trust.",
   "settings.client.invalidUrl": "Server URL must start with ws:// or wss://",

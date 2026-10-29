@@ -1235,7 +1235,7 @@
   "settings.client.deviceAllowedRootsAdd": "Mappa hozzáadása",
   "settings.client.deviceAllowedRootsEmpty": "Nincsenek mappák.",
   "settings.client.deviceAllowedRootsWorkspaces": "A gép munkaterületei",
-  "settings.client.deviceUseEnabled": "Files & commands",
+  "settings.client.deviceUseEnabled": "Commands & files",
   "settings.client.editServer": "Szerver szerkesztése",
   "settings.client.insecureUrl": "Titkosítatlan: a szervertoken titkosítás nélkül utazik. Nem megbízható hálózaton használj wss://-t.",
   "settings.client.invalidUrl": "A szerver URL-nek ws:// vagy wss:// előtaggal kell kezdődnie",
