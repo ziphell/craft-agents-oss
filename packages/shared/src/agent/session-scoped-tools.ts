@@ -88,6 +88,7 @@ export const CLAUDE_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'device_tool',
   'video_tool',
   'drawio_tool',
+  'computer_tool',
 ]);
 
 /**

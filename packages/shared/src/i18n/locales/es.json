@@ -1543,6 +1543,8 @@
   "settings.tools.builtInBrowserDesc": "Desactiva si usas herramientas de navegador externas como Playwright, Puppeteer o servidores MCP de navegador.",
   "settings.tools.desktopControl": "Control del escritorio",
   "settings.tools.desktopControlDesc": "Permite que el agente lea y opere las ventanas de este equipo. Desactivado por defecto; macOS solo solicita Accesibilidad y Grabación de pantalla después de activarlo y de que el agente lo use.",
+  "settings.tools.remoteDesktop": "Allow connected servers to control this computer",
+  "settings.tools.remoteDesktopDesc": "Off by default, and narrower than desktop control above: this lets an agent on another machine drive this screen. Both switches must be on.",
   "settings.tools.title": "Herram.",
   "settings.workspace.advanced": "Avanzado",
   "settings.workspace.atLeast2Modes": "Se requieren al menos 2 modos",

@@ -27,6 +27,7 @@ export interface ConfigDefaults {
      * appears. While off the tool is not advertised at all.
      */
     computerUseEnabled: boolean;
+    allowRemoteDesktopDrive: boolean;
     /**
      * Allow remote agents to reach into this browser window themselves: `browser_tool evaluate
      * <expression>`, `pick`, and fetching a url through the window's own session (the request a

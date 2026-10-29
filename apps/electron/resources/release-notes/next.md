@@ -151,5 +151,4 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 - **A packaged build now ships the diagram editor** — the drawio webapp a diagram is drawn and edited by lives in `resources/drawio/`, and it is not committed: it is fetched and pruned by `scripts/fetch-drawio-assets.ts`. Nothing in the packaging path ever ran that script, so a release copied a `resources/` without it and the app — finding no bundle at its own path — reported the editor as not installed and drew no diagram, on macOS, Windows and Linux alike. Every packaging entry point now fetches it before the build (`electron:dist*`, `build-dmg.sh`, `build-linux.sh`, `build-win.ps1`), so an installed app has the editor it advertises. The fetch also retries a transient failure per file and resumes what it already fetched instead of restarting: it now sits on the path where one socket reset would otherwise fail a whole release.
 
 ## Breaking Changes
-
-
+- Desktop control now has a second, narrower switch: *Allow connected servers* lets an agent on another machine drive this one, and stays off until you turn it on. Both switches are required, and withdrawing either one drops a held desktop immediately.

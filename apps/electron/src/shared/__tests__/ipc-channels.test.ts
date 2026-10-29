@@ -378,6 +378,8 @@ const EXPECTED_CHANNELS: string[] = [
   'tools:getComputerUseEnabled',
   'tools:setBrowserToolEnabled',
   'tools:setComputerUseEnabled',
+  'tools:getAllowRemoteDesktopDrive',
+  'tools:setAllowRemoteDesktopDrive',
   'transfer:abort',
   'transfer:chunk',
   'transfer:commit',

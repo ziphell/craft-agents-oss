@@ -814,6 +814,9 @@ export interface ElectronAPI {
   setBrowserToolEnabled(enabled: boolean): Promise<void>
   getComputerUseEnabled(): Promise<boolean>
   setComputerUseEnabled(enabled: boolean): Promise<void>
+  /** May a connected server drive this machine's desktop? Needs desktop control on as well. */
+  getAllowRemoteDesktopDrive(): Promise<boolean>
+  setAllowRemoteDesktopDrive(allowed: boolean): Promise<void>
 
   // Appearance settings
   getRichToolDescriptions(): Promise<boolean>

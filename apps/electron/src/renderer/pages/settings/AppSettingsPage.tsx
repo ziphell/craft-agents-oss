@@ -146,6 +146,7 @@ export default function AppSettingsPage() {
   // Tools state
   const [browserToolEnabled, setBrowserToolEnabled] = useState(true)
   const [computerUseEnabled, setComputerUseEnabled] = useState(false)
+  const [remoteDesktopAllowed, setRemoteDesktopAllowed] = useState(false)
 
   // Links and pages state
   const [openInAppBrowser, setOpenInAppBrowser] = useState(true)
@@ -175,11 +176,12 @@ export default function AppSettingsPage() {
   const loadSettings = useCallback(async () => {
     if (!window.electronAPI) return
     try {
-      const [notificationsOn, keepAwakeOn, browserToolOn, computerUseOn, proxySettings, preferencesFile] = await Promise.all([
+      const [notificationsOn, keepAwakeOn, browserToolOn, computerUseOn, remoteDesktopOn, proxySettings, preferencesFile] = await Promise.all([
         window.electronAPI.getNotificationsEnabled(),
         window.electronAPI.getKeepAwakeWhileRunning(),
         window.electronAPI.getBrowserToolEnabled(),
         window.electronAPI.getComputerUseEnabled(),
+        window.electronAPI.getAllowRemoteDesktopDrive(),
         window.electronAPI.getNetworkProxySettings(),
         window.electronAPI.readPreferences(),
       ])
@@ -187,6 +189,7 @@ export default function AppSettingsPage() {
       setKeepAwakeEnabled(keepAwakeOn)
       setBrowserToolEnabled(browserToolOn)
       setComputerUseEnabled(computerUseOn)
+      setRemoteDesktopAllowed(remoteDesktopOn)
       setOpenInAppBrowser(readOpenInAppBrowserFrom(preferencesFile.content))
       setRestoreBrowserTabs(readRestoreBrowserTabsFrom(preferencesFile.content))
       const form = toProxyFormState(proxySettings)
@@ -222,6 +225,13 @@ export default function AppSettingsPage() {
     // first real command.
     setComputerUseEnabled(enabled)
     await window.electronAPI.setComputerUseEnabled(enabled)
+  }, [])
+
+  const handleRemoteDesktopAllowedChange = useCallback(async (allowed: boolean) => {
+    // The narrower of the two grants: a connected server may drive this desktop. Withdrawing it
+    // also drops a lease a server is holding and makes the links handshake again without it.
+    setRemoteDesktopAllowed(allowed)
+    await window.electronAPI.setAllowRemoteDesktopDrive(allowed)
   }, [])
 
   const handleOpenInAppBrowserChange = useCallback(async (enabled: boolean) => {
@@ -334,6 +344,15 @@ export default function AppSettingsPage() {
                     description={t("settings.tools.desktopControlDesc")}
                     checked={computerUseEnabled}
                     onCheckedChange={handleComputerUseEnabledChange}
+                  />
+                  {/* A second grant, not a sub-option: this one is about *another* machine's agent,
+                      so it stays off until the person turns desktop control on and then opts in. */}
+                  <SettingsToggle
+                    label={t("settings.tools.remoteDesktop")}
+                    description={t("settings.tools.remoteDesktopDesc")}
+                    checked={remoteDesktopAllowed}
+                    disabled={!computerUseEnabled}
+                    onCheckedChange={handleRemoteDesktopAllowedChange}
                   />
                 </SettingsCard>
               </SettingsSection>

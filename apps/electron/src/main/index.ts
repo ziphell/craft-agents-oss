@@ -98,7 +98,7 @@ import { WindowManager } from './window-manager'
 import { loadWindowState, saveWindowState } from './window-state'
 import { syncHubConnections, stopHubConnections, getHubConnectionClient, getHubConnectionStatus, type HubClientIdentity } from './hub-connection'
 import type { RemoteWindowTarget } from '../shared/types'
-import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig, resolveConversationBrowserProfileId, getRemoteConnections, getRemoteConnection, saveRemoteConnection, removeRemoteConnection, rememberRemoteWorkspace, migrateLegacyRemoteWorkspaces, getClientConfig, getDeviceId, HUB_ROOT_BASE, getComputerUseEnabled } from '@craft-agent/shared/config'
+import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig, resolveConversationBrowserProfileId, getRemoteConnections, getRemoteConnection, saveRemoteConnection, removeRemoteConnection, rememberRemoteWorkspace, migrateLegacyRemoteWorkspaces, getClientConfig, getDeviceId, HUB_ROOT_BASE, getComputerUseEnabled, getAllowRemoteDesktopDrive } from '@craft-agent/shared/config'
 import { connectionNameFromUrl, type RemoteConnection } from '@craft-agent/shared/config/client-config'
 import { getDefaultWorkspacesDir, getWorkspaceBrowserProfile } from '@craft-agent/shared/workspaces'
 import { loadSessionHeader } from '@craft-agent/shared/sessions'
@@ -115,6 +115,7 @@ import { handleDeepLink } from './deep-link'
 import { BrowserPaneManager } from './browser-pane-manager'
 import { ComputerUseManager, loadDefaultCuaDriver, setComputerUseAdvertised } from './computer-use-manager'
 import { createDesktopControlIndicator, type DesktopControlIndicator } from './desktop-control-indicator'
+import { refreshHubLinks } from './hub-connection'
 import { OAuthFlowStore } from '@craft-agent/shared/auth'
 import { registerPrivilegedSchemes, registerThumbnailHandler } from './thumbnail-protocol'
 import { drawioOriginUrl } from './drawio-host'
@@ -758,11 +759,25 @@ app.whenReady().then(async () => {
     })
     // Desktop control is opt-in. While it is off, do not even resolve the native driver: nothing
     // to advertise, and no permission prompt can come from a path nobody asked for.
-    if (getComputerUseEnabled()) void computerUseManager.available().then(setComputerUseAdvertised)
-    else setComputerUseAdvertised(false)
+    if (getComputerUseEnabled() && getAllowRemoteDesktopDrive()) {
+      void computerUseManager.available().then(setComputerUseAdvertised)
+    } else {
+      setComputerUseAdvertised(false)
+    }
     // The settings switch also has to land here, not only in config.json: turning it off gives a
     // held desktop back immediately; turning it on makes the driver probe (still without any
     // prompt — that waits for the first actual command).
+    // The remote grant is narrower than the switch above: withdrawing it must also drop a lease a
+    // server is holding and make every link re-handshake without the capability.
+    ipcMain.handle('computer-use:set-remote-enabled', async (_event, allowed: unknown) => {
+      if (allowed === true) {
+        if (getComputerUseEnabled()) setComputerUseAdvertised(await computerUseManager!.available())
+        return
+      }
+      setComputerUseAdvertised(false)
+      await computerUseManager?.release()
+      refreshHubLinks()
+    })
     ipcMain.handle('computer-use:set-enabled', async (_event, enabled: unknown) => {
       if (!computerUseManager) return
       if (enabled !== true) {

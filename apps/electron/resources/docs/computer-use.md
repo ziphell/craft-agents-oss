@@ -355,6 +355,23 @@ What this means for the implementation:
 - **`key` uses macOS modifier names.** `cmd` / `option` are translated by the manager; `ctrl` stays
   `ctrl`. Named keys are lowercased (`Return` → `return`).
 
+## Two switches, and both must be on
+
+| switch | what it grants | default |
+| --- | --- | --- |
+| Settings → Tools → **Desktop control** | *this* agent may drive this desktop (`computer_tool`) | off |
+| Settings → Tools → **Allow connected servers** | an agent on **another** machine may drive it (`device_tool {tool:"computer"}`) | off |
+
+The second is narrower than the first, and is not a sub-option of it: turning desktop control on for
+yourself is not a grant to every hub you are paired with. **A remote desktop needs both**, plus a
+driver that answered — `isComputerUseAdvertised()` is exactly that conjunction.
+
+Withdrawing the server grant does three things at once: `computer` stops being advertised, a lease a
+server is holding is released, and every hub link is torn down and made again (a capability is fixed
+when a client is constructed, so an open socket cannot be edited into offering less).
+
+A hub cannot widen any of this from its side: both checks live in this process, re-read per call.
+
 ## Showing that the desktop is being driven
 
 The lease has a visible half: while a session holds the desktop, the driver's **own cursor** is drawn

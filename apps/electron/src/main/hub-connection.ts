@@ -73,10 +73,32 @@ const links = new Map<string, Link>()
  * editing an unrelated server never drops the others. A changed URL or token replaces that one
  * link, because the token is part of the handshake and cannot be swapped on a live socket.
  */
+/**
+ * Rebuild every live link, so the handshake offers what this machine offers **now**.
+ *
+ * `clientCapabilities` is fixed when a client is constructed, so a capability cannot be withdrawn
+ * from a socket that is already open — the link has to be torn down and made again. The last
+ * `syncHubConnections` call is remembered here for exactly that: refresh is a sync with the same
+ * connections and the same dependencies, after dropping the old sockets.
+ */
+export function refreshHubLinks(): void {
+  for (const link of links.values()) {
+    try {
+      link.client.destroy()
+    } catch { /* already gone */ }
+  }
+  links.clear()
+  if (!lastSync) return
+  syncHubConnections(lastSync.connections, lastSync.deps)
+}
+
+let lastSync: { connections: readonly RemoteConnection[]; deps: HubConnectionDeps } | null = null
+
 export function syncHubConnections(
   connections: readonly RemoteConnection[],
   connectionDeps: HubConnectionDeps,
 ): void {
+  lastSync = { connections, deps: connectionDeps }
   const wanted = new Map(
     connections
       .filter((connection) => connection.url.trim() && connection.token.trim())

@@ -13,7 +13,7 @@
 import { spawn } from 'node:child_process'
 import { mkdirSync, promises as fsp } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
-import { hubWorkspaceRoot, getComputerUseEnabled } from '@craft-agent/shared/config'
+import { hubWorkspaceRoot, getComputerUseEnabled, getAllowRemoteDesktopDrive } from '@craft-agent/shared/config'
 import type { DeviceExecRequest, DeviceExecResponse, DeviceFsRequest, DeviceFsResponse, DeviceHubContext, BrowserCapabilityRequest } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE, CLIENT_COMPUTER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '@craft-agent/server-core/transport'
 import { dispatchComputerCapability, type ComputerCapabilityRequest, type ComputerPaneFns } from '@craft-agent/shared/agent'
@@ -365,7 +365,12 @@ export function attachDeviceCapabilities(
     // Capabilities are fixed at handshake, so a link opened while the switch was on can outlive it.
     // Re-reading the switch here is what makes turning it off effective immediately, rather than
     // at the next reconnect.
+    // Both switches, because this request came from a **server**: its own desktop control being on
+    // is not the same as the person granting this machine to a hub.
     if (!getComputerUseEnabled()) throw new Error('Desktop control is turned off in Settings.')
+    if (!getAllowRemoteDesktopDrive()) {
+      throw new Error('This machine does not allow connected servers to drive its desktop.')
+    }
     const manager = computerUseManager()
     if (!manager) throw new Error('This app has no desktop to drive')
     const fns = await manager.fnsForSession(`remote:${connectionId}`)

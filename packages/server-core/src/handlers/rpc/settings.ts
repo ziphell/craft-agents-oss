@@ -39,6 +39,8 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
   RPC_CHANNELS.tools.GET_COMPUTER_USE_ENABLED,
   RPC_CHANNELS.tools.SET_COMPUTER_USE_ENABLED,
+  RPC_CHANNELS.tools.GET_ALLOW_REMOTE_DESKTOP_DRIVE,
+  RPC_CHANNELS.tools.SET_ALLOW_REMOTE_DESKTOP_DRIVE,
   RPC_CHANNELS.settings.GET_NETWORK_PROXY,
   RPC_CHANNELS.dialog.OPEN_FOLDER,
   RPC_CHANNELS.rtk.GET_ENABLED,
@@ -364,6 +366,18 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
   server.handle(RPC_CHANNELS.tools.SET_COMPUTER_USE_ENABLED, async (_ctx, enabled: boolean) => {
     const { setComputerUseEnabled } = await import('@craft-agent/shared/config/storage')
     setComputerUseEnabled(enabled)
+  })
+
+  // The second, narrower grant: may a connected server drive this machine's desktop? Stored here
+  // like every other tool setting, but enforced on the device side — a hub cannot widen it.
+  server.handle(RPC_CHANNELS.tools.GET_ALLOW_REMOTE_DESKTOP_DRIVE, async () => {
+    const { getAllowRemoteDesktopDrive } = await import('@craft-agent/shared/config/storage')
+    return getAllowRemoteDesktopDrive()
+  })
+
+  server.handle(RPC_CHANNELS.tools.SET_ALLOW_REMOTE_DESKTOP_DRIVE, async (_ctx, allowed: boolean) => {
+    const { setAllowRemoteDesktopDrive } = await import('@craft-agent/shared/config/storage')
+    setAllowRemoteDesktopDrive(allowed)
   })
 
   // ============================================================

@@ -1543,6 +1543,8 @@
   "settings.tools.builtInBrowserDesc": "如果使用外部浏览器工具 (如 Playwright、Puppeteer 或浏览器 MCP 服务器) 则禁用。",
   "settings.tools.desktopControl": "桌面控制",
   "settings.tools.desktopControlDesc": "允许智能体读取并操作这台电脑的窗口。默认关闭；开启并由智能体实际使用后，macOS 才会请求辅助功能与屏幕录制权限。",
+  "settings.tools.remoteDesktop": "允许已连接的服务器控制这台电脑",
+  "settings.tools.remoteDesktopDesc": "默认关闭，且比上面的桌面控制更窄：它允许另一台机器上的 agent 操作这块屏幕。两个开关都要打开。",
   "settings.tools.title": "工具",
   "settings.workspace.advanced": "高级",
   "settings.workspace.atLeast2Modes": "至少需要 2 种模式",

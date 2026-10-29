@@ -33,7 +33,7 @@ import type {
   ComputerTarget,
   ComputerWindowInfo,
 } from '@craft-agent/shared/agent'
-import { getComputerUseEnabled } from '@craft-agent/shared/config'
+import { getComputerUseEnabled, getAllowRemoteDesktopDrive } from '@craft-agent/shared/config'
 import {
   macPermissionGuidance,
   readMacComputerPermissions,
@@ -60,7 +60,9 @@ export function isComputerUseAdvertised(): boolean {
   // Read the opt-in switch here as well as at probe time: handshakes are rebuilt from this answer,
   // and a device that has just been turned off must not offer `computer` again before its driver
   // is resolved.
-  return computerUseAdvertised && getComputerUseEnabled()
+  // Three conditions, and the last one is the narrowest: a driver that answered, this person's
+  // own switch, and a separate grant that a *server* may drive it. Remote desktop needs all three.
+  return computerUseAdvertised && getComputerUseEnabled() && getAllowRemoteDesktopDrive()
 }
 
 export function setComputerUseAdvertised(value: boolean): void {
