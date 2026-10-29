@@ -1236,7 +1236,7 @@
   "settings.client.deviceAllowedRootsAdd": "Ordner hinzufügen",
   "settings.client.deviceAllowedRootsEmpty": "Keine Ordner.",
   "settings.client.deviceAllowedRootsWorkspaces": "Arbeitsbereiche dieser Maschine",
-  "settings.client.deviceUseEnabled": "Terminal & files",
+  "settings.client.deviceUseEnabled": "Local files & terminal",
   "settings.client.editServer": "Server bearbeiten",
   "settings.client.insecureUrl": "Nicht verschlüsselt: Das Server-Token wird im Klartext übertragen. Verwende wss:// in Netzwerken, denen du nicht vertraust.",
   "settings.client.invalidUrl": "Die Server-URL muss mit ws:// oder wss:// beginnen",
@@ -2109,5 +2109,5 @@
   "workspace.thisComputer": "Dieser Computer",
   "workspace.underDefaultFolder": "im .craft-agent-Ordner",
   "settings.client.browserEnabled": "In-app browser",
-  "settings.client.computerEnabled": "Local desktop"
+  "settings.client.computerEnabled": "Local desktop apps"
 }
