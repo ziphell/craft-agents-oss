@@ -334,8 +334,6 @@ export const CHANNEL_MAP = {
   setBrowserToolEnabled: invoke(RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED),
   getComputerUseEnabled: invoke(RPC_CHANNELS.tools.GET_COMPUTER_USE_ENABLED),
   setComputerUseEnabled: invoke(RPC_CHANNELS.tools.SET_COMPUTER_USE_ENABLED),
-  getAllowRemoteDesktopDrive: invoke(RPC_CHANNELS.tools.GET_ALLOW_REMOTE_DESKTOP_DRIVE),
-  setAllowRemoteDesktopDrive: invoke(RPC_CHANNELS.tools.SET_ALLOW_REMOTE_DESKTOP_DRIVE),
 
   // Prompt caching & context
   getExtendedPromptCache: invoke(RPC_CHANNELS.caching.GET_EXTENDED_PROMPT_CACHE),

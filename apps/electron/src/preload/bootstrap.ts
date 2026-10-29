@@ -230,19 +230,6 @@ const api = buildClientApi(client, CHANNEL_MAP, (ch) => client.isChannelAvailabl
   }
 }
 
-/**
- * The second grant: a **connected server** may drive this desktop.
- *
- * Same shape as above — the preference is stored where the window's server keeps it, and this
- * machine hears it either way so it can stop advertising `computer` and drop a remote lease the
- * moment the person withdraws it.
- */
-;(api as ElectronAPI).setAllowRemoteDesktopDrive = async (allowed: boolean) => {
-  await client.invoke(RPC_CHANNELS.tools.SET_ALLOW_REMOTE_DESKTOP_DRIVE, allowed)
-  if (!windowTarget) {
-    await ipcRenderer.invoke('computer-use:set-remote-enabled', allowed).catch(() => {})
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Transport connection state logging (for remote connections)

@@ -1543,8 +1543,6 @@
   "settings.tools.builtInBrowserDesc": "Wyłącz, jeśli używasz zewnętrznych narzędzi przeglądarki, takich jak Playwright, Puppeteer lub serwery MCP przeglądarki.",
   "settings.tools.desktopControl": "Sterowanie pulpitem",
   "settings.tools.desktopControlDesc": "Pozwala agentowi odczytywać i obsługiwać okna tego komputera. Domyślnie wyłączone; macOS poprosi o Dostępność i Nagrywanie ekranu dopiero po włączeniu i pierwszym użyciu.",
-  "settings.tools.remoteDesktop": "Allow connected servers to control this computer",
-  "settings.tools.remoteDesktopDesc": "Off by default, and narrower than desktop control above: this lets an agent on another machine drive this screen. Both switches must be on.",
   "settings.tools.title": "Narzędzia",
   "settings.workspace.advanced": "Zaawansowane",
   "settings.workspace.atLeast2Modes": "Wymagane co najmniej 2 tryby",
@@ -2108,5 +2106,7 @@
   "workspace.selectWorkspacePlaceholder": "Wybierz Workspace...",
   "workspace.serverAuthToken": "Token uwierzytelniający serwera",
   "workspace.thisComputer": "Ten komputer",
-  "workspace.underDefaultFolder": "w folderze .craft-agent"
+  "workspace.underDefaultFolder": "w folderze .craft-agent",
+  "settings.client.browserEnabled": "Let this server use this machine's browser",
+  "settings.client.computerEnabled": "Let this server drive this machine's desktop"
 }

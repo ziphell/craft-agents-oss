@@ -13,7 +13,12 @@
  * A link exists exactly while its server is in the saved list, and reconnects on its own.
  */
 
-import { CLIENT_COMPUTER_INVOKE, DEVICE_CAPABILITIES } from '@craft-agent/server-core/transport'
+import {
+  CLIENT_BROWSER_INVOKE,
+  CLIENT_COMPUTER_INVOKE,
+  CLIENT_DEVICE_EXEC,
+  CLIENT_DEVICE_FS,
+} from '@craft-agent/server-core/transport'
 import type { ComputerPaneFns } from '@craft-agent/shared/agent'
 import { isComputerUseAdvertised } from './computer-use-manager'
 import type { RemoteConnection } from '@craft-agent/shared/config/client-config'
@@ -44,13 +49,21 @@ export interface HubConnectionDeps {
   computerUseManager: () => { fnsForSession(sessionId: string): Promise<ComputerPaneFns> } | null
 }
 
+/** What one saved server is allowed to use on this machine. */
+export interface LinkGrants {
+  /** Commands and files — one switch, `deviceUseEnabled`. */
+  files: boolean
+  shell: boolean
+  browser: boolean
+  computer: boolean
+}
+
 interface Link {
   client: WsRpcClient
   url: string
   token: string
   allowedRoots: string[]
-  /** Whether this link offers the machine at all (`deviceUseEnabled`, default on). */
-  deviceUseEnabled: boolean
+  grants: LinkGrants
 }
 
 /** Same folders, in the same order — used to decide whether a saved edit needs a new handshake. */
@@ -58,9 +71,38 @@ function sameRoots(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((root, index) => root === b[index])
 }
 
-/** Folders are irrelevant while the machine is not offered, so compare the effective value. */
-function offersDevice(connection: RemoteConnection): boolean {
-  return connection.deviceUseEnabled !== false
+/**
+ * The four grants, resolved from a saved connection.
+ *
+ * `deviceUseEnabled` covers commands **and** files; the browser and the desktop are their own
+ * consent. The desktop additionally requires this build to have a driver that answered — the
+ * capability is fail-closed.
+ */
+export function grantsOf(connection: RemoteConnection): LinkGrants {
+  const files = connection.deviceUseEnabled !== false
+  return {
+    files,
+    shell: files,
+    // **Files and the shell are the prerequisite**: a browser on this machine is offered only on
+    // top of them, so `browserEnabled` can narrow that surface and never create one by itself.
+    browser: files && connection.browserEnabled !== false,
+    computer: connection.computerEnabled === true && isComputerUseAdvertised(),
+  }
+}
+
+function sameGrants(a: LinkGrants, b: LinkGrants): boolean {
+  return a.files === b.files && a.shell === b.shell
+    && a.browser === b.browser && a.computer === b.computer
+}
+
+/** The capabilities a link advertises, given its grants. */
+function capabilitiesFor(grants: LinkGrants): string[] {
+  const out: string[] = []
+  if (grants.shell) out.push(CLIENT_DEVICE_EXEC)
+  if (grants.files) out.push(CLIENT_DEVICE_FS)
+  if (grants.browser) out.push(CLIENT_BROWSER_INVOKE)
+  if (grants.computer) out.push(CLIENT_COMPUTER_INVOKE)
+  return out
 }
 
 /** One live link per saved connection id. */
@@ -73,32 +115,10 @@ const links = new Map<string, Link>()
  * editing an unrelated server never drops the others. A changed URL or token replaces that one
  * link, because the token is part of the handshake and cannot be swapped on a live socket.
  */
-/**
- * Rebuild every live link, so the handshake offers what this machine offers **now**.
- *
- * `clientCapabilities` is fixed when a client is constructed, so a capability cannot be withdrawn
- * from a socket that is already open — the link has to be torn down and made again. The last
- * `syncHubConnections` call is remembered here for exactly that: refresh is a sync with the same
- * connections and the same dependencies, after dropping the old sockets.
- */
-export function refreshHubLinks(): void {
-  for (const link of links.values()) {
-    try {
-      link.client.destroy()
-    } catch { /* already gone */ }
-  }
-  links.clear()
-  if (!lastSync) return
-  syncHubConnections(lastSync.connections, lastSync.deps)
-}
-
-let lastSync: { connections: readonly RemoteConnection[]; deps: HubConnectionDeps } | null = null
-
 export function syncHubConnections(
   connections: readonly RemoteConnection[],
   connectionDeps: HubConnectionDeps,
 ): void {
-  lastSync = { connections, deps: connectionDeps }
   const wanted = new Map(
     connections
       .filter((connection) => connection.url.trim() && connection.token.trim())
@@ -111,7 +131,8 @@ export function syncHubConnections(
       next
       && next.url === link.url
       && next.token === link.token
-      && offersDevice(next) === link.deviceUseEnabled
+      // Capabilities are fixed at handshake, so any grant change needs a new one.
+      && sameGrants(grantsOf(next), link.grants)
       && sameRoots(next.allowedRoots ?? [], link.allowedRoots)
     ) continue
     stopLink(link)
@@ -126,7 +147,7 @@ export function syncHubConnections(
     // no device tools, and the hub shows the device as not authorized. The folder list is still
     // kept — it says where the tools may work once authorization is back on.
     const allowedRoots = connection.allowedRoots ?? []
-    const deviceUseEnabled = offersDevice(connection)
+    const grants = grantsOf(connection)
     const identity = connectionDeps.identity()
     // Never this install's whole workspace list: only the folders saved on this connection.
     // `role` is declared, not inferred: this link is this machine lending itself, whether or not
@@ -138,28 +159,27 @@ export function syncHubConnections(
       mode: 'remote',
       // Fail-closed: a desktop is offered only when this build has a driver that answered. Listing
       // it without one advertises a door whose every command fails.
-      clientCapabilities: deviceUseEnabled
-        ? DEVICE_CAPABILITIES.filter(
-            (capability) => capability !== CLIENT_COMPUTER_INVOKE || isComputerUseAdvertised(),
-          )
-        : [],
+      clientCapabilities: capabilitiesFor(grants),
       clientInfo,
       // The person typed this URL, so a hub with a self-signed certificate is accepted — the same
       // policy a window's hub connection uses.
       tlsRejectUnauthorized: false,
     })
-    if (deviceUseEnabled) {
-      attachDeviceCapabilities(
-        client,
-        connectionDeps.browserPaneManager,
-        connectionDeps.computerUseManager,
-        connection.id,
-        allowedRoots,
-      )
-    }
+    attachDeviceCapabilities(
+      client,
+      connectionDeps.browserPaneManager,
+      connectionDeps.computerUseManager,
+      connection.id,
+      allowedRoots,
+      grants,
+    )
     client.connect()
-    links.set(id, { client, url: connection.url, token: connection.token, allowedRoots, deviceUseEnabled })
-    mainLog.info(`[hub] link opened to ${connection.url} (${connection.name}, ${deviceUseEnabled ? `${allowedRoots.length} extra folders` : 'device use off'})`)
+    links.set(id, { client, url: connection.url, token: connection.token, allowedRoots, grants })
+    mainLog.info(
+      `[hub] link opened to ${connection.url} (${connection.name}, ` +
+        `shell=${grants.shell} browser=${grants.browser} computer=${grants.computer}, ` +
+        `${allowedRoots.length} extra folders)`
+    )
   }
 }
 

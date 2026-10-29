@@ -98,7 +98,6 @@ export interface StoredConfig {
   browserToolEnabled?: boolean;  // Enable built-in browser tool (default: true). Disable for Playwright/Puppeteer.
   computerUseEnabled?: boolean;
   /** Let a **connected server** drive this desktop (default: false; needs computerUseEnabled too) */
-  allowRemoteDesktopDrive?: boolean;  // Let the agent drive this desktop with computer_tool (default: false — opt-in; needs OS grants)
   allowRemoteEvaluate?: boolean;  // Allow remote agents to call `browser_tool evaluate` on local browser (default: true).
   // Prompt caching & context
   extendedPromptCache?: boolean;  // Use 1h prompt cache TTL instead of 5m (default: false)
@@ -150,7 +149,6 @@ const FALLBACK_CONFIG_DEFAULTS: ConfigDefaults = {
     extendedPromptCache: false,
     browserToolEnabled: true,
     computerUseEnabled: false,
-    allowRemoteDesktopDrive: false,
     allowRemoteEvaluate: true,
   },
   workspaceDefaults: {
@@ -621,32 +619,6 @@ export function getComputerUseEnabled(): boolean {
  * restart; the Electron main process reacts to the same switch by releasing a held
  * desktop and re-announcing the device capability (see `computer-use:set-enabled`).
  */
-/**
- * Whether a **connected server** may drive this machine's desktop.
- *
- * A second switch on purpose, and a narrower one than `computerUseEnabled`: that one says "my own
- * agent may touch this desktop", this one says "someone else's may". Both must be on — turning on
- * desktop control for yourself is not a grant to every hub you happen to be paired with, and a
- * server can never widen it from its side (the check lives in this process).
- *
- * Defaults to **false**, unlike `allowRemoteEvaluate`: driving a pointer is not reading a page.
- */
-export function getAllowRemoteDesktopDrive(): boolean {
-  const config = loadStoredConfig();
-  if (config?.allowRemoteDesktopDrive !== undefined) {
-    return config.allowRemoteDesktopDrive;
-  }
-  const defaults = loadConfigDefaults();
-  return defaults.defaults.allowRemoteDesktopDrive === true;
-}
-
-export function setAllowRemoteDesktopDrive(allowed: boolean): void {
-  const config = loadStoredConfig();
-  if (!config) return;
-  config.allowRemoteDesktopDrive = allowed;
-  saveConfig(config);
-}
-
 export function setComputerUseEnabled(enabled: boolean): void {
   const config = loadStoredConfig();
   if (!config) return;

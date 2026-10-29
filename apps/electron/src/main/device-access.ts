@@ -13,9 +13,10 @@
 import { spawn } from 'node:child_process'
 import { mkdirSync, promises as fsp } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
-import { hubWorkspaceRoot, getComputerUseEnabled, getAllowRemoteDesktopDrive } from '@craft-agent/shared/config'
+import { hubWorkspaceRoot, getComputerUseEnabled } from '@craft-agent/shared/config'
 import type { DeviceExecRequest, DeviceExecResponse, DeviceFsRequest, DeviceFsResponse, DeviceHubContext, BrowserCapabilityRequest } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE, CLIENT_COMPUTER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '@craft-agent/server-core/transport'
+import type { LinkGrants } from './hub-connection'
 import { dispatchComputerCapability, type ComputerCapabilityRequest, type ComputerPaneFns } from '@craft-agent/shared/agent'
 import type { WsRpcClient } from '../transport/client'
 import type { DeviceFsEntry, DeviceFsMatch } from '@craft-agent/shared/agent/device-tool'
@@ -343,16 +344,22 @@ export function attachDeviceCapabilities(
   computerUseManager: () => { fnsForSession(sessionId: string): Promise<ComputerPaneFns> } | null,
   connectionId: string,
   allowedRoots: readonly string[],
+  grants: LinkGrants,
 ): void {
+  // Each door checks its own grant. The capability list already keeps an ungranted door out of the
+  // handshake; this is the second half — a server that kept an older list still gets refused.
   client.handleCapability(CLIENT_DEVICE_EXEC, async (req: DeviceExecRequest): Promise<DeviceExecResponse> => {
+    if (!grants.shell) throw new Error('This server is not allowed to run commands on this machine.')
     if (!req || req.v !== 1) throw new Error('Unsupported device exec request')
     return await runExec(req, allowedRoots)
   })
   client.handleCapability(CLIENT_DEVICE_FS, async (req: DeviceFsRequest): Promise<DeviceFsResponse> => {
+    if (!grants.files) throw new Error('This server is not allowed to read or write files on this machine.')
     if (!req || req.v !== 1) throw new Error('Unsupported device fs request')
     return await runFs(req, allowedRoots)
   })
   client.handleCapability(CLIENT_BROWSER_INVOKE, async (req: BrowserCapabilityRequest): Promise<unknown> => {
+    if (!grants.browser) throw new Error("This server is not allowed to use this machine's browser.")
     const manager = browserPaneManager()
     if (!manager) throw new Error('This app has no browser to drive')
     return await manager.dispatchCapability(req, connectionId)
@@ -361,16 +368,14 @@ export function attachDeviceCapabilities(
   // remote hub holds the same 90 s lease a local conversation does — and two hubs cannot both drive
   // this pointer, which is the whole point of the lease.
   client.handleCapability(CLIENT_COMPUTER_INVOKE, async (req: ComputerCapabilityRequest): Promise<unknown> => {
+    if (!grants.computer) throw new Error("This server is not allowed to drive this machine's desktop.")
     if (!req || req.v !== 1) throw new Error('Unsupported computer request')
     // Capabilities are fixed at handshake, so a link opened while the switch was on can outlive it.
     // Re-reading the switch here is what makes turning it off effective immediately, rather than
     // at the next reconnect.
-    // Both switches, because this request came from a **server**: its own desktop control being on
-    // is not the same as the person granting this machine to a hub.
+    // This request came from a **server**, so both levels are checked: the machine-level switch
+    // (driver + OS grants), and the per-connection grant in `grants.computer` below.
     if (!getComputerUseEnabled()) throw new Error('Desktop control is turned off in Settings.')
-    if (!getAllowRemoteDesktopDrive()) {
-      throw new Error('This machine does not allow connected servers to drive its desktop.')
-    }
     const manager = computerUseManager()
     if (!manager) throw new Error('This app has no desktop to drive')
     const fns = await manager.fnsForSession(`remote:${connectionId}`)

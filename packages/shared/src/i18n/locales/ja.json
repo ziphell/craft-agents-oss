@@ -1543,8 +1543,6 @@
   "settings.tools.builtInBrowserDesc": "Playwright、Puppeteer、またはブラウザMCPサーバーなどの外部ブラウザツールを使用する場合は無効にしてください。",
   "settings.tools.desktopControl": "デスクトップ操作",
   "settings.tools.desktopControlDesc": "エージェントがこのコンピューターのウィンドウを読み取り、操作できるようにします。既定ではオフです。macOS はこれをオンにしてエージェントが実際に使用した後にのみ、アクセシビリティと画面収録を要求します。",
-  "settings.tools.remoteDesktop": "Allow connected servers to control this computer",
-  "settings.tools.remoteDesktopDesc": "Off by default, and narrower than desktop control above: this lets an agent on another machine drive this screen. Both switches must be on.",
   "settings.tools.title": "ツール",
   "settings.workspace.advanced": "詳細設定",
   "settings.workspace.atLeast2Modes": "少なくとも2つのモードが必要です",
@@ -2108,5 +2106,7 @@
   "workspace.selectWorkspacePlaceholder": "Workspaceを選択...",
   "workspace.serverAuthToken": "サーバー認証トークン",
   "workspace.thisComputer": "このコンピューター",
-  "workspace.underDefaultFolder": ".craft-agentフォルダ内"
+  "workspace.underDefaultFolder": ".craft-agentフォルダ内",
+  "settings.client.browserEnabled": "Let this server use this machine's browser",
+  "settings.client.computerEnabled": "Let this server drive this machine's desktop"
 }

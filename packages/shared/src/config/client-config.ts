@@ -24,7 +24,25 @@ export interface RemoteConnection {
    * works — and the folders above stay saved, so authorization can be turned back on later. The
    * app-level link then declares no device tools, and the hub shows the device as not authorized.
    */
+  /**
+   * Whether this server may run **commands and read/write files** on this machine.
+   *
+   * One switch for both, deliberately: to anyone reading the settings, "use my computer" means
+   * both. The browser and the desktop have their own grants below, because each is a different
+   * thing to consent to.
+   */
   deviceUseEnabled?: boolean
+  /**
+   * Whether this server may drive this machine's **browser**. On by default: reading a page is
+   * what a paired server is for. Kept apart from `deviceUseEnabled`, so turning file access off
+   * does not also take the browser away.
+   */
+  browserEnabled?: boolean
+  /**
+   * Whether this server may drive this machine's **desktop** (pointer, keyboard). Off by default,
+   * and narrower than everything above — granted per connection, never assumed.
+   */
+  computerEnabled?: boolean
   /**
    * Extra folders this server's agent may reach on this machine, beyond the per-hub working
    * directory used for calls without `cwd`. Empty means no additional folders. The list is kept

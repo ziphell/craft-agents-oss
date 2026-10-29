@@ -58,6 +58,9 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
    *  window on that server never needs this machine's capabilities, and turning the switch off
    *  keeps the connection (and the folders below) so it can be turned back on later. */
   const [deviceUseEnabled, setDeviceUseEnabled] = useState(true)
+  /** Separate grants: the browser is on unless turned off; the desktop is off unless turned on. */
+  const [browserEnabled, setBrowserEnabled] = useState(true)
+  const [computerEnabled, setComputerEnabled] = useState(false)
   // Folders this server may reach beyond this app's own workspaces. Entered here, on this machine.
   const [allowedRoots, setAllowedRoots] = useState<string[]>([])
   // This machine's workspaces, offered as one-click shortcuts into `allowedRoots` — a convenience,
@@ -91,6 +94,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setToken('')
     setHostName('')
     setDeviceUseEnabled(true)
+    setBrowserEnabled(true)
+    setComputerEnabled(false)
     setAllowedRoots([])
     setEditingId(undefined)
     setFormOpen(false)
@@ -221,6 +226,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
         token: token.trim(),
         allowedRoots,
         deviceUseEnabled,
+        browserEnabled,
+        computerEnabled,
       })
       await window.electronAPI.connectToRemoteConnection(saved.id, saved.lastWorkspaceId)
       onOpenChange(false)
@@ -237,6 +244,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setServerUrl(connection.url)
     setHostName(connection.name)
     setDeviceUseEnabled(connection.deviceUseEnabled !== false)
+    setBrowserEnabled(connection.browserEnabled !== false)
+    setComputerEnabled(connection.computerEnabled === true)
     setAllowedRoots(connection.allowedRoots ?? [])
     // Never echo the saved token into the form; blank means "keep it".
     setToken('')
@@ -252,6 +261,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setHostName('')
     setToken('')
     setDeviceUseEnabled(true)
+    setBrowserEnabled(true)
+    setComputerEnabled(false)
     setAllowedRoots([])
     setError(undefined)
     setTestResult(null)
@@ -265,6 +276,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
     setHostName('')
     setToken('')
     setDeviceUseEnabled(true)
+    setBrowserEnabled(true)
+    setComputerEnabled(false)
     setAllowedRoots([])
     setError(undefined)
     setTestResult(null)
@@ -292,6 +305,8 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
         token: token.trim() || editingConnection?.token || '',
         allowedRoots,
         deviceUseEnabled,
+        browserEnabled,
+        computerEnabled,
       })
       closeForm()
       load()
@@ -400,6 +415,23 @@ export function ConnectServerDialog({ open, onOpenChange }: ConnectServerDialogP
                 {t('settings.client.deviceUseEnabled')}
               </span>
               <Switch checked={deviceUseEnabled} onCheckedChange={setDeviceUseEnabled} />
+            </label>
+            <label
+              className={`flex select-none items-center justify-between gap-3 rounded-lg border px-3 py-2.5 ${
+                deviceUseEnabled ? 'cursor-pointer' : 'cursor-default opacity-50'
+              }`}
+            >
+              <span className="text-sm">{t('settings.client.browserEnabled')}</span>
+              {/* Files and the shell are the prerequisite: no browser without them. */}
+              <Switch
+                checked={deviceUseEnabled && browserEnabled}
+                onCheckedChange={setBrowserEnabled}
+                disabled={!deviceUseEnabled}
+              />
+            </label>
+            <label className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-lg border px-3 py-2.5">
+              <span className="text-sm">{t('settings.client.computerEnabled')}</span>
+              <Switch checked={computerEnabled} onCheckedChange={setComputerEnabled} />
             </label>
 
             {/* Where the tools may work. Kept editable while device use is off: the list is saved

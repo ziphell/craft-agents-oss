@@ -11,7 +11,6 @@
     "extendedPromptCache": false,
     "browserToolEnabled": true,
     "computerUseEnabled": false,
-    "allowRemoteDesktopDrive": false,
     "allowRemoteEvaluate": true
   },
   "workspaceDefaults": {

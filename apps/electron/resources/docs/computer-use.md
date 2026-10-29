@@ -355,28 +355,20 @@ What this means for the implementation:
 - **`key` uses macOS modifier names.** `cmd` / `option` are translated by the manager; `ctrl` stays
   `ctrl`. Named keys are lowercased (`Return` → `return`).
 
-## Two switches, and both must be on
+## Two levels, and both must be on
 
-| switch | what it grants | default |
-| --- | --- | --- |
-| Settings → Tools → **Desktop control** | *this* agent may drive this desktop (`computer_tool`) | off |
-| Settings → Tools → **Allow connected servers** | an agent on **another** machine may drive it (`device_tool {tool:"computer"}`) | off |
+| level | where | what it grants | default |
+| --- | --- | --- | --- |
+| **machine** | Settings → Tools → *Desktop control* | this machine has a desktop the app may drive at all — the driver is loaded and the OS grants (Accessibility, Screen Recording on macOS) are asked for **at the moment the switch is flipped** | off |
+| **connection** | Settings → Servers → the saved server → *Desktop* | that **one** server may drive it (`device_tool {tool:"computer"}`) | off |
 
-The second is narrower than the first, and is not a sub-option of it: turning desktop control on for
-yourself is not a grant to every hub you are paired with. **A remote desktop needs both**, plus a
-driver that answered — `isComputerUseAdvertised()` is exactly that conjunction.
+The machine level is not an authorization for anyone in particular: it exists so the OS grants are
+obtained ahead of time, while the person is looking at the switch, instead of on a server's first
+call. Who may use it is the per-connection grant, and it is checked twice — once when the link
+handshakes (an ungranted `computer` is not advertised), and again at the door (a server holding an
+older capability list is refused).
 
-Withdrawing the server grant does three things at once: `computer` stops being advertised, a lease a
-server is holding is released, and every hub link is torn down and made again (a capability is fixed
-when a client is constructed, so an open socket cannot be edited into offering less).
-
-A hub cannot widen any of this from its side: both checks live in this process, re-read per call.
-
-On macOS there is an ordering rule that only exists once remote driving is possible: the TCC prompt
-(Accessibility, then Screen Recording) is raised by the **local** door only. A remote request that
-arrives before this Mac has been granted is refused — `This Mac has not granted Accessibility and
-Screen Recording yet…` — rather than opening a system dialog on a machine whose owner is not there
-to answer it.
+A hub cannot widen either level from its side: both checks live in this process, re-read per call.
 
 ## Showing that the desktop is being driven
 
