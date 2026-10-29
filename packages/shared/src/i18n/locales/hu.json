@@ -1235,7 +1235,7 @@
   "settings.client.deviceAllowedRootsAdd": "Mappa hozzáadása",
   "settings.client.deviceAllowedRootsEmpty": "Nincsenek mappák.",
   "settings.client.deviceAllowedRootsWorkspaces": "A gép munkaterületei",
-  "settings.client.deviceUseEnabled": "Engedélyezd, hogy ez a kiszolgáló távolról használja ezt az eszközt",
+  "settings.client.deviceUseEnabled": "Files & commands",
   "settings.client.editServer": "Szerver szerkesztése",
   "settings.client.insecureUrl": "Titkosítatlan: a szervertoken titkosítás nélkül utazik. Nem megbízható hálózaton használj wss://-t.",
   "settings.client.invalidUrl": "A szerver URL-nek ws:// vagy wss:// előtaggal kell kezdődnie",
@@ -2107,6 +2107,6 @@
   "workspace.serverAuthToken": "Szerver hitelesítési token",
   "workspace.thisComputer": "Ez a számítógép",
   "workspace.underDefaultFolder": "a .craft-agent mappában",
-  "settings.client.browserEnabled": "Let this server use this machine's browser",
-  "settings.client.computerEnabled": "Let this server drive this machine's desktop"
+  "settings.client.browserEnabled": "Browser",
+  "settings.client.computerEnabled": "Desktop"
 }

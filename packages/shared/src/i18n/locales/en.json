@@ -1235,7 +1235,7 @@
   "settings.client.deviceAllowedRootsAdd": "Add folder",
   "settings.client.deviceAllowedRootsEmpty": "No folders.",
   "settings.client.deviceAllowedRootsWorkspaces": "This machine's workspaces",
-  "settings.client.deviceUseEnabled": "Let this server use this device remotely",
+  "settings.client.deviceUseEnabled": "Files & commands",
   "settings.client.editServer": "Edit server",
   "settings.client.insecureUrl": "Not encrypted: the server token is sent in cleartext. Use wss:// on networks you do not trust.",
   "settings.client.invalidUrl": "Server URL must start with ws:// or wss://",
@@ -2107,6 +2107,6 @@
   "workspace.serverAuthToken": "Server authentication token",
   "workspace.thisComputer": "This Computer",
   "workspace.underDefaultFolder": "under .craft-agent folder",
-  "settings.client.browserEnabled": "Let this server use this machine's browser",
-  "settings.client.computerEnabled": "Let this server drive this machine's desktop"
+  "settings.client.browserEnabled": "Browser",
+  "settings.client.computerEnabled": "Desktop"
 }

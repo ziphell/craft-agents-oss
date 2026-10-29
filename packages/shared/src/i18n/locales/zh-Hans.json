@@ -1235,7 +1235,7 @@
   "settings.client.deviceAllowedRootsAdd": "添加目录",
   "settings.client.deviceAllowedRootsEmpty": "未添加工作目录",
   "settings.client.deviceAllowedRootsWorkspaces": "本机工作区",
-  "settings.client.deviceUseEnabled": "允许服务器使用本设备",
+  "settings.client.deviceUseEnabled": "文件与命令",
   "settings.client.editServer": "编辑服务器",
   "settings.client.insecureUrl": "连接未加密，服务器令牌会以明文发送；在不信任的网络上请使用 wss://。",
   "settings.client.invalidUrl": "服务器地址必须以 ws:// 或 wss:// 开头",
@@ -2107,6 +2107,6 @@
   "workspace.serverAuthToken": "服务器认证令牌",
   "workspace.thisComputer": "本机",
   "workspace.underDefaultFolder": ".craft-agent 文件夹下",
-  "settings.client.browserEnabled": "允许该服务器使用本机浏览器",
-  "settings.client.computerEnabled": "允许该服务器操作本机桌面"
+  "settings.client.browserEnabled": "浏览器",
+  "settings.client.computerEnabled": "桌面"
 }

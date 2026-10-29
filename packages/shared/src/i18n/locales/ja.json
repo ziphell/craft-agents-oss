@@ -1235,7 +1235,7 @@
   "settings.client.deviceAllowedRootsAdd": "フォルダーを追加",
   "settings.client.deviceAllowedRootsEmpty": "フォルダーはありません。",
   "settings.client.deviceAllowedRootsWorkspaces": "このマシンのワークスペース",
-  "settings.client.deviceUseEnabled": "このサーバーにこのデバイスのリモート使用を許可",
+  "settings.client.deviceUseEnabled": "Files & commands",
   "settings.client.editServer": "サーバーを編集",
   "settings.client.insecureUrl": "暗号化されていません。サーバートークンは平文で送信されます。信頼できないネットワークでは wss:// を使用してください。",
   "settings.client.invalidUrl": "サーバー URL は ws:// または wss:// で始まる必要があります",
@@ -2107,6 +2107,6 @@
   "workspace.serverAuthToken": "サーバー認証トークン",
   "workspace.thisComputer": "このコンピューター",
   "workspace.underDefaultFolder": ".craft-agentフォルダ内",
-  "settings.client.browserEnabled": "Let this server use this machine's browser",
-  "settings.client.computerEnabled": "Let this server drive this machine's desktop"
+  "settings.client.browserEnabled": "Browser",
+  "settings.client.computerEnabled": "Desktop"
 }
