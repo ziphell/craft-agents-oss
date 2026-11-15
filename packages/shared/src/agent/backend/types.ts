@@ -21,6 +21,7 @@ import type { AuthRequest } from '../session-scoped-tools.ts';
 import type { McpClientPool } from '../../mcp/mcp-pool.ts';
 import type { Workspace } from '../../config/storage.ts';
 import type { SessionConfig as Session } from '../../sessions/storage.ts';
+import type { SessionMode } from '../../sessions/types.ts';
 import type { SourceManager } from '../core/source-manager.ts';
 import type { GuardedModeCheck } from '../core/guarded-mode.ts';
 
@@ -31,7 +32,12 @@ export { AbortReason, type RecoveryMessage };
 import type { ModelProvider } from '../../config/models.ts';
 
 // Import LLM connection types for auth
-import type { LlmAuthType, LlmProviderType } from '../../config/llm-connections.ts';
+import type {
+  LlmAuthType,
+  LlmProviderType,
+  CustomEndpointConfig,
+  CustomEndpointModelConfig,
+} from '../../config/llm-connections.ts';
 export type { LlmAuthType, LlmProviderType } from '../../config/llm-connections.ts';
 
 export interface BackendRuntimeUpdate {
@@ -41,8 +47,8 @@ export interface BackendRuntimeUpdate {
   runtime?: {
     baseUrl?: string;
     piAuthProvider?: string;
-    customEndpoint?: { api: string; supportsImages?: boolean };
-    customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
+    customEndpoint?: CustomEndpointConfig;
+    customModels?: CustomEndpointModelConfig[];
     [key: string]: unknown;
   };
 }
@@ -160,6 +166,23 @@ export interface CoreBackendConfig {
 
   /** Mini/utility model for summarization/title generation/mini-completions */
   miniModel?: string;
+
+  /**
+   * Model that reads images / video frames when a tool is handed pictures and
+   * the caller names none (see `resolveImageModel`). Sent to the Pi subprocess
+   * so `call_llm` there resolves the same model the parent would.
+   */
+  imageModel?: string;
+
+  /**
+   * Whether this session's **main** model can take pictures.
+   *
+   * Resolved by the session layer from the connection (`modelSupportsImages`), not guessed from
+   * `imageModel`: the image model may be a separate vision model while the main one sees nothing.
+   * When false, a tool result that is only a picture is unreadable by the model itself, so the
+   * result says where the file is and that `call_llm` can read it.
+   */
+  mainModelSeesImages?: boolean;
 
   /** Initial thinking level */
   thinkingLevel?: ThinkingLevel;
@@ -298,8 +321,6 @@ export type SdkMcpServerConfig =
       type: 'http' | 'sse';
       url: string;
       headers?: Record<string, string>;
-      /** Environment variable name containing bearer token (Codex-specific) */
-      bearerTokenEnvVar?: string;
     }
   | {
       type: 'stdio';
@@ -307,10 +328,6 @@ export type SdkMcpServerConfig =
       args?: string[];
       /** Environment variables to set (literal values) */
       env?: Record<string, string>;
-      /** Environment variable names to forward from parent process (Codex-specific) */
-      envVars?: string[];
-      /** Working directory for the server process (Codex-specific) */
-      cwd?: string;
     };
 
 /**
@@ -497,6 +514,12 @@ export interface AgentBackend {
 
   /** Cycle to next permission mode */
   cyclePermissionMode(): PermissionMode;
+
+  /**
+   * Set the layer this session is working in (`goal`/`spec`/`plan`), or null for none. The mode
+   * is announced to the model through the next user message, not the system prompt.
+   */
+  setSessionMode(mode: SessionMode | null): void;
 
   // ============================================================
   // State

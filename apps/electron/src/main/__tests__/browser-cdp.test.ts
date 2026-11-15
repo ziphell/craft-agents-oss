@@ -344,10 +344,10 @@ describe('BrowserCDP', () => {
   })
 
   describe('fillElement', () => {
-    it('focuses, clears, and types characters', async () => {
-      const sentCommands: string[] = []
-      const wc = createMockWebContents(async (method) => {
-        sentCommands.push(method)
+    it('selects all and inserts through the input pipeline, never a synthetic event', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
         if (method === 'Accessibility.getFullAXTree') {
           return {
             nodes: [
@@ -369,11 +369,126 @@ describe('BrowserCDP', () => {
 
       await cdp.fillElement('@e1', 'ab')
 
-      expect(sentCommands).toContain('DOM.focus')
-      expect(sentCommands).toContain('Runtime.callFunctionOn')
-      // Two characters typed: 2 keyDown + 2 keyUp = 4 key events
-      const keyEvents = sentCommands.filter(c => c === 'Input.dispatchKeyEvent')
-      expect(keyEvents.length).toBe(4)
+      expect(sent.map((c) => c.method)).toContain('DOM.focus')
+
+      // 全选是一次真实的 Ctrl/Cmd+A（keyDown + keyUp），不是页面里的 select()
+      const keys = sent.filter((c) => c.method === 'Input.dispatchKeyEvent')
+      expect(keys).toHaveLength(2)
+      expect(keys[0]?.params?.key).toBe('a')
+      expect(keys[0]?.params?.type).toBe('keyDown')
+      expect(keys[0]?.params?.modifiers).toBe(process.platform === 'darwin' ? 4 : 2)
+
+      // 落值只有一条 insertText
+      const inserts = sent.filter((c) => c.method === 'Input.insertText')
+      expect(inserts).toHaveLength(1)
+      expect(inserts[0]?.params).toEqual({ text: 'ab' })
+
+      // 关键断言：整条路径里不存在被伪造的 DOM 事件（`isTrusted === false` 的来源）
+      const fabricated = sent.filter((c) => (
+        c.method === 'Runtime.callFunctionOn'
+        && String(c.params?.functionDeclaration ?? '').includes('new Event(')
+      ))
+      expect(fabricated).toHaveLength(0)
+    })
+  })
+
+  describe('typeText', () => {
+    it('types ASCII key by key and inserts what no key can produce', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      await cdp.typeText('a前')
+
+      // `a` 有物理键：一按一放，且按下与抬起之间有真实的按住时长
+      const keys = sent.filter((c) => c.method === 'Input.dispatchKeyEvent')
+      expect(keys.map((k) => k.params?.type)).toEqual(['keyDown', 'keyUp'])
+      expect(keys.map((k) => k.params?.key)).toEqual(['a', 'a'])
+
+      // 中文没有物理键：一次插入，而不是一个 code 为空的 keydown
+      const inserts = sent.filter((c) => c.method === 'Input.insertText')
+      expect(inserts.map((i) => i.params?.text)).toEqual(['前'])
+    })
+  })
+
+  describe('dispatchInput', () => {
+    it('inserts a committed composition as one text insert, not as keys', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      await cdp.dispatchInput([
+        { type: 'text', text: '你好' },
+        { type: 'key', action: 'down', key: 'Enter', code: 'Enter' },
+      ])
+
+      const insert = sent.find((command) => command.method === 'Input.insertText')
+      expect(insert?.params).toEqual({ text: '你好' })
+      // The Enter beside it is still a key event: only the composition goes through insertText.
+      expect(sent.filter((command) => command.method === 'Input.dispatchKeyEvent').length).toBe(1)
+    })
+
+    it('names the held button on a move, so the page sees a drag', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      await cdp.dispatchInput([
+        { type: 'mouse', action: 'down', x: 10, y: 20, button: 'left', buttons: 1, clickCount: 1 },
+        { type: 'mouse', action: 'move', x: 10, y: 60, buttons: 1 },
+      ])
+
+      const move = sent.find((command) => command.method === 'Input.dispatchMouseEvent' && command.params?.type === 'mouseMoved')
+      expect(move?.params?.button).toBe('left')
+      expect(move?.params?.buttons).toBe(1)
+    })
+
+    it('leaves a hover with no button named', async () => {
+      const sent: Array<{ method: string; params?: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        sent.push({ method, params })
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      await cdp.dispatchInput([{ type: 'mouse', action: 'move', x: 10, y: 20, buttons: 0 }])
+
+      const move = sent.find((command) => command.method === 'Input.dispatchMouseEvent')
+      expect(move?.params?.button).toBe('none')
+      expect(move?.params?.buttons).toBe(0)
+    })
+  })
+
+  describe('caretRect', () => {
+    it('answers the caret position the page measured', async () => {
+      const wc = createMockWebContents(async (method) => {
+        if (method === 'Runtime.evaluate') return { result: { value: { x: 12, y: 34, height: 18 } } }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+
+      expect(await cdp.caretRect()).toEqual({ x: 12, y: 34, height: 18 })
+    })
+
+    it('says nothing when no editable element has focus', async () => {
+      const wc = createMockWebContents(async (method) => {
+        if (method === 'Runtime.evaluate') return { result: { value: null } }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+
+      expect(await cdp.caretRect()).toBeNull()
     })
   })
 
@@ -461,6 +576,59 @@ describe('BrowserCDP', () => {
       const cdp = new BrowserCDP(wc as any)
       await expect(cdp.drag(0, 0, 100, 0)).rejects.toThrow('move failed')
       expect(mouseEvents.some((event) => event.type === 'mouseReleased')).toBe(true)
+    })
+  })
+
+  describe('scrollBy', () => {
+    it('scrolls the document and never reaches for a wheel when it moves', async () => {
+      const commands: Array<{ method: string; params: any }> = []
+      let metricsReads = 0
+      const wc = createMockWebContents(async (method, params) => {
+        commands.push({ method, params })
+        if (method === 'Runtime.evaluate' && String(params?.expression).includes('window.scrollX')) {
+          metricsReads++
+          const y = metricsReads === 1 ? 0 : 400
+          return { result: { value: JSON.stringify([0, y, 1000, 800]) } }
+        }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      expect(await cdp.scrollBy(0, 400)).toEqual({ viaWheel: false, documentMoved: true })
+      expect(commands.some((c) => c.method === 'Input.dispatchMouseEvent')).toBe(false)
+    })
+
+    it('hands the gesture to the middle of the viewport when the document cannot move', async () => {
+      const commands: Array<{ method: string; params: any }> = []
+      const wc = createMockWebContents(async (method, params) => {
+        commands.push({ method, params })
+        if (method === 'Runtime.evaluate' && String(params?.expression).includes('window.scrollX')) {
+          return { result: { value: JSON.stringify([0, 0, 1000, 800]) } }
+        }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      expect(await cdp.scrollBy(0, 400)).toEqual({ viaWheel: true, documentMoved: false })
+
+      const wheel = commands.find((c) => c.method === 'Input.dispatchMouseEvent')
+      expect(wheel?.params).toMatchObject({ type: 'mouseWheel', x: 500, y: 400, deltaX: 0, deltaY: 400 })
+    })
+
+    it('says the document moved when the wheel is what moved it', async () => {
+      let metricsReads = 0
+      const wc = createMockWebContents(async (method, params) => {
+        if (method === 'Runtime.evaluate' && String(params?.expression).includes('window.scrollX')) {
+          metricsReads++
+          // 1: before, 2: after the script scroll (no movement), 3: after the wheel
+          const y = metricsReads >= 3 ? 400 : 0
+          return { result: { value: JSON.stringify([0, y, 1000, 800]) } }
+        }
+        return {}
+      })
+
+      const cdp = new BrowserCDP(wc as any)
+      expect(await cdp.scrollBy(0, 400)).toEqual({ viaWheel: true, documentMoved: true })
     })
   })
 

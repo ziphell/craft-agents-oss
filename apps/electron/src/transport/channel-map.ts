@@ -22,10 +22,14 @@ export const CHANNEL_MAP = {
   getUnreadSummary: invoke(RPC_CHANNELS.sessions.GET_UNREAD_SUMMARY),
   markAllSessionsRead: invoke(RPC_CHANNELS.sessions.MARK_ALL_READ),
   getSessionMessages: invoke(RPC_CHANNELS.sessions.GET_MESSAGES),
+  searchSessionMessages: invoke(RPC_CHANNELS.sessions.SEARCH_MESSAGES),
+  getSessionQuestions: invoke(RPC_CHANNELS.sessions.GET_QUESTIONS),
   createSession: invoke(RPC_CHANNELS.sessions.CREATE),
   deleteSession: invoke(RPC_CHANNELS.sessions.DELETE),
   sendMessage: invoke(RPC_CHANNELS.sessions.SEND_MESSAGE),
   cancelProcessing: invoke(RPC_CHANNELS.sessions.CANCEL),
+  cancelQueuedMessage: invoke(RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE),
+  sendQueuedMessageNow: invoke(RPC_CHANNELS.sessions.SEND_QUEUED_MESSAGE_NOW),
   killShell: invoke(RPC_CHANNELS.sessions.KILL_SHELL),
   getTaskOutput: invoke(RPC_CHANNELS.tasks.GET_OUTPUT),
 
@@ -40,6 +44,7 @@ export const CHANNEL_MAP = {
   getTask: invoke(RPC_CHANNELS.tasks.GET),
   listTasks: invoke(RPC_CHANNELS.tasks.LIST),
   getTaskResults: invoke(RPC_CHANNELS.tasks.GET_RESULTS),
+  resolveTaskApproval: invoke(RPC_CHANNELS.tasks.RESOLVE_APPROVAL),
   onTaskGenerated: listener(RPC_CHANNELS.tasks.GENERATED),
   respondToPermission: invoke(RPC_CHANNELS.sessions.RESPOND_TO_PERMISSION),
   respondToCredential: invoke(RPC_CHANNELS.sessions.RESPOND_TO_CREDENTIAL),
@@ -60,20 +65,22 @@ export const CHANNEL_MAP = {
 
   // Workspace management
   getWorkspaces: invoke(RPC_CHANNELS.workspaces.GET),
+  /** This machine's list regardless of where the window is (LOCAL_ONLY, through the router). */
+  getLocalWorkspaces: invoke(RPC_CHANNELS.workspaces.GET),
   createWorkspace: invoke(RPC_CHANNELS.workspaces.CREATE),
   checkWorkspaceSlug: invoke(RPC_CHANNELS.workspaces.CHECK_SLUG),
-  updateWorkspaceRemoteServer: invoke(RPC_CHANNELS.workspaces.UPDATE_REMOTE),
-  testRemoteConnection: invoke(RPC_CHANNELS.remote.TEST_CONNECTION),
 
   // Server-level workspace operations (REMOTE_ELIGIBLE)
   getServerWorkspaces: invoke(RPC_CHANNELS.server.GET_WORKSPACES),
   createServerWorkspace: invoke(RPC_CHANNELS.server.CREATE_WORKSPACE),
+  removeWorkspace: invoke(RPC_CHANNELS.server.REMOVE_WORKSPACE),
 
   // Window management
   getWindowWorkspace: invoke(RPC_CHANNELS.window.GET_WORKSPACE),
   getWindowMode: invoke(RPC_CHANNELS.window.GET_MODE),
   openWorkspace: invoke(RPC_CHANNELS.window.OPEN_WORKSPACE),
   openSessionInNewWindow: invoke(RPC_CHANNELS.window.OPEN_SESSION_IN_NEW_WINDOW),
+  openFileWindow: invoke(RPC_CHANNELS.window.OPEN_FILE_WINDOW),
   switchWorkspace: invoke(RPC_CHANNELS.window.SWITCH_WORKSPACE),
   closeWindow: invoke(RPC_CHANNELS.window.CLOSE),
   confirmCloseWindow: invoke(RPC_CHANNELS.window.CONFIRM_CLOSE),
@@ -82,11 +89,38 @@ export const CHANNEL_MAP = {
   setTrafficLightsVisible: invoke(RPC_CHANNELS.window.SET_TRAFFIC_LIGHTS),
 
   // File operations
+  // This machine's generators. Both travel to the server that owns the GPU, which is why a
+  // browser tab can press ✨ on a card and get a picture.
+  getMediaTask: invoke(RPC_CHANNELS.media.TASK),
+  retryMediaTask: invoke(RPC_CHANNELS.media.RETRY),
+  onMediaTaskChanged: listener(RPC_CHANNELS.media.TASK_CHANGED),
+  mediaGenerate: invoke(RPC_CHANNELS.media.GENERATE),
+  mediaChannels: invoke(RPC_CHANNELS.media.CHANNELS),
+  mediaChannelsSave: invoke(RPC_CHANNELS.media.CHANNELS_SAVE),
+  mediaChannelsProbe: invoke(RPC_CHANNELS.media.PROBE),
+  mediaObjectStorage: invoke(RPC_CHANNELS.media.OBJECT_STORAGE),
+  mediaObjectStorageSave: invoke(RPC_CHANNELS.media.OBJECT_STORAGE_SAVE),
+  mediaObjectStorageTest: invoke(RPC_CHANNELS.media.OBJECT_STORAGE_TEST),
+  mediaSettings: invoke(RPC_CHANNELS.media.SETTINGS),
+  mediaSettingsSave: invoke(RPC_CHANNELS.media.SETTINGS_SAVE),
+  llmComplete: invoke(RPC_CHANNELS.llm.COMPLETE),
+  asrConfig: invoke(RPC_CHANNELS.asr.CONFIG),
+  asrConfigSave: invoke(RPC_CHANNELS.asr.CONFIG_SAVE),
+  asrModels: invoke(RPC_CHANNELS.asr.MODELS),
+  asrDownload: invoke(RPC_CHANNELS.asr.DOWNLOAD),
+  asrDownloadStatus: invoke(RPC_CHANNELS.asr.DOWNLOAD_STATUS),
+  asrDownloadCancel: invoke(RPC_CHANNELS.asr.DOWNLOAD_CANCEL),
+  asrTranscribe: invoke(RPC_CHANNELS.asr.TRANSCRIBE),
+  imgOcr: invoke(RPC_CHANNELS.img.OCR),
   readFile: invoke(RPC_CHANNELS.file.READ),
   readFileDataUrl: invoke(RPC_CHANNELS.file.READ_DATA_URL),
   readFilePreviewDataUrl: invoke(RPC_CHANNELS.file.READ_PREVIEW_DATA_URL),
   readFileBinary: invoke(RPC_CHANNELS.file.READ_BINARY),
+  writeFile: invoke(RPC_CHANNELS.file.WRITE),
+  writeFileBinary: invoke(RPC_CHANNELS.file.WRITE_BINARY),
+  deleteEdit: invoke(RPC_CHANNELS.file.DELETE_EDIT),
   openFileDialog: invoke(RPC_CHANNELS.file.OPEN_DIALOG),
+  saveFileDialog: invoke(RPC_CHANNELS.file.SAVE_DIALOG),
   readFileAttachment: invoke(RPC_CHANNELS.file.READ_ATTACHMENT),
   readUserAttachment: invoke(RPC_CHANNELS.file.READ_USER_ATTACHMENT),
   storeAttachment: invoke(RPC_CHANNELS.file.STORE_ATTACHMENT),
@@ -160,6 +194,14 @@ export const CHANNEL_MAP = {
 
   // Server info (REMOTE_ELIGIBLE)
   getServerHomeDir: invoke(RPC_CHANNELS.server.HOME_DIR),
+  getConnectedDevices: invoke(RPC_CHANNELS.server.GET_DEVICES),
+  setDeviceAlias: invoke(RPC_CHANNELS.server.SET_DEVICE_ALIAS),
+  forgetDevice: invoke(RPC_CHANNELS.server.FORGET_DEVICE),
+  listDeviceTokens: invoke(RPC_CHANNELS.server.LIST_DEVICE_TOKENS),
+  createDeviceToken: invoke(RPC_CHANNELS.server.CREATE_DEVICE_TOKEN),
+  removeDeviceToken: invoke(RPC_CHANNELS.server.REMOVE_DEVICE_TOKEN),
+  setDeviceTokenScope: invoke(RPC_CHANNELS.server.SET_DEVICE_TOKEN_SCOPE),
+  restartServer: invoke(RPC_CHANNELS.server.RESTART),
 
   // Server mode configuration
   getServerConfig: invoke(RPC_CHANNELS.settings.GET_SERVER_CONFIG),
@@ -196,6 +238,10 @@ export const CHANNEL_MAP = {
   // Server filesystem browsing (remote mode)
   listServerDirectory: invoke(RPC_CHANNELS.fs.LIST_DIRECTORY),
 
+  // Does a path still exist as a directory on the server? (composer guard for a
+  // conversation whose picked working directory was removed)
+  checkServerDirectory: invoke(RPC_CHANNELS.fs.CHECK_DIRECTORY),
+
   // Debug logging
   debugLog: invoke(RPC_CHANNELS.debug.LOG),
 
@@ -216,6 +262,25 @@ export const CHANNEL_MAP = {
   watchSessionFiles: invoke(RPC_CHANNELS.sessions.WATCH_FILES),
   unwatchSessionFiles: invoke(RPC_CHANNELS.sessions.UNWATCH_FILES),
   onSessionFilesChanged: listener(RPC_CHANNELS.sessions.FILES_CHANGED),
+
+  // Project files (workspace-level)
+  watchProjectFiles: invoke(RPC_CHANNELS.projects.WATCH_FILES),
+  unwatchProjectFiles: invoke(RPC_CHANNELS.projects.UNWATCH_FILES),
+  onProjectFilesChanged: listener(RPC_CHANNELS.projects.FILES_CHANGED),
+
+  // Canvases (a project's boards — the panel showing one owns it, its history and its saves)
+  listCanvases: invoke(RPC_CHANNELS.canvas.LIST),
+  createCanvas: invoke(RPC_CHANNELS.canvas.CREATE),
+  openCanvas: invoke(RPC_CHANNELS.canvas.OPEN),
+  closeCanvas: invoke(RPC_CHANNELS.canvas.CLOSE),
+  readCanvas: invoke(RPC_CHANNELS.canvas.READ),
+  writeCanvas: invoke(RPC_CHANNELS.canvas.WRITE),
+  setCanvasViewport: invoke(RPC_CHANNELS.canvas.VIEWPORT),
+  deleteCanvas: invoke(RPC_CHANNELS.canvas.DELETE),
+  onCanvasChanged: listener(RPC_CHANNELS.canvas.CHANGED),
+  // A file the office hosts wrote (an agent save). Absolute path, unlike the project watcher's
+  // relative one, so a preview can tell whether it is the file it drew.
+  onOfficeFileWritten: listener(RPC_CHANNELS.office.FILE_WRITTEN),
 
   // Sources
   getSources: invoke(RPC_CHANNELS.sources.GET),
@@ -293,8 +358,6 @@ export const CHANNEL_MAP = {
   setNotificationsEnabled: invoke(RPC_CHANNELS.notification.SET_ENABLED),
 
   // Input settings
-  getAutoCapitalisation: invoke(RPC_CHANNELS.input.GET_AUTO_CAPITALISATION),
-  setAutoCapitalisation: invoke(RPC_CHANNELS.input.SET_AUTO_CAPITALISATION),
   getSendMessageKey: invoke(RPC_CHANNELS.input.GET_SEND_MESSAGE_KEY),
   setSendMessageKey: invoke(RPC_CHANNELS.input.SET_SEND_MESSAGE_KEY),
   getSpellCheck: invoke(RPC_CHANNELS.input.GET_SPELL_CHECK),
@@ -311,6 +374,20 @@ export const CHANNEL_MAP = {
   // Tools settings
   getBrowserToolEnabled: invoke(RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED),
   setBrowserToolEnabled: invoke(RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED),
+  getComputerUseEnabled: invoke(RPC_CHANNELS.tools.GET_COMPUTER_USE_ENABLED),
+  setComputerUseEnabled: invoke(RPC_CHANNELS.tools.SET_COMPUTER_USE_ENABLED),
+  getWebSearchProvider: invoke(RPC_CHANNELS.tools.GET_WEB_SEARCH_PROVIDER),
+  setWebSearchProvider: invoke(RPC_CHANNELS.tools.SET_WEB_SEARCH_PROVIDER),
+  getWebSearchEnabled: invoke(RPC_CHANNELS.tools.GET_WEB_SEARCH_ENABLED),
+  setWebSearchEnabled: invoke(RPC_CHANNELS.tools.SET_WEB_SEARCH_ENABLED),
+  getWebFetchEnabled: invoke(RPC_CHANNELS.tools.GET_WEB_FETCH_ENABLED),
+  setWebFetchEnabled: invoke(RPC_CHANNELS.tools.SET_WEB_FETCH_ENABLED),
+  getWebFetchMode: invoke(RPC_CHANNELS.tools.GET_WEB_FETCH_MODE),
+  setWebFetchMode: invoke(RPC_CHANNELS.tools.SET_WEB_FETCH_MODE),
+  getDeepSeekSearchKeyStatus: invoke(RPC_CHANNELS.tools.GET_DEEPSEEK_SEARCH_KEY_STATUS),
+  setDeepSeekSearchKey: invoke(RPC_CHANNELS.tools.SET_DEEPSEEK_SEARCH_KEY),
+  getDeepSeekFetchKeyStatus: invoke(RPC_CHANNELS.tools.GET_DEEPSEEK_FETCH_KEY_STATUS),
+  setDeepSeekFetchKey: invoke(RPC_CHANNELS.tools.SET_DEEPSEEK_FETCH_KEY),
 
   // Prompt caching & context
   getExtendedPromptCache: invoke(RPC_CHANNELS.caching.GET_EXTENDED_PROMPT_CACHE),
@@ -343,6 +420,8 @@ export const CHANNEL_MAP = {
   // Window focus
   getWindowFocusState: invoke(RPC_CHANNELS.window.GET_FOCUS_STATE),
   onWindowFocusChange: listener(RPC_CHANNELS.window.FOCUS_STATE),
+  getWindowMaximizedState: invoke(RPC_CHANNELS.window.GET_MAXIMIZED_STATE),
+  onWindowMaximizedChange: listener(RPC_CHANNELS.window.MAXIMIZED_STATE),
   onNotificationNavigate: listener(RPC_CHANNELS.notification.NAVIGATE),
 
   // Git
@@ -367,20 +446,39 @@ export const CHANNEL_MAP = {
   menuPaste: invoke(RPC_CHANNELS.menu.PASTE),
   menuSelectAll: invoke(RPC_CHANNELS.menu.SELECT_ALL),
 
+  // Browser profiles — the named cookie jars a window can be signed into
+  'browserProfiles.list': invoke(RPC_CHANNELS.browserProfiles.LIST),
+  'browserProfiles.create': invoke(RPC_CHANNELS.browserProfiles.CREATE),
+  'browserProfiles.rename': invoke(RPC_CHANNELS.browserProfiles.RENAME),
+  'browserProfiles.delete': invoke(RPC_CHANNELS.browserProfiles.DELETE),
+  'browserProfiles.resolve': invoke(RPC_CHANNELS.browserProfiles.RESOLVE),
+
   // Browser pane management
   'browserPane.create': invoke(RPC_CHANNELS.browserPane.CREATE),
   'browserPane.destroy': invoke(RPC_CHANNELS.browserPane.DESTROY),
   'browserPane.list': invoke(RPC_CHANNELS.browserPane.LIST),
   'browserPane.navigate': invoke(RPC_CHANNELS.browserPane.NAVIGATE),
+  'browserPane.openFile': invoke(RPC_CHANNELS.browserPane.OPEN_FILE),
+  'browserPane.openUrl': invoke(RPC_CHANNELS.browserPane.OPEN_URL),
   'browserPane.goBack': invoke(RPC_CHANNELS.browserPane.GO_BACK),
   'browserPane.goForward': invoke(RPC_CHANNELS.browserPane.GO_FORWARD),
   'browserPane.reload': invoke(RPC_CHANNELS.browserPane.RELOAD),
   'browserPane.stop': invoke(RPC_CHANNELS.browserPane.STOP),
   'browserPane.focus': invoke(RPC_CHANNELS.browserPane.FOCUS),
+  'browserPane.tabAction': invoke(RPC_CHANNELS.browserPane.TAB_ACTION),
+  'browserPane.resizeViewport': invoke(RPC_CHANNELS.browserPane.RESIZE_VIEWPORT),
+  'browserPane.streamStart': invoke(RPC_CHANNELS.browserPane.STREAM_START),
+  'browserPane.streamStop': invoke(RPC_CHANNELS.browserPane.STREAM_STOP),
+  'browserPane.streamControl': invoke(RPC_CHANNELS.browserPane.STREAM_CONTROL),
+  'browserPane.streamInput': invoke(RPC_CHANNELS.browserPane.STREAM_INPUT),
+  'browserPane.streamCaret': invoke(RPC_CHANNELS.browserPane.STREAM_CARET),
+  'browserPane.onStreamFrame': listener(RPC_CHANNELS.browserPane.STREAM_FRAME),
+  'browserPane.onStreamEnded': listener(RPC_CHANNELS.browserPane.STREAM_ENDED),
   'browserPane.emptyStateLaunch': invoke(RPC_CHANNELS.browserPane.LAUNCH),
   'browserPane.onStateChanged': listener(RPC_CHANNELS.browserPane.STATE_CHANGED),
   'browserPane.onRemoved': listener(RPC_CHANNELS.browserPane.REMOVED),
   'browserPane.onInteracted': listener(RPC_CHANNELS.browserPane.INTERACTED),
+  'browserPane.onToolbarAction': listener(RPC_CHANNELS.browserPane.TOOLBAR_ACTION),
 
   // LLM Connections
   listLlmConnections: invoke(RPC_CHANNELS.llmConnections.LIST),
@@ -396,38 +494,56 @@ export const CHANNEL_MAP = {
   // Projects
   getProjects: invoke(RPC_CHANNELS.projects.GET),
   getProject: invoke(RPC_CHANNELS.projects.GET_ONE),
+  getProjectLayers: invoke(RPC_CHANNELS.projects.LAYERS),
+  getProjectProvenance: invoke(RPC_CHANNELS.projects.PROVENANCE),
+  getProjectFiles: invoke(RPC_CHANNELS.projects.FILES),
   createProject: invoke(RPC_CHANNELS.projects.CREATE),
   updateProject: invoke(RPC_CHANNELS.projects.UPDATE),
   deleteProject: invoke(RPC_CHANNELS.projects.DELETE),
   listProjectAssets: invoke(RPC_CHANNELS.projects.LIST_ASSETS),
   uploadProjectAsset: invoke(RPC_CHANNELS.projects.UPLOAD_ASSET),
   deleteProjectAsset: invoke(RPC_CHANNELS.projects.DELETE_ASSET),
+  getProjectLibrary: invoke(RPC_CHANNELS.projects.LIBRARY),
+  updateProjectAssetMeta: invoke(RPC_CHANNELS.projects.UPDATE_ASSET_META),
   onProjectsChanged: listener(RPC_CHANNELS.projects.CHANGED),
 
+  getDrawioOrigin: invoke(RPC_CHANNELS.drawio.GET_ORIGIN),
+  getOfficeOrigin: invoke(RPC_CHANNELS.office.GET_ORIGIN),
+  exportOfficePdf: invoke(RPC_CHANNELS.office.EXPORT_PDF),
+  exportOfficePages: invoke(RPC_CHANNELS.office.EXPORT_PAGES),
+  officeDeck: invoke(RPC_CHANNELS.office.DECK),
+  officeWorkbook: invoke(RPC_CHANNELS.office.WORKBOOK),
+  officePdf: invoke(RPC_CHANNELS.office.PDF),
+
+  // Tweaks
+  getTweaks: invoke(RPC_CHANNELS.tweaks.GET),
+  getTweak: invoke(RPC_CHANNELS.tweaks.GET_ONE),
+  updateTweak: invoke(RPC_CHANNELS.tweaks.UPDATE),
+  deleteTweak: invoke(RPC_CHANNELS.tweaks.DELETE),
+  exportTweaks: invoke(RPC_CHANNELS.tweaks.EXPORT),
+  onTweaksChanged: listener(RPC_CHANNELS.tweaks.CHANGED),
+
+  // Craft Bot — the assistant's own conversation, and the tasks it hands to workspaces.
+  // No file channel on purpose: a task's files are touched by the delegated session.
+  getBotSession: invoke(RPC_CHANNELS.bot.SESSION),
+  getBotTasks: invoke(RPC_CHANNELS.bot.TASKS),
+  getBotTaskResult: invoke(RPC_CHANNELS.bot.RESULT),
+  cancelBotTask: invoke(RPC_CHANNELS.bot.CANCEL),
+  onBotChanged: listener(RPC_CHANNELS.bot.CHANGED),
+
+  // Creations (derived from transcripts + the filesystem — read-only by construction)
+  getCreations: invoke(RPC_CHANNELS.creations.LIST),
+  getCreationThumbnail: invoke(RPC_CHANNELS.creations.THUMBNAIL),
+  onCreationsChanged: listener(RPC_CHANNELS.creations.CHANGED),
+  exportCreation: invoke(RPC_CHANNELS.creations.EXPORT),
+  getCreationVersions: invoke(RPC_CHANNELS.creations.VERSIONS),
+  saveCreationVersion: invoke(RPC_CHANNELS.creations.SAVE_VERSION),
+
+  // Who is editing what (the document tool reads it before overwriting a file)
+  setDocumentOpen: invoke(RPC_CHANNELS.office.SET_DOCUMENT_OPEN),
+  setDocumentDirty: invoke(RPC_CHANNELS.office.SET_DOCUMENT_DIRTY),
+
   // Pages
-  getPages: invoke(RPC_CHANNELS.pages.GET),
-  getPage: invoke(RPC_CHANNELS.pages.GET_ONE),
-  createPage: invoke(RPC_CHANNELS.pages.CREATE),
-  updatePage: invoke(RPC_CHANNELS.pages.UPDATE),
-  deletePage: invoke(RPC_CHANNELS.pages.DELETE),
-  getPageContent: invoke(RPC_CHANNELS.pages.GET_CONTENT),
-  setPageContent: invoke(RPC_CHANNELS.pages.SET_CONTENT),
-  getPageData: invoke(RPC_CHANNELS.pages.GET_DATA),
-  listPageGrants: invoke(RPC_CHANNELS.pages.LIST_GRANTS),
-  issuePageGrant: invoke(RPC_CHANNELS.pages.ISSUE_GRANT),
-  revokePageGrant: invoke(RPC_CHANNELS.pages.REVOKE_GRANT),
-  createPageLease: invoke(RPC_CHANNELS.pages.CREATE_LEASE),
-  releasePageLease: invoke(RPC_CHANNELS.pages.RELEASE_LEASE),
-  executePageAction: invoke(RPC_CHANNELS.pages.EXECUTE_ACTION),
-  cancelPageAction: invoke(RPC_CHANNELS.pages.CANCEL_ACTION),
-  getPageShareCapabilities: invoke(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES),
-  getPageShareDataScan: invoke(RPC_CHANNELS.pages.GET_SHARE_DATA_SCAN),
-  publishPage: invoke(RPC_CHANNELS.pages.PUBLISH),
-  setPagePublicationPassword: invoke(RPC_CHANNELS.pages.SET_PUBLICATION_PASSWORD),
-  unpublishPage: invoke(RPC_CHANNELS.pages.UNPUBLISH),
-  getPageThumbnail: invoke(RPC_CHANNELS.pages.GET_THUMBNAIL),
-  regeneratePageThumbnail: invoke(RPC_CHANNELS.pages.REGENERATE_THUMBNAIL),
-  onPagesChanged: listener(RPC_CHANNELS.pages.CHANGED),
 
   // Automations
   getAutomations: invoke(RPC_CHANNELS.automations.GET),

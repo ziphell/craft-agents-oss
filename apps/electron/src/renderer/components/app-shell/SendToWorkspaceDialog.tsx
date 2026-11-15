@@ -1,20 +1,15 @@
 /**
  * SendToWorkspaceDialog — Transfer sessions to another workspace.
  *
- * Shows a picker over every other workspace: remote targets are pushed to over
- * an outbound WS connection (chunked for large bundles), local targets import
- * in-process — which is how a session moves from a remote workspace back to
- * this machine. Disconnected remote workspaces are shown as disabled with a
- * CloudOff icon; local workspaces are always available.
- *
- * The main process orchestrates the transfer: export bundle + summary from the
- * owning server, then import on the target (see session:transferToWorkspace).
+ * Shows a picker over every other workspace of the window's server. The transfer exports a
+ * bundle from the source workspace and imports it on the target: two calls on the same
+ * connection (see `transferSessionToWorkspace`).
  */
 
 import * as React from 'react'
 import { useTranslation } from "react-i18next"
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Cloud, CloudOff, Laptop, Send } from 'lucide-react'
+import { Laptop, Send } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   Dialog,
@@ -75,50 +70,8 @@ export function SendToWorkspaceDialog({
     return cleanup
   }, [isTransferring])
 
-  // Health check results for remote workspaces (checked on dialog open)
-  const [remoteHealthMap, setRemoteHealthMap] = useState<Map<string, 'ok' | 'error' | 'checking'>>(new Map())
-  const healthCheckAbort = useRef<AbortController | null>(null)
-
-  // Every other workspace is a valid target; only remote ones need a health check
+  // Every other workspace of this window's server is a valid target.
   const targetWorkspaces = getTransferTargets(workspaces, activeWorkspaceId)
-  const remoteTargets = targetWorkspaces.filter(w => w.remoteServer)
-
-  // Check connectivity for remote targets when dialog opens (locals are always reachable)
-  useEffect(() => {
-    if (!open) {
-      healthCheckAbort.current?.abort()
-      return
-    }
-
-    // Cancel any in-flight checks
-    healthCheckAbort.current?.abort()
-    const abort = new AbortController()
-    healthCheckAbort.current = abort
-
-    if (remoteTargets.length === 0) return
-
-    // Mark all as checking
-    setRemoteHealthMap(() => {
-      const next = new Map<string, 'ok' | 'error' | 'checking'>()
-      for (const ws of remoteTargets) next.set(ws.id, 'checking')
-      return next
-    })
-
-    // Fire parallel checks
-    for (const ws of remoteTargets) {
-      window.electronAPI.testRemoteConnection(ws.remoteServer!.url, ws.remoteServer!.token)
-        .then(result => {
-          if (abort.signal.aborted) return
-          setRemoteHealthMap(prev => new Map(prev).set(ws.id, result.ok ? 'ok' : 'error'))
-        })
-        .catch(() => {
-          if (abort.signal.aborted) return
-          setRemoteHealthMap(prev => new Map(prev).set(ws.id, 'error'))
-        })
-    }
-
-    return () => abort.abort()
-  }, [open, remoteTargets.map(w => w.id).join(',')])
 
   const handleTransfer = useCallback(async () => {
     if (!selectedWorkspaceId || sessionIds.length === 0) return
@@ -191,23 +144,18 @@ export function SendToWorkspaceDialog({
             </p>
           ) : (
             targetWorkspaces.map(workspace => {
-              const isRemote = !!workspace.remoteServer
               const isSelected = selectedWorkspaceId === workspace.id
-              const healthStatus = isRemote ? remoteHealthMap.get(workspace.id) : undefined
-              const isDisconnected = healthStatus === 'error'
-              const isChecking = healthStatus === 'checking'
 
               return (
                 <button
                   key={workspace.id}
                   type="button"
-                  disabled={isTransferring || isDisconnected}
+                  disabled={isTransferring}
                   onClick={() => setSelectedWorkspaceId(workspace.id)}
                   className={cn(
                     'flex items-center gap-2 w-full px-2 py-2 rounded-md text-left text-sm transition-colors',
                     'hover:bg-foreground/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     isSelected && 'bg-foreground/10 ring-1 ring-foreground/15',
-                    isDisconnected && 'opacity-50 cursor-not-allowed hover:bg-transparent',
                   )}
                 >
                   <WorkspaceAvatar
@@ -218,16 +166,7 @@ export function SendToWorkspaceDialog({
                     fallbackClassName="rounded-full"
                   />
                   <span className="flex-1 truncate">{workspace.name}</span>
-                  {!isRemote ? (
-                    <Laptop className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  ) : isDisconnected ? (
-                    <CloudOff className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0" />
-                  ) : (
-                    <Cloud className={cn(
-                      'h-3.5 w-3.5 shrink-0',
-                      isChecking ? 'text-muted-foreground/30 animate-pulse' : 'text-muted-foreground',
-                    )} />
-                  )}
+                  <Laptop className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                 </button>
               )
             })

@@ -6,6 +6,7 @@
 
 import type { BrowserCapabilityRequest } from './browser-capability'
 import type { RpcServer } from './types'
+import type { TokenScope } from './tokens'
 
 /** Capability: open a URL in the client's default browser. */
 export const CLIENT_OPEN_EXTERNAL = 'client:openExternal'
@@ -22,18 +23,112 @@ export const CLIENT_CONFIRM_DIALOG = 'client:confirmDialog'
 /** Capability: show a native file/folder picker on the client. */
 export const CLIENT_OPEN_FILE_DIALOG = 'client:openFileDialog'
 
+/** Capability: show a native save-file picker on the client. */
+export const CLIENT_SAVE_FILE_DIALOG = 'client:saveFileDialog'
+
+/**
+ * Capability: replace one span of a document **inside the editor showing it**.
+ *
+ * Not a file write: the change lands as one step of that editor's own history, which is what makes
+ * it undoable by the person and what keeps their caret where it was. Only the client that has the
+ * document open can do it, which is why the call goes to that client by name.
+ */
+export const CLIENT_OFFICE_APPLY_EDIT = 'client:office:applyEdit'
+
+/**
+ * Capability: save what an editor is holding, now.
+ *
+ * The file is the agreement between an agent and the person, and the editor's copy is written to it
+ * on a debounce — so a document is, for a second or two (and for as long as somebody keeps typing),
+ * *ahead* of the file. An agent that reads it in that window reads the past.
+ *
+ * Asking for a flush closes that window without a second way to read a document: the editor saves
+ * what the person can already see, and the agent then reads the file like any other file. The
+ * answer is the editor's own — a document in a conflict cannot be flushed, and saying so is better
+ * than a timeout.
+ */
+export const CLIENT_DOCUMENT_FLUSH = 'client:document:flush'
+/**
+ * Capability: apply a batch of operations **inside the panel showing a canvas**.
+ *
+ * Same rule as `CLIENT_OFFICE_APPLY_EDIT`: the panel owns the document while it is open, so an
+ * agent's change is delivered to it rather than written to the file underneath it. It answers with
+ * the revision it landed on, or `ok: false` when it is showing something else — which the caller
+ * reports instead of writing behind a screen it cannot see.
+ */
+export const CLIENT_CANVAS_REQUEST = 'client:canvas:request'
+
 /** Capability: drive a local `BrowserPaneManager` instance for a remote agent. */
 export const CLIENT_BROWSER_INVOKE = 'client:browser:invoke'
 
-/** All capabilities a local Electron client advertises on handshake. */
-export const LOCAL_CLIENT_CAPABILITIES: readonly string[] = [
-  CLIENT_OPEN_EXTERNAL,
-  CLIENT_OPEN_PATH,
-  CLIENT_SHOW_IN_FOLDER,
-  CLIENT_CONFIRM_DIALOG,
-  CLIENT_OPEN_FILE_DIALOG,
+/** Capability: run a shell command on this device for a remote agent. */
+export const CLIENT_DEVICE_EXEC = 'client:device:exec'
+
+/** Capability: read/write/list/search files on this device for a remote agent. */
+export const CLIENT_DEVICE_FS = 'client:device:fs'
+
+/**
+ * Capability: let a hub drive this device's **desktop**.
+ *
+ * Distinct from the shell/files grant: this moves the person's pointer. It is also distinct from
+ * `computer_tool`, which drives the desktop of the process it runs in — this capability is what the
+ * *remote* bridge (`RemoteComputerPaneManager`) needs on the far side.
+ */
+export const CLIENT_COMPUTER_INVOKE = 'client:computer:invoke'
+
+
+/**
+ * The capabilities only a device link advertises — this machine lending itself to a server rather
+ * than asking it for something.
+ *
+ * One list, two readers: the links in `apps/electron/src/main/hub-connection.ts` advertise exactly
+ * these, and the handshake checks a credential's scope against the same list. Keeping them apart
+ * would let "what a device is" and "what a device-scope credential permits" drift.
+ */
+export const DEVICE_CAPABILITIES = [
+  CLIENT_DEVICE_EXEC,
+  CLIENT_DEVICE_FS,
   CLIENT_BROWSER_INVOKE,
-]
+  // Answering this is `attachDeviceCapabilities` → `ComputerUseManager`; the two ship together,
+  // because a capability advertised without a handler is a promise the far side cannot keep.
+  CLIENT_COMPUTER_INVOKE,
+] as const
+
+/** Whether these capabilities include any this machine lends to a server. */
+export function hasDeviceCapability(capabilities: Iterable<string>): boolean {
+  const declared = new Set(capabilities)
+  return DEVICE_CAPABILITIES.some((capability) => declared.has(capability))
+}
+
+/**
+ * What a connection is for, as the client declares it on the handshake.
+ *
+ * A **window** is a view of the hub (remote control). A **device** link is this machine lending
+ * itself. The role is declared, never inferred from the capabilities a link advertises: a device
+ * can turn its own authorization off and declare no tools at all while remaining a device link.
+ */
+export type ConnectionRole = 'window' | 'device'
+
+/**
+ * Whether a credential's scope permits a connection that plays `role`.
+ *
+ * A scope answers one question: **may this pairing open windows?** `device` says no, so a window
+ * may not connect with it; a device link always may, whatever it declares. Device use is not a
+ * scope question at all — the device alone decides it with its own authorization.
+ *
+ * A client that does not declare a role (older build) falls back to the previous inference: a
+ * connection that declares a device tool is a device link, anything else is a window.
+ */
+export function scopePermits(
+  scope: TokenScope,
+  role: ConnectionRole | null | undefined,
+  capabilities: Iterable<string>,
+): boolean {
+  if (scope !== 'device') return true
+  if (role === 'window') return false
+  if (role === 'device') return true
+  return hasDeviceCapability(capabilities)
+}
 
 // ---------------------------------------------------------------------------
 // Helper wrappers — thin error-handling around server.invokeClient()
@@ -132,6 +227,25 @@ export async function requestClientOpenFileDialog(
   spec: FileDialogSpec,
 ): Promise<{ canceled: boolean; filePaths: string[] }> {
   return await server.invokeClient(clientId, CLIENT_OPEN_FILE_DIALOG, spec)
+}
+
+/** Spec for a save-file picker dialog (maps to Electron's SaveDialogOptions). */
+export interface SaveDialogSpec {
+  title?: string
+  defaultPath?: string
+  filters?: Array<{ name: string; extensions: string[] }>
+}
+
+/**
+ * Ask the client to show a native save-file picker.
+ * Returns the selection result (canceled + filePath).
+ */
+export async function requestClientSaveFileDialog(
+  server: RpcServer,
+  clientId: string,
+  spec: SaveDialogSpec,
+): Promise<{ canceled: boolean; filePath: string | null }> {
+  return await server.invokeClient(clientId, CLIENT_SAVE_FILE_DIALOG, spec)
 }
 
 /**

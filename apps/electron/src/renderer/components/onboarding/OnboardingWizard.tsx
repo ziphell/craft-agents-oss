@@ -6,7 +6,7 @@ import { CredentialsStep, type CredentialStatus } from "./CredentialsStep"
 import { LocalModelStep, type LocalModelSubmitData } from "./LocalModelStep"
 import { CompletionStep } from "./CompletionStep"
 import { GitBashWarning, type GitBashStatus } from "./GitBashWarning"
-import type { ApiKeySubmitData } from "../apisetup"
+import type { ApiKeyInitialValues, ApiKeySubmitData } from "../apisetup"
 import type { CustomEndpointApi } from '@config/llm-connections'
 
 export type OnboardingStep =
@@ -67,14 +67,7 @@ interface OnboardingWizardProps {
   onSubmitLocalModel?: (data: LocalModelSubmitData) => void
 
   // Edit mode (pre-fill existing connection values)
-  editInitialValues?: {
-    apiKey?: string
-    baseUrl?: string
-    connectionDefaultModel?: string
-    activePreset?: string
-    models?: string[]
-    customApi?: CustomEndpointApi
-  }
+  editInitialValues?: ApiKeyInitialValues
 
   className?: string
 }

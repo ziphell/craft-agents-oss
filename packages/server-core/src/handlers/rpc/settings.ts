@@ -20,8 +20,6 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.drafts.SET,
   RPC_CHANNELS.drafts.DELETE,
   RPC_CHANNELS.drafts.GET_ALL,
-  RPC_CHANNELS.input.GET_AUTO_CAPITALISATION,
-  RPC_CHANNELS.input.SET_AUTO_CAPITALISATION,
   RPC_CHANNELS.input.GET_SEND_MESSAGE_KEY,
   RPC_CHANNELS.input.SET_SEND_MESSAGE_KEY,
   RPC_CHANNELS.input.GET_SPELL_CHECK,
@@ -39,6 +37,20 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.settings.SET_DEFAULT_THINKING_LEVEL,
   RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
   RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
+  RPC_CHANNELS.tools.GET_COMPUTER_USE_ENABLED,
+  RPC_CHANNELS.tools.SET_COMPUTER_USE_ENABLED,
+  RPC_CHANNELS.tools.GET_WEB_SEARCH_PROVIDER,
+  RPC_CHANNELS.tools.SET_WEB_SEARCH_PROVIDER,
+  RPC_CHANNELS.tools.GET_WEB_SEARCH_ENABLED,
+  RPC_CHANNELS.tools.SET_WEB_SEARCH_ENABLED,
+  RPC_CHANNELS.tools.GET_WEB_FETCH_ENABLED,
+  RPC_CHANNELS.tools.SET_WEB_FETCH_ENABLED,
+  RPC_CHANNELS.tools.GET_WEB_FETCH_MODE,
+  RPC_CHANNELS.tools.SET_WEB_FETCH_MODE,
+  RPC_CHANNELS.tools.GET_DEEPSEEK_SEARCH_KEY_STATUS,
+  RPC_CHANNELS.tools.SET_DEEPSEEK_SEARCH_KEY,
+  RPC_CHANNELS.tools.GET_DEEPSEEK_FETCH_KEY_STATUS,
+  RPC_CHANNELS.tools.SET_DEEPSEEK_FETCH_KEY,
   RPC_CHANNELS.settings.GET_NETWORK_PROXY,
   RPC_CHANNELS.dialog.OPEN_FOLDER,
   RPC_CHANNELS.rtk.GET_ENABLED,
@@ -117,6 +129,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       workingDirectory: config?.defaults?.workingDirectory,
       localMcpEnabled: config?.localMcpServers?.enabled ?? true,
       defaultLlmConnection: config?.defaults?.defaultLlmConnection,
+      browserProfile: config?.defaults?.browserProfile,
       enabledSourceSlugs: config?.defaults?.enabledSourceSlugs ?? [],
     }
   })
@@ -129,7 +142,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'browserProfile']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
@@ -139,6 +152,14 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       const { getLlmConnection } = await import('@craft-agent/shared/config/storage')
       if (!getLlmConnection(normalizedValue as string)) {
         throw new Error(`LLM connection "${normalizedValue}" not found`)
+      }
+    }
+
+    // A workspace may name a profile; clearing it means "the built-in one".
+    if (key === 'browserProfile' && normalizedValue !== undefined && normalizedValue !== null) {
+      const { getBrowserProfiles } = await import('@craft-agent/shared/config/storage')
+      if (!getBrowserProfiles().some((profile) => profile.id === normalizedValue)) {
+        throw new Error(`Browser profile "${normalizedValue}" not found`)
       }
     }
 
@@ -226,18 +247,6 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
   // ============================================================
   // Input Settings
   // ============================================================
-
-  // Get auto-capitalisation setting
-  server.handle(RPC_CHANNELS.input.GET_AUTO_CAPITALISATION, async () => {
-    const { getAutoCapitalisation } = await import('@craft-agent/shared/config/storage')
-    return getAutoCapitalisation()
-  })
-
-  // Set auto-capitalisation setting
-  server.handle(RPC_CHANNELS.input.SET_AUTO_CAPITALISATION, async (_ctx, enabled: boolean) => {
-    const { setAutoCapitalisation } = await import('@craft-agent/shared/config/storage')
-    setAutoCapitalisation(enabled)
-  })
 
   // Get send message key setting
   server.handle(RPC_CHANNELS.input.GET_SEND_MESSAGE_KEY, async () => {
@@ -358,6 +367,94 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     const { setBrowserToolEnabled } = await import('@craft-agent/shared/config/storage')
     setBrowserToolEnabled(enabled)
   })
+
+  server.handle(RPC_CHANNELS.tools.GET_COMPUTER_USE_ENABLED, async () => {
+    const { getComputerUseEnabled } = await import('@craft-agent/shared/config/storage')
+    return getComputerUseEnabled()
+  })
+
+  server.handle(RPC_CHANNELS.tools.SET_COMPUTER_USE_ENABLED, async (_ctx, enabled: boolean) => {
+    const { setComputerUseEnabled } = await import('@craft-agent/shared/config/storage')
+    setComputerUseEnabled(enabled)
+  })
+
+  server.handle(RPC_CHANNELS.tools.GET_WEB_SEARCH_PROVIDER, async () => {
+    const { getWebSearchProvider } = await import('@craft-agent/shared/config/storage')
+    return getWebSearchProvider()
+  })
+
+  server.handle(RPC_CHANNELS.tools.SET_WEB_SEARCH_PROVIDER, async (_ctx, preference: string) => {
+    const { isWebSearchProviderPreference } = await import('@craft-agent/shared/config')
+    if (!isWebSearchProviderPreference(preference)) return
+    const { setWebSearchProvider } = await import('@craft-agent/shared/config/storage')
+    setWebSearchProvider(preference)
+  })
+
+  server.handle(RPC_CHANNELS.tools.GET_WEB_SEARCH_ENABLED, async () => {
+    const { getWebSearchEnabled } = await import('@craft-agent/shared/config/storage')
+    return getWebSearchEnabled()
+  })
+
+  server.handle(RPC_CHANNELS.tools.SET_WEB_SEARCH_ENABLED, async (_ctx, enabled: boolean) => {
+    const { setWebSearchEnabled } = await import('@craft-agent/shared/config/storage')
+    setWebSearchEnabled(enabled)
+  })
+
+  server.handle(RPC_CHANNELS.tools.GET_WEB_FETCH_ENABLED, async () => {
+    const { getWebFetchEnabled } = await import('@craft-agent/shared/config/storage')
+    return getWebFetchEnabled()
+  })
+
+  server.handle(RPC_CHANNELS.tools.SET_WEB_FETCH_ENABLED, async (_ctx, enabled: boolean) => {
+    const { setWebFetchEnabled } = await import('@craft-agent/shared/config/storage')
+    setWebFetchEnabled(enabled)
+  })
+
+  server.handle(RPC_CHANNELS.tools.GET_WEB_FETCH_MODE, async () => {
+    const { getWebFetchMode } = await import('@craft-agent/shared/config/storage')
+    return getWebFetchMode()
+  })
+
+  server.handle(RPC_CHANNELS.tools.SET_WEB_FETCH_MODE, async (_ctx, mode: string) => {
+    const { isWebFetchMode } = await import('@craft-agent/shared/config')
+    if (!isWebFetchMode(mode)) return
+    const { setWebFetchMode } = await import('@craft-agent/shared/config/storage')
+    setWebFetchMode(mode)
+  })
+
+  // The key itself never leaves the credential store; the UI only asks whether one exists.
+  server.handle(RPC_CHANNELS.tools.GET_DEEPSEEK_SEARCH_KEY_STATUS, async () => {
+    const { getCredentialManager } = await import('@craft-agent/shared/credentials/manager')
+    return Boolean(await getCredentialManager().getSearchApiKey('deepseek'))
+  })
+
+  server.handle(RPC_CHANNELS.tools.SET_DEEPSEEK_SEARCH_KEY, async (_ctx, apiKey: string) => {
+    const { getCredentialManager } = await import('@craft-agent/shared/credentials/manager')
+    const manager = getCredentialManager()
+    const trimmed = typeof apiKey === 'string' ? apiKey.trim() : ''
+    if (trimmed) {
+      await manager.setSearchApiKey('deepseek', trimmed)
+    } else {
+      await manager.deleteSearchApiKey('deepseek')
+    }
+  })
+
+  server.handle(RPC_CHANNELS.tools.GET_DEEPSEEK_FETCH_KEY_STATUS, async () => {
+    const { getCredentialManager } = await import('@craft-agent/shared/credentials/manager')
+    return Boolean(await getCredentialManager().getFetchApiKey('deepseek'))
+  })
+
+  server.handle(RPC_CHANNELS.tools.SET_DEEPSEEK_FETCH_KEY, async (_ctx, apiKey: string) => {
+    const { getCredentialManager } = await import('@craft-agent/shared/credentials/manager')
+    const manager = getCredentialManager()
+    const trimmed = typeof apiKey === 'string' ? apiKey.trim() : ''
+    if (trimmed) {
+      await manager.setFetchApiKey('deepseek', trimmed)
+    } else {
+      await manager.deleteFetchApiKey('deepseek')
+    }
+  })
+
 
   // ============================================================
   // Network Proxy Settings

@@ -29,7 +29,9 @@ async function spawnTestServer(extraEnv?: Record<string, string>): Promise<Spawn
   const token = crypto.randomUUID() + crypto.randomUUID() // 72 chars, well above 16 minimum
   const { CLAUDECODE: _, ...parentEnv } = process.env
 
-  const proc = Bun.spawn(['bun', 'run', SERVER_ENTRY], {
+  // Spawn the server with the Bun executable running this test: a bare 'bun' on
+  // Windows resolves to a `bun.cmd`/extensionless shim that argv-spawn cannot run.
+  const proc = Bun.spawn([process.execPath, 'run', SERVER_ENTRY], {
     env: {
       ...parentEnv,
       ...extraEnv,
@@ -151,7 +153,7 @@ describe('headless server smoke test', () => {
   it('rejects short token at startup', async () => {
     const token = 'short'
     const { CLAUDECODE: _, ...parentEnv } = process.env
-    const proc = Bun.spawn(['bun', 'run', SERVER_ENTRY], {
+    const proc = Bun.spawn([process.execPath, 'run', SERVER_ENTRY], {
       env: {
         ...parentEnv,
         CRAFT_SERVER_TOKEN: token,
@@ -176,7 +178,14 @@ describe('headless server smoke test', () => {
     // Send SIGTERM
     server.proc.kill('SIGTERM')
     const exitCode = await server.proc.exited
-    expect(exitCode).toBe(0)
+    // Windows has no real SIGTERM: the child is terminated rather than handed a
+    // signal, so it never reaches its clean `exit(0)` path (Bun reports 143 =
+    // 128 + 15). POSIX still has to shut down cleanly with 0.
+    if (process.platform === 'win32') {
+      expect([0, 143]).toContain(exitCode)
+    } else {
+      expect(exitCode).toBe(0)
+    }
 
     // Mark as stopped so afterEach doesn't double-kill
     server = null

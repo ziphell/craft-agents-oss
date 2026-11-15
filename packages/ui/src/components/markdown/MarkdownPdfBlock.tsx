@@ -34,6 +34,26 @@ import { cn } from '../../lib/utils'
 import { CodeBlock } from './CodeBlock'
 import { PDFPreviewOverlay } from '../overlay/PDFPreviewOverlay'
 import { ItemNavigator } from '../overlay/ItemNavigator'
+import { useInView } from '../../hooks/useInView'
+import {
+  getPdfBytes,
+  pinPdfBytes,
+  retainPdfBytes,
+  subscribePdfBytes,
+  touchPdfBytes,
+  unpinPdfBytes,
+} from '../../lib/pdf-bytes'
+
+/**
+ * How long a block has to stay on screen before its file is read.
+ *
+ * Someone skipping to the bottom of a long conversation drives every block on the way through the
+ * observer's margin: without this, each one starts a round trip and a copy of its whole document,
+ * and none of them is looked at. A block that leaves before the dwell is up is never read at all;
+ * one a person stops on pays this once, and it reads “loading” in the meantime.
+ */
+const READ_AFTER_DWELL_MS = 120
+import { OfficePreviewOverlay } from '../office/OfficePreviewOverlay'
 import { usePlatform } from '../../context/PlatformContext'
 import { useTranslation } from 'react-i18next'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
@@ -111,52 +131,118 @@ export function MarkdownPdfBlock({ code, className, onCreateRegionAnnotation: _o
 
   const [activeIndex, setActiveIndex] = React.useState(0)
   const [isFullscreen, setIsFullscreen] = React.useState(false)
+  /** The editor, opened from the reader in the overlay. A deliberate step, never the small preview:
+   *  the block draws page 1 and takes no edits (`renderAnnotationLayer={false}`). */
+  const [editing, setEditing] = React.useState(false)
 
-  // Content cache: src path → loaded Uint8Array (master copy, never passed to react-pdf directly)
-  const [contentCache, setContentCache] = React.useState<Record<string, Uint8Array>>({})
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
   const activeItem = items[activeIndex]
-  const activePdfData = activeItem ? contentCache[activeItem.src] : undefined
+  const src = activeItem?.src
 
-  // Load active item's content when it changes
+  /**
+   * The bytes come from a **shared, budgeted** cache rather than this component's state.
+   *
+   * A block cannot decide on its own how much memory is reasonable — the bound belongs to the view,
+   * where any number of these blocks can be showing any number of files. So the cache keeps the
+   * least recently used ones under `PDF_CACHE_BUDGET`, and a file it lets go is a file this block
+   * must stop drawing: the subscription below is what turns an eviction into an unmounted
+   * `<Document>` (and the copy react-pdf took with it).
+   *
+   * `useSyncExternalStore` is the shape that fits: an external store, read synchronously, with the
+   * re-render driven by the store's own notification instead of by a copy in state.
+   */
+  const pdfBytes = React.useSyncExternalStore(
+    React.useCallback((onChange: () => void) => (src ? subscribePdfBytes(src, onChange) : () => {}), [src]),
+    React.useCallback(() => (src ? getPdfBytes(src) : undefined), [src]),
+  )
+  const activePdfData = pdfBytes
+
+  /**
+   * Read and parse only once the block is near the viewport.
+   *
+   * A history renders every turn, so a dozen `pdf-preview` blocks used to mean a dozen file reads
+   * and a dozen pdf.js parses before anything was scrolled to — each one tens of milliseconds and
+   * a canvas. Paired with the release effect below it is also what keeps the memory bounded: read
+   * when it comes into view, drop when it leaves.
+   */
+  const [viewportRef, inView] = useInView<HTMLDivElement>()
+
+  /**
+   * While it is on screen this file is **pinned**: the cache may not take it back to make room.
+   *
+   * Not a courtesy — without it, an eviction can pick the file a person is reading, this block
+   * re-reads it, and that eviction can take the other visible block's file. Two documents larger than
+   * the budget would then chase each other for as long as the view stayed open.
+   */
   React.useEffect(() => {
-    if (!activeItem?.src || !onReadFileBinary) return
-    if (contentCache[activeItem.src]) {
+    if (!inView || !src) return
+    pinPdfBytes(src)
+    return () => unpinPdfBytes(src)
+  }, [inView, src])
+
+  // Load the active file once the block is near the viewport, and keep it warm while it is.
+  React.useEffect(() => {
+    if (!inView || !src) return
+    const held = getPdfBytes(src)
+    if (held) {
+      touchPdfBytes(src)
       setError(null)
       return
     }
+    if (!onReadFileBinary) return
+    let cancelled = false
     setLoading(true)
     setError(null)
-    onReadFileBinary(activeItem.src)
-      .then((data) => {
-        // Store a copy — react-pdf transfers ArrayBuffers to workers, detaching the original
-        setContentCache((prev) => ({ ...prev, [activeItem.src]: new Uint8Array(data) }))
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : 'Failed to read PDF file')
-      })
-      .finally(() => setLoading(false))
-  }, [activeItem?.src, onReadFileBinary, contentCache])
-
-  // Stable file objects per item (ref ensures Documents don't remount on re-render).
-  // Each Document gets its own Uint8Array copy since react-pdf transfers the ArrayBuffer.
-  const fileObjsRef = React.useRef<Record<string, { data: Uint8Array }>>({})
-  for (const [src, data] of Object.entries(contentCache)) {
-    if (!fileObjsRef.current[src]) {
-      fileObjsRef.current[src] = { data: new Uint8Array(data) }
+    // Reading is what a scroll that is only *passing through* must not pay for — see the constant.
+    const timer = setTimeout(() => {
+      onReadFileBinary(src)
+        .then((data) => {
+          // `retain` takes its own copy: react-pdf transfers the buffer it is handed, and the cache
+          // must keep bytes that stay readable.
+          if (!cancelled) retainPdfBytes(src, new Uint8Array(data))
+        })
+        .catch((err) => {
+          if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to read PDF file')
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+    }, READ_AFTER_DWELL_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
     }
-  }
+    // `pdfBytes` is a dependency because an entry can disappear from under this block (it was not
+    // pinned yet when the budget ran out); that is a reason to read again, not to go blank.
+  }, [inView, src, onReadFileBinary, pdfBytes])
 
-  const activeFileObj = activeItem ? fileObjsRef.current[activeItem.src] : undefined
+  /**
+   * The `<Document>`'s own file object, kept across re-renders so react-pdf does not remount (and
+   * re-parse) because a parent rendered again. `data` is a copy, because react-pdf transfers it.
+   */
+  const fileObjRef = React.useRef<{ src: string; obj: { data: Uint8Array } } | null>(null)
+  const activeFileObj = React.useMemo(() => {
+    if (!src || !pdfBytes) return undefined
+    if (fileObjRef.current?.src === src && fileObjRef.current.obj.data.byteLength > 0) {
+      return fileObjRef.current.obj
+    }
+    const obj = { data: new Uint8Array(pdfBytes) }
+    fileObjRef.current = { src, obj }
+    return obj
+  }, [src, pdfBytes])
 
-  // Fullscreen overlay: always provide a fresh copy (the overlay's Document will also transfer it)
+
+
+  // Fullscreen overlay: always a fresh copy (the overlay's Document transfers it), from the cache
+  // when it is still there and from disk when it is not.
   const loadPdfData = React.useCallback(async (path: string) => {
-    if (contentCache[path]) return new Uint8Array(contentCache[path])
+    const held = getPdfBytes(path)
+    if (held) return new Uint8Array(held)
     if (!onReadFileBinary) throw new Error('Cannot load PDF')
     return onReadFileBinary(path)
-  }, [contentCache, onReadFileBinary])
+  }, [onReadFileBinary])
 
   const hasMultiple = items.length > 1
 
@@ -194,8 +280,9 @@ export function MarkdownPdfBlock({ code, className, onCreateRegionAnnotation: _o
           </div>
         </div>
 
-        {/* Content area: fixed height prevents layout shift on item switch */}
-        <div className="relative h-[400px] overflow-hidden">
+        {/* Content area: fixed height prevents layout shift on item switch (and on going out of
+            view, which unmounts nothing but the parse) */}
+        <div ref={viewportRef} className="relative h-[400px] overflow-hidden">
           {/* Active Document (only one mounted at a time) */}
           {activeFileObj && (
             <div className="flex items-start justify-center bg-white p-4">
@@ -237,15 +324,39 @@ export function MarkdownPdfBlock({ code, className, onCreateRegionAnnotation: _o
         </div>
       </div>
 
-      {/* Fullscreen overlay — passes items for multi-item navigation */}
-      <PDFPreviewOverlay
-        isOpen={isFullscreen}
-        onClose={() => setIsFullscreen(false)}
-        filePath={activeItem!.src}
-        items={items}
-        initialIndex={activeIndex}
-        loadPdfData={loadPdfData}
-      />
+      {/* Fullscreen overlay — passes items for multi-item navigation.
+
+          The pen belongs to this overlay, not to the block above it: the small preview draws one
+          page and takes no edits, so a click that changes the file always goes through a surface
+          the person opened on purpose. */}
+      {/* One window, two states (see the file window's pdf case): the editor replaces the pages
+          instead of opening over them, and the header's arrow comes back. Closing closes the
+          file — `editing` is reset on the way, so the next open starts at the pages again. */}
+      {editing && activeItem ? (
+        <OfficePreviewOverlay
+          isOpen
+          onClose={() => {
+            setEditing(false)
+            setIsFullscreen(false)
+          }}
+          filePath={activeItem.src}
+          app="pdf"
+          onBack={() => setEditing(false)}
+        />
+      ) : (
+        <PDFPreviewOverlay
+          isOpen={isFullscreen}
+          onClose={() => {
+            setEditing(false)
+            setIsFullscreen(false)
+          }}
+          filePath={activeItem!.src}
+          items={items}
+          initialIndex={activeIndex}
+          loadPdfData={loadPdfData}
+          onEdit={() => setEditing(true)}
+        />
+      )}
     </PdfBlockErrorBoundary>
   )
 }

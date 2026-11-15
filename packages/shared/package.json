@@ -1,6 +1,6 @@
 {
   "name": "@craft-agent/shared",
-  "version": "0.14.1",
+"version": "0.14.1",
   "license": "Apache-2.0",
   "description": "Shared business logic for Craft Agents - agent, auth, config, credentials, MCP integration",
   "type": "module",
@@ -14,84 +14,230 @@
   "exports": {
     ".": "./src/index.ts",
     "./agent": "./src/agent/index.ts",
-    "./agent/modes": "./src/agent/mode-types.ts",
+    "./agent/asr-commands": "./src/agent/asr-commands.ts",
+    "./agent/content-paths": "./src/agent/content-paths.ts",
     "./agent/mode-types": "./src/agent/mode-types.ts",
+    "./agent/modes": "./src/agent/mode-types.ts",
     "./agent/thinking-levels": "./src/agent/thinking-levels.ts",
     "./auth": "./src/auth/index.ts",
     "./auth/callback-page": "./src/auth/callback-page.ts",
     "./auth/types": "./src/auth/types.ts",
+    "./automations": "./src/automations/index.ts",
+    "./media": "./src/media/index.ts",
+    "./media/asr-config": "./src/media/asr-config.ts",
+    "./media/file-kind": "./src/media/file-kind.ts",
+    "./media/media-settings": "./src/media/media-settings.ts",
+    "./media/media-settings-schema": "./src/media/media-settings-schema.ts",
+    "./media/modes": "./src/media/modes.ts",
+    "./media/params": "./src/media/params.ts",
+    "./media/protocols": "./src/media/protocols.ts",
+    "./media/reference-prompt": "./src/media/reference-prompt.ts",
+    "./media/workspace-model": "./src/media/workspace-model.ts",
+    "./media/object-storage-config": "./src/media/object-storage-config.ts",
+    "./automations/resolve-config-path": "./src/automations/resolve-config-path.ts",
+    "./branding": "./src/branding.ts",
+    "./colors": "./src/colors/index.ts",
     "./config": "./src/config/index.ts",
+    "./config/client-config": "./src/config/client-config.ts",
     "./config/paths": "./src/config/paths.ts",
-    "./docs": "./src/docs/index.ts",
-    "./docs/doc-links": "./src/docs/doc-links.ts",
     "./config/types": "./src/config/types.ts",
+    "./canvas": "./src/canvas/index.ts",
+    "./canvas/document": "./src/canvas/document.ts",
+    "./canvas/title": "./src/canvas/title.ts",
+    "./canvas/history": "./src/canvas/history.ts",
+    "./canvas/versions": "./src/canvas/versions.ts",
+    "./canvas/bridge": "./src/canvas/bridge.ts",
+    "./creations": "./src/creations/index.ts",
+    "./creations/merge": "./src/creations/merge.ts",
+    "./creations/types": "./src/creations/types.ts",
     "./credentials": "./src/credentials/index.ts",
     "./decisions": "./src/decisions/index.ts",
-    "./decisions/types": "./src/decisions/types.ts",
     "./decisions/settings": "./src/decisions/settings.ts",
+    "./decisions/types": "./src/decisions/types.ts",
+    "./docs": "./src/docs/index.ts",
+    "./docs/doc-links": "./src/docs/doc-links.ts",
+    "./drawio/cli-fns": "./src/drawio/cli-fns.ts",
+    "./drawio/engine-shell": "./src/drawio/engine-shell.ts",
+    "./drawio/types": "./src/drawio/types.ts",
+    "./drawio/viewer-shell": "./src/drawio/viewer-shell.ts",
+    "./feature-flags": "./src/feature-flags.ts",
+    "./html/element-diff": "./src/html/element-diff.ts",
+    "./html/source-edits": "./src/html/source-edits.ts",
+    "./text/replace-once": "./src/text/replace-once.ts",
+    "./i18n": "./src/i18n/index.ts",
+    "./icons": "./src/icons/index.ts",
+    "./interceptor": "./src/interceptor-common.ts",
+    "./labels": "./src/labels/index.ts",
+    "./labels/auto": "./src/labels/auto/index.ts",
+    "./labels/crud": "./src/labels/crud.ts",
+    "./labels/storage": "./src/labels/storage.ts",
+    "./html-preview": "./src/html-preview.ts",
+    "./library": "./src/library/index.ts",
+    "./local-origin": "./src/local-origin.ts",
+    "./markdown/blocks": "./src/markdown/blocks.ts",
+    "./markdown/envelope": "./src/markdown/envelope.ts",
     "./mcp": "./src/mcp/index.ts",
-    "./prompts": "./src/prompts/index.ts",
-    "./sessions": "./src/sessions/index.ts",
+    "./mentions": "./src/mentions/index.ts",
+    "./office": "./src/office/index.ts",
+    "./office/creation-export": "./src/office/creation-export.ts",
+    "./office/document": "./src/office/document.ts",
+    "./office/shim": "./src/office/shim.ts",
+    "./office/types": "./src/office/types.ts",
     "./projects": "./src/projects/index.ts",
     "./projects/types": "./src/projects/types.ts",
-    "./pages": "./src/pages/index.ts",
-    "./pages/types": "./src/pages/types.ts",
-    "./pages/data-store": "./src/pages/data-store.ts",
+    "./prompts": "./src/prompts/index.ts",
+    "./provenance": "./src/provenance/index.ts",
+    "./provenance/storage": "./src/provenance/storage.ts",
+    "./protocol": "./src/protocol/index.ts",
+    "./resources": "./src/resources/index.ts",
+    "./search": "./src/search/index.ts",
+    "./sessions": "./src/sessions/index.ts",
+    "./sessions/message-page": "./src/sessions/message-page.ts",
+    "./skills": "./src/skills/index.ts",
+    "./skills/types": "./src/skills/types.ts",
     "./sources": "./src/sources/index.ts",
     "./sources/types": "./src/sources/types.ts",
-    "./skills": "./src/skills/index.ts",
-    "./workspaces": "./src/workspaces/index.ts",
+    "./sources/email": "./src/sources/email/index.ts",
+    "./tasks": "./src/tasks/index.ts",
+    "./tools": "./src/tools/index.ts",
+    "./tweaks": "./src/tweaks/index.ts",
     "./utils": "./src/utils/index.ts",
-    "./utils/toolNames": "./src/utils/toolNames.ts",
-    "./utils/redaction": "./src/utils/redaction.ts",
-    "./utils/logo": "./src/utils/logo.ts",
-    "./utils/service-url": "./src/utils/service-url.ts",
+    "./utils/cli-tool": "./src/utils/cli-tool.ts",
     "./utils/icon": "./src/utils/icon.ts",
-    "./icons": "./src/icons/index.ts",
-    "./colors": "./src/colors/index.ts",
     "./utils/icon-constants": "./src/utils/icon-constants.ts",
+    "./utils/logo": "./src/utils/logo.ts",
+    "./utils/path-shape": "./src/utils/path-shape.ts",
+    "./utils/paths": "./src/utils/paths.ts",
+    "./utils/paths/index": "./src/utils/paths.ts",
+    "./utils/redaction": "./src/utils/redaction.ts",
+    "./utils/service-url": "./src/utils/service-url.ts",
+    "./utils/toolNames": "./src/utils/toolNames.ts",
     "./utils/url-safety": "./src/utils/url-safety.ts",
     "./utils/workspace": "./src/utils/workspace.ts",
     "./utils/workspace-slug": "./src/utils/workspace-slug.ts",
-    "./labels": "./src/labels/index.ts",
-    "./labels/auto": "./src/labels/auto/index.ts",
-    "./labels/storage": "./src/labels/storage.ts",
-    "./labels/crud": "./src/labels/crud.ts",
+    "./validation": "./src/validation/index.ts",
+    "./recording/cli-fns": "./src/recording/cli-fns.ts",
+    "./recording/sampler-script": "./src/recording/sampler-script.ts",
+    "./recording/audio-script": "./src/recording/audio-script.ts",
+    "./version": "./src/version/index.ts",
     "./views": "./src/views/index.ts",
     "./views/storage": "./src/views/storage.ts",
-    "./validation": "./src/validation/index.ts",
-    "./version": "./src/version/index.ts",
-    "./branding": "./src/branding.ts",
-    "./feature-flags": "./src/feature-flags.ts",
-    "./interceptor": "./src/interceptor-common.ts",
-    "./search": "./src/search/index.ts",
-    "./tools": "./src/tools/index.ts",
-    "./mentions": "./src/mentions/index.ts",
-    "./skills/types": "./src/skills/types.ts",
-    "./automations": "./src/automations/index.ts",
-    "./automations/resolve-config-path": "./src/automations/resolve-config-path.ts",
-    "./protocol": "./src/protocol/index.ts",
-    "./tasks": "./src/tasks/index.ts",
-    "./i18n": "./src/i18n/index.ts",
-    "./resources": "./src/resources/index.ts"
+    "./workspaces": "./src/workspaces/index.ts",
+    "./reel/beats": {
+      "types": "./src/reel/beats.ts",
+      "import": "./src/reel/beats.ts"
+    },
+    "./reel/arrange": {
+      "types": "./src/reel/arrange.ts",
+      "import": "./src/reel/arrange.ts"
+    },
+    "./reel/audio": {
+      "types": "./src/reel/audio.ts",
+      "import": "./src/reel/audio.ts"
+    },
+    "./reel/audio-mastering": {
+      "types": "./src/reel/audio-mastering.ts",
+      "import": "./src/reel/audio-mastering.ts"
+    },
+    "./reel/canvas-compositor": {
+      "types": "./src/reel/canvas-compositor.ts",
+      "import": "./src/reel/canvas-compositor.ts"
+    },
+    "./reel/audio-effects": {
+      "types": "./src/reel/audio-effects.ts",
+      "import": "./src/reel/audio-effects.ts"
+    },
+    "./reel/audio-effects-web": {
+      "types": "./src/reel/audio-effects-web.ts",
+      "import": "./src/reel/audio-effects-web.ts"
+    },
+    "./reel/document": {
+      "types": "./src/reel/document.ts",
+      "import": "./src/reel/document.ts"
+    },
+    "./reel/ducking": {
+      "types": "./src/reel/ducking.ts",
+      "import": "./src/reel/ducking.ts"
+    },
+    "./reel/effects": {
+      "types": "./src/reel/effects.ts",
+      "import": "./src/reel/effects.ts"
+    },
+    "./reel/fcpxml": {
+      "types": "./src/reel/fcpxml.ts",
+      "import": "./src/reel/fcpxml.ts"
+    },
+    "./reel/jianying": {
+      "types": "./src/reel/jianying.ts",
+      "import": "./src/reel/jianying.ts"
+    },
+    "./reel/overlay": {
+      "types": "./src/reel/overlay.ts",
+      "import": "./src/reel/overlay.ts"
+    },
+    "./reel/srt": {
+      "types": "./src/reel/srt.ts",
+      "import": "./src/reel/srt.ts"
+    },
+    "./reel/subtitles": {
+      "types": "./src/reel/subtitles.ts",
+      "import": "./src/reel/subtitles.ts"
+    },
+    "./reel/text-templates": {
+      "types": "./src/reel/text-templates.ts",
+      "import": "./src/reel/text-templates.ts"
+    },
+    "./reel/render-clips": {
+      "types": "./src/reel/render-clips.ts",
+      "import": "./src/reel/render-clips.ts"
+    },
+    "./reel/snapshot": {
+      "types": "./src/reel/snapshot.ts",
+      "import": "./src/reel/snapshot.ts"
+    },
+    "./reel/export-job": {
+      "types": "./src/reel/export-job.ts",
+      "import": "./src/reel/export-job.ts"
+    },
+    "./reel/export-host": {
+      "types": "./src/reel/export-host.ts",
+      "import": "./src/reel/export-host.ts"
+    },
+    "./reel/probe": {
+      "types": "./src/reel/probe.ts",
+      "import": "./src/reel/probe.ts"
+    }
   },
   "dependencies": {
     "@craft-agent/core": "workspace:*",
     "@craft-agent/session-tools-core": "workspace:*",
+    "@earendil-works/pi-agent-core": "0.87.1",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
     "@isaacs/ttlcache": "^2.1.4",
     "@leeoniya/ufuzzy": "^1.0.19",
     "bash-parser": "^0.5.0",
     "croner": "^10.0.1",
+    "date-fns": "^4.1.0",
+    "defuddle": "^0.19.4",
     "filtrex": "^3.1.0",
     "glob": "^13.0.0",
-    "date-fns": "^4.1.0",
     "i18next": "^26.0.3",
+    "imapflow": "^2.10.2",
     "incr-regex-package": "^1.0.4",
+    "linkedom": "^0.18.13",
+    "mailparser": "^3.14.2",
+    "mpg123-decoder": "^1.0.3",
+    "nodemailer": "^10.3.1",
+    "parse5": "^7.2.1",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": ">=4.0.0",
+    "remark-parse": "^11.0.0",
     "shell-quote": "^1.8.3",
-    "yaml": "^2.8.2",
-    "@earendil-works/pi-agent-core": "0.87.1",
-    "@earendil-works/pi-ai": "0.87.1",
-    "@earendil-works/pi-coding-agent": "0.87.1"
+    "sherpa-onnx-node": "2.0.1",
+    "unified": "^11.0.0",
+    "wasm-media-encoders": "^0.7.0",
+    "yaml": "^2.8.2"
   },
   "peerDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.280",
@@ -99,6 +245,7 @@
     "zod": ">=4.0.0"
   },
   "devDependencies": {
+    "@types/nodemailer": "^8.0.2",
     "@types/shell-quote": "^1.7.5",
     "@types/uuid": "^11.0.0"
   }

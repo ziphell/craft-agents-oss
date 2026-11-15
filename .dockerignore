@@ -8,6 +8,13 @@
 node_modules/
 **/node_modules
 
+# …except the office feature's two vendored trees, which are build artifacts rather than installs:
+# `office-engine` carries jszip / pdf-lib / pdfium.wasm, and `cli` carries jsdom for Word and
+# Markdown documents. Nothing in `bun install` provides either, and without them a hub opens a
+# .docx and answers 'the engine is not installed'.
+!apps/electron/resources/office-engine/node_modules
+!apps/electron/resources/cli/node_modules
+
 # Build artifacts
 dist/
 *.tgz

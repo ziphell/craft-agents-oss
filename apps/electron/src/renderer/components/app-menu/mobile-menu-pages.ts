@@ -5,6 +5,8 @@ import {
   SETTINGS_ITEMS,
   type SettingsMenuItem,
 } from '../../../shared/menu-schema'
+import { isNativeShell } from '@/lib/native-shell'
+import { isWebUI } from '@/lib/platform'
 
 /** Identifies one of the mobile menu pages. */
 export type MobileMenuPageId = 'root' | 'settings' | 'help' | 'debug'
@@ -17,7 +19,7 @@ export type MobileMenuPageId = 'root' | 'settings' | 'help' | 'debug'
  */
 export type MobileMenuAction =
   | { kind: 'navigate'; to: MobileMenuPageId }
-  | { kind: 'callback'; key: 'newChat' | 'newWindow' | 'openSettings' }
+  | { kind: 'callback'; key: 'newChat' | 'newWindow' | 'openSettings' | 'serverList' | 'logout' }
   | { kind: 'settingsSubpage'; subpage: SettingsMenuItem['id'] }
   | { kind: 'url'; url: string }
   | { kind: 'electronApi'; method: 'checkForUpdates' | 'installUpdate' | 'menuToggleDevTools' }
@@ -95,7 +97,26 @@ export function buildMobileMenuPages({ hasNewWindow, isDebugMode }: BuildOptions
       action: { kind: 'navigate', to: 'debug' },
     })
   }
+  // 安卓壳没有自己的标题栏，退回服务器列表的入口放在 logo 菜单最末。
+  if (isNativeShell) {
+    rootRows.push({
+      id: 'server-list',
+      iconName: 'LogOut',
+      labelKey: 'menu.serverList',
+      action: { kind: 'callback', key: 'serverList' },
+    })
+  }
+  // 浏览器版 WebUI 没有可退出的 App，最后一项改为退出登录。
+  if (isWebUI && !isNativeShell) {
+    rootRows.push({
+      id: 'log-out',
+      iconName: 'LogOut',
+      labelKey: 'webui.logOut',
+      action: { kind: 'callback', key: 'logout' },
+    })
+  }
 
+  const isElectron = window.electronAPI.getRuntimeEnvironment() === 'electron'
   const settingsRows: MobileMenuRow[] = [
     {
       id: 'settings-overview',
@@ -103,7 +124,8 @@ export function buildMobileMenuPages({ hasNewWindow, isDebugMode }: BuildOptions
       labelKey: 'menu.settings',
       action: { kind: 'callback', key: 'openSettings' },
     },
-    ...SETTINGS_ITEMS.map<MobileMenuRow>((item) => ({
+    ...SETTINGS_ITEMS
+      .map<MobileMenuRow>((item) => ({
       id: `settings-${item.id}`,
       iconName: item.icon,
       labelKey: item.labelKey,

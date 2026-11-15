@@ -7,6 +7,7 @@ import { Spinner, LoadingIndicator, Markdown } from '@craft-agent/ui'
 import { ANTHROPIC_MODELS, DEFAULT_MODEL, getModelShortName } from '@config/models'
 import { useAtomValue, useStore } from 'jotai'
 import { useProjects } from '@/hooks/useProjects'
+import { useAppShellContext } from '@/context/AppShellContext'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
 import { sessionMetaMapAtom } from '@/atoms/sessions'
@@ -28,6 +29,7 @@ import { SourceSelectorPopover } from '@/components/ui/SourceSelectorPopover'
 import { SkillSelectorPopover } from '@/components/ui/SkillSelectorPopover'
 import { WorkingDirectorySelector } from '../input/WorkingDirectorySelector'
 import type { LoadedSource, LoadedSkill } from '../../../../shared/types'
+import type { WorkLayers } from '@craft-agent/shared/projects'
 
 // Client-side fallback for async generate: a touch longer than the server's GENERATE_TIMEOUT_MS
 // (180s) so the orchestrator's own timeout + result push can land before we give up locally.
@@ -511,6 +513,7 @@ export function TaskEditor({
   const groups = modelGroups.length > 0 ? modelGroups : FALLBACK_MODEL_GROUPS
   const fallbackModel = defaultModel || groups[0]?.models[0]?.id || DEFAULT_MODEL
   const { projects } = useProjects(workspaceId)
+  const { onOpenFile } = useAppShellContext()
   const [tab, setTab] = React.useState<Tab>('definition')
   const [mode, setMode] = React.useState<Mode>('manual')
   const [title, setTitle] = React.useState('')
@@ -534,6 +537,13 @@ export function TaskEditor({
   const [boundProjectId, setBoundProjectId] = React.useState('')
   const [subtasks, setSubtasks] = React.useState<EditorSubtask[]>([])
   const [cwd, setCwd] = React.useState('')
+  // The plan file pointed at for generation, as its folder-relative path ('' = none). Its home is the
+  // project folder, so it is only meaningful while a project is bound; the layers below supply the list.
+  const [planFilePath, setPlanFilePath] = React.useState('')
+  const [projectLayers, setProjectLayers] = React.useState<WorkLayers | null>(null)
+  // The origin plan this task was generated from (its spec `from`, absolute). Prefilled in edit mode
+  // and carried back on save so an edit can't silently drop it; empty when the task has no origin.
+  const [fromPath, setFromPath] = React.useState('')
   // Task-level sources (enabled on orchestrator + children) and skills (read as context
   // before each child works). Empty = leave workspace defaults / no skill preamble.
   const [sourceSlugs, setSourceSlugs] = React.useState<string[]>([])
@@ -606,13 +616,16 @@ export function TaskEditor({
         .then((res) => {
           if (cancelled) return
           const spec = res.spec as
-            | { title?: string; goal?: string; acceptance_criteria?: string; max_iterations?: number; project?: string; cwd?: string; sources?: string[]; skills?: string[]; defaults?: { model?: string; llmConnection?: string; permissionMode?: TaskPermissionMode }; nodes?: Array<{ id: string; title?: string; prompt?: string; model?: string; llmConnection?: string; depends_on?: string[] }> }
+            | { title?: string; goal?: string; acceptance_criteria?: string; max_iterations?: number; from?: string; project?: string; cwd?: string; sources?: string[]; skills?: string[]; defaults?: { model?: string; llmConnection?: string; permissionMode?: TaskPermissionMode }; nodes?: Array<{ id: string; title?: string; prompt?: string; model?: string; llmConnection?: string; depends_on?: string[] }> }
             | undefined
           if (!spec) return
           if (spec.title) setTitle(spec.title)
           if (spec.goal) setGoal(spec.goal)
           setAcceptanceCriteria(spec.acceptance_criteria ?? '')
           setMaxRepairs(spec.max_iterations != null ? String(spec.max_iterations) : '')
+          // The authored origin plan (absolute on read). Kept so an edit round-trips it instead of
+          // dropping it — it comes back on save through the same planPath channel.
+          if (spec.from) setFromPath(spec.from)
           // Bind from the spec, else the session's existing binding. Record it as the immutable floor.
           const bound = spec.project ?? sessionProjectId
           setProjectId(bound)
@@ -659,6 +672,26 @@ export function TaskEditor({
       .finally(() => setResultsLoading(false))
   }, [workspaceId, editSlug])
 
+  /**
+   * Answer a gate node (`kind: approval`). The run carries on server-side — nothing to
+   * orchestrate here — so all this does is hand the decision over and re-read the results,
+   * which is what the panel renders (the gate flips to done and its branch proceeds).
+   */
+  const resolveApproval = React.useCallback(
+    async (nodeId: string, approved: boolean) => {
+      const runId = results?.runId
+      if (!editSlug || !runId) return
+      try {
+        await window.electronAPI.resolveTaskApproval(workspaceId, editSlug, runId, nodeId, approved)
+      } catch (err) {
+        // Usually a stale panel: the gate was answered elsewhere (or the run stopped).
+        toast.error(t('common.error'), { description: err instanceof Error ? err.message : String(err) })
+      }
+      loadResults()
+    },
+    [workspaceId, editSlug, results?.runId, loadResults, t],
+  )
+
   // Load results when the Results tab is first opened (and there's a slug to read).
   React.useEffect(() => {
     if (tab === 'results' && editSlug && !results && !resultsLoading) loadResults()
@@ -691,6 +724,42 @@ export function TaskEditor({
   }, [])
 
   const project = projects.find((p) => p.config.id === projectId)
+
+  // Plan files live in the project folder, so the picker can only exist once a project is bound — a
+  // task pointing at no project has no folder to read a plan from. Read the layers per project (the
+  // folder is the source of truth) and drop a stale selection when the project changes.
+  const projectSlug = project?.config.slug
+  React.useEffect(() => {
+    setPlanFilePath('')
+    if (!projectSlug) {
+      setProjectLayers(null)
+      return
+    }
+    let cancelled = false
+    void window.electronAPI
+      .getProjectLayers(workspaceId, projectSlug)
+      .then((report) => {
+        if (!cancelled) setProjectLayers(report ?? null)
+      })
+      .catch(() => {
+        if (!cancelled) setProjectLayers(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId, projectSlug])
+
+  // The plans written for this project, each named by its title; its file carries the path back.
+  const planOptions = React.useMemo(
+    () =>
+      (projectLayers?.pieces ?? [])
+        .map((piece) => piece.plan)
+        .filter((plan): plan is NonNullable<typeof plan> => plan !== null),
+    [projectLayers],
+  )
+  const selectedPlan = planOptions.find((plan) => plan.file === planFilePath)
+  // Last path segment of the origin plan (handles both separators), shown by the "From plan" row.
+  const fromName = fromPath.split(/[\\/]/).pop() || fromPath
 
   const updateSubtask = (id: string, patch: Partial<EditorSubtask>) =>
     setSubtasks((prev) => prev.map((s) => (s.uid === id ? { ...s, ...patch } : s)))
@@ -785,6 +854,10 @@ export function TaskEditor({
     try {
       const ack = await window.electronAPI.generateTask(workspaceId, {
         goal: g,
+        // A plan pointed at replaces the goal's decomposition: the generator reads this file and turns
+        // the steps it states into nodes. Sent as an absolute path — the project folder is the plan's
+        // home, so the folder-relative name the picker carries is joined onto it.
+        ...(planFilePath ? { planPath: `${projectLayers?.dir ?? ''}/${planFilePath}` } : {}),
         title: title.trim() || undefined,
         model: orchModel,
         // Route the authoring turn through the preserved connection (falls back to the model's default),
@@ -848,6 +921,12 @@ export function TaskEditor({
       modelToConnection,
     )
     const yaml = JSON.stringify(spec, null, 2) // JSON is a valid YAML subset
+    // The origin plan to record on the spec. Generate/create: the plan picked for authoring (joined
+    // onto its project folder, exactly as the generate call built it). Edit: the task's existing
+    // origin, carried back so a save can't drop it. Either way it rides the same createTask channel.
+    const planPath = planFilePath
+      ? `${projectLayers?.dir ?? ''}/${planFilePath}`
+      : fromPath || undefined
     // Adopt the generate draft in place whenever we have one — spec edits run fine on the draft
     // orchestrator, so there's no need to mint a fresh session.
     const draftId = generatedDraftRef.current
@@ -857,6 +936,7 @@ export function TaskEditor({
       // a generate draft if present, else mints a fresh orchestrator.
       const created = await window.electronAPI.createTask(workspaceId, {
         yaml,
+        ...(planPath ? { planPath } : {}),
         ...(isEdit && editSessionId
           ? { attachToExistingSession: editSessionId }
           : { orchestratorSessionId: draftId ?? undefined }),
@@ -965,6 +1045,7 @@ export function TaskEditor({
           results={results}
           loading={resultsLoading}
           onOpenChildSession={onOpenChildSession}
+          onResolveApproval={resolveApproval}
         />
       ) : (
       /* Body */
@@ -1012,6 +1093,48 @@ export function TaskEditor({
               className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-[12.5px] leading-relaxed outline-none focus:border-foreground/25 field-sizing-content max-h-48"
             />
           </div>
+
+          {projectId && (
+            <div>
+              <div className="mb-1.5 flex items-baseline justify-between">
+                <span className="text-[12px] font-semibold text-foreground/55">{t('tasks.planFile')}</span>
+                <span className="text-[10.5px] text-foreground/35">{t('tasks.planFileHint')}</span>
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <SelectButton className="w-full justify-between">
+                    <span className="truncate">{selectedPlan ? selectedPlan.title : t('tasks.planFileNone')}</span>
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-foreground/40" strokeWidth={2} />
+                  </SelectButton>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-[220px]">
+                  <DropdownMenuItem className="text-xs" onSelect={() => setPlanFilePath('')}>
+                    {t('tasks.planFileNone')}
+                    {!planFilePath && <Check className="ml-auto h-3.5 w-3.5" strokeWidth={2} />}
+                  </DropdownMenuItem>
+                  {planOptions.map((plan) => (
+                    <DropdownMenuItem key={plan.file} className="text-xs" onSelect={() => setPlanFilePath(plan.file)}>
+                      <span className="truncate">{plan.title}</span>
+                      {planFilePath === plan.file && <Check className="ml-auto h-3.5 w-3.5 shrink-0" strokeWidth={2} />}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
+
+          {fromPath && (
+            <button
+              type="button"
+              onClick={() => onOpenFile(fromPath)}
+              title={fromPath}
+              className="inline-flex w-fit max-w-full items-center gap-1.5 text-[12px] text-foreground/55 hover:text-foreground/80"
+            >
+              <Folder className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
+              <span>{t('tasks.fromPlan')}</span>
+              <span className="truncate font-medium text-foreground/75 hover:underline">{fromName}</span>
+            </button>
+          )}
 
           <div>
             <div className="mb-1.5 flex items-baseline justify-between">
@@ -1221,12 +1344,21 @@ function ResultsPanel({
   results,
   loading,
   onOpenChildSession,
+  onResolveApproval,
 }: {
   results: TaskResults | null
   loading: boolean
   onOpenChildSession?: (sessionId: string) => void
+  /** Answer a gate node (`kind: approval`) — the one step of a run a person decides. */
+  onResolveApproval?: (nodeId: string, approved: boolean) => Promise<void> | void
 }) {
   const { t } = useTranslation()
+  // The gate being answered, so its buttons can't be double-clicked while the round trip runs.
+  const [resolving, setResolving] = React.useState<string | null>(null)
+  const resolve = (nodeId: string, approved: boolean) => {
+    setResolving(nodeId)
+    void Promise.resolve(onResolveApproval?.(nodeId, approved)).finally(() => setResolving(null))
+  }
 
   if (loading && !results) {
     return (
@@ -1340,12 +1472,54 @@ function ResultsPanel({
               </button>
             )}
           </div>
+          {node.state === 'awaiting-approval' && (
+            // A gate node: the run is parked here until the person answers, so the question and
+            // the two possible answers sit right where the node itself is listed.
+            <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/[0.06] px-3 py-2.5">
+              {node.approvalPrompt && (
+                <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-foreground/75">{node.approvalPrompt}</p>
+              )}
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={resolving === node.id}
+                  onClick={() => resolve(node.id, true)}
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-[11.5px] font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2.5} /> {t('tasks.approve')}
+                </button>
+                <button
+                  type="button"
+                  disabled={resolving === node.id}
+                  onClick={() => resolve(node.id, false)}
+                  className="inline-flex items-center gap-1 rounded-md border border-red-500/40 px-2.5 py-1 text-[11.5px] font-semibold text-red-600 hover:bg-red-500/10 disabled:opacity-50 dark:text-red-300"
+                >
+                  <XCircle className="h-3.5 w-3.5" strokeWidth={2.5} /> {t('tasks.reject')}
+                </button>
+              </div>
+            </div>
+          )}
           {node.output ? (
             <div className="mt-2 max-h-72 overflow-y-auto rounded-md border border-border/50 bg-background px-3 py-2 text-[12px] leading-relaxed">
               <Markdown>{node.output}</Markdown>
             </div>
           ) : (
             <p className="mt-1.5 text-[11.5px] text-foreground/40">{t('tasks.noOutput')}</p>
+          )}
+          {node.params && Object.keys(node.params).length > 0 && (
+            // The node's declared fields — the machine-readable half of its answer, and what a
+            // downstream node (or a `when:` condition) actually reads. Shown as-is: the field
+            // names are the author's, so there is nothing to translate.
+            <dl className="mt-2 flex flex-col gap-0.5 rounded-md border border-border/50 bg-foreground/[0.02] px-3 py-2">
+              {Object.entries(node.params).map(([key, value]) => (
+                <div key={key} className="flex items-baseline gap-2 text-[11.5px]">
+                  <dt className="shrink-0 font-semibold text-foreground/50">{key}</dt>
+                  <dd className="min-w-0 flex-1 break-words font-mono text-foreground/75">
+                    {typeof value === 'string' ? value : JSON.stringify(value)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
           )}
         </div>
         )

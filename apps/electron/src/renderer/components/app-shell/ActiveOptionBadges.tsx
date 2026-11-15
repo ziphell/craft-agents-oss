@@ -180,7 +180,7 @@ export function ActiveOptionBadges({
           </div>
         )}
 
-        {/* State Badge — standalone on the left, after Mode */}
+        {/* State Badge — standalone on the left */}
         {hasState && resolvedState && (
           <div className="shrink-0">
             <StateBadge
@@ -440,6 +440,12 @@ function PermissionModeDropdown({ permissionMode, onPermissionModeChange, sessio
   const [open, setOpen] = React.useState(false)
   // Optimistic local state - updates immediately, syncs with prop
   const [optimisticMode, setOptimisticMode] = React.useState(permissionMode)
+
+  // This menu answers "how much may this conversation do" and nothing else.
+  // The layer a conversation works on (`goal`/`spec`/`plan`) is session state,
+  // not a permission, and it is set where the rest of what goes into a draft
+  // is: the composer's `+` menu (see `input/ComposerPlusMenu.tsx`). Only `/`
+  // and the layer's own chip know about it here — this badge never shows it.
 
   // Sync optimistic state when prop changes (confirmation from backend)
   React.useEffect(() => {

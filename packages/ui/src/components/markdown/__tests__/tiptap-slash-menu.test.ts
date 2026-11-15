@@ -99,6 +99,7 @@ describe('tiptap slash menu', () => {
     expect(filterSlashCommandItems(items, 'heading').some((item) => item.id === 'heading-1')).toBe(true)
     expect(filterSlashCommandItems(items, 'divider').some((item) => item.id === 'horizontal-rule')).toBe(true)
     expect(filterSlashCommandItems(items, 'flow').some((item) => item.id === 'mermaid-code-block')).toBe(true)
+    expect(filterSlashCommandItems(items, 'mind map').some((item) => item.id === 'mindmap-block')).toBe(true)
     expect(filterSlashCommandItems(items, 'checklist').some((item) => item.id === 'task-list')).toBe(true)
   })
 
@@ -141,6 +142,14 @@ describe('tiptap slash menu', () => {
     expect(calls).toContain('insertContentAt:5:{"type":"mermaidBlock","attrs":{"code":"graph TD\\n  A[Start] --> B[End]"}}')
     expect(calls).toContain('setNodeSelection:5')
     expect(calls).toContain(`emit:${RICH_BLOCK_EDIT_EVENT}`)
+
+    const mindmap = items.find((item) => item.id === 'mindmap-block')
+    mindmap?.run(editor, 5)
+    await Promise.resolve()
+
+    expect(calls).toContain(
+      'insertContentAt:5:{"type":"mindmapBlock","attrs":{"code":"mindmap\\n  root((Root))\\n    Branch A\\n    Branch B"}}',
+    )
 
     const latex = items.find((item) => item.id === 'latex-code-block')
     latex?.run(editor, 5)

@@ -6,7 +6,7 @@ import { resolvePiModel, isDeniedMiniModelId, isModelNotFoundError, isModelRejec
  * Maps provider → modelId → model object.
  */
 function createMockRegistry(
-  providers: Record<string, Array<{ id: string; name: string; provider?: string }>>,
+  providers: Record<string, Array<{ id: string; name: string; provider?: string; input?: string[] }>>,
 ) {
   const allModels = Object.entries(providers).flatMap(([provider, models]) =>
     models.map(m => ({ ...m, provider })),
@@ -198,6 +198,40 @@ describe('resolvePiModel', () => {
 
       const result = resolvePiModel(registry, 'gpt-5.4', 'github-copilot');
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('connection model overrides', () => {
+    const overrides = new Map([['deepseek-v4-flash', { supportsImages: true }]]);
+
+    it('applies the connection’s per-model parameters to a catalog model', () => {
+      const registry = createMockRegistry({
+        deepseek: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', input: ['text'] }],
+      });
+
+      const result = resolvePiModel(registry, 'pi/deepseek-v4-flash', 'deepseek', false, overrides);
+      expect(result!.input).toEqual(['text', 'image']);
+      // Overriding a capability leaves the rest of the SDK's definition alone.
+      expect(result!.name).toBe('DeepSeek V4 Flash');
+    });
+
+    it('leaves the SDK definition alone when the connection says nothing', () => {
+      const registry = createMockRegistry({
+        deepseek: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', input: ['text'] }],
+      });
+
+      const result = resolvePiModel(registry, 'pi/deepseek-v4-flash', 'deepseek', false, new Map());
+      expect(result!.input).toEqual(['text']);
+    });
+
+    it('keys the override by the bare model id', () => {
+      // The registry holds bare ids; a connection may list either form.
+      const registry = createMockRegistry({
+        deepseek: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', input: ['text'] }],
+      });
+
+      const result = resolvePiModel(registry, 'deepseek-v4-flash', 'deepseek', false, overrides);
+      expect(result!.input).toEqual(['text', 'image']);
     });
   });
 });

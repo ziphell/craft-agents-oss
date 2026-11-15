@@ -18,9 +18,7 @@ const EXPECTED: Record<string, string> = {
   CAPABILITY_UNAVAILABLE: 'No connected desktop client',
   CLIENT_DISCONNECTED: 'disconnected',
   CLIENT_REQUEST_TIMEOUT: 'timed out',
-  // Substring intentionally avoids the apostrophe so the contract test
-  // doesn't have to mirror source-level escaping.
-  BROWSER_INSTANCE_NOT_OWNED: 'belong to this session',
+  BROWSER_INSTANCE_NOT_OWNED: 'not in this workspace',
   BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED: 'File upload from a remote agent',
   BROWSER_REMOTE_EVALUATE_BLOCKED: 'JavaScript evaluation is disabled',
 }

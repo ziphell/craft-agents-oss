@@ -25,6 +25,9 @@ export function SplashScreen({ isExiting, onExitComplete }: SplashScreenProps) {
         }
       }}
     >
+      {/* The window is frameless where the app draws its own title bar, so the splash
+          needs a draggable strip of its own — it is the only thing on screen here. */}
+      <div className="titlebar-drag-region fixed top-0 left-0 right-0 h-[50px] z-titlebar" />
       <motion.div
         initial={{ scale: 1.5, opacity: 1 }}
         animate={{

@@ -5,6 +5,7 @@ import {
   getSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
 } from '../session-scoped-tools.ts';
+import type { BrowserPaneFns } from '../browser-pane.ts';
 
 describe('session-scoped tool callback merge', () => {
   const sessionId = 'test-session-merge';
@@ -14,9 +15,8 @@ describe('session-scoped tool callback merge', () => {
   });
 
   it('preserves existing browserPaneFns when merging turn-level callbacks', () => {
-    const browserPaneFns = {
-      openPanel: async () => ({ instanceId: 'browser-1' }),
-      navigate: async () => ({ url: 'https://example.com', title: 'Example' }),
+    const browserPaneFns: BrowserPaneFns = {
+      navigate: async () => ({ url: 'https://example.com', title: 'Example', tabId: 'tab-1' }),
       snapshot: async () => ({ url: 'https://example.com', title: 'Example', nodes: [] }),
       click: async () => {},
       clickAt: async () => {},
@@ -28,8 +28,9 @@ describe('session-scoped tool callback merge', () => {
       getClipboard: async () => 'clipboard',
       screenshot: async () => ({ imageBuffer: Buffer.from('png'), imageFormat: 'png' as const }),
       screenshotRegion: async () => ({ imageBuffer: Buffer.from('png'), imageFormat: 'png' as const }),
+      printPdf: async () => ({ pdf: Buffer.from('%PDF-1.4'), bytes: 8 }),
       getConsoleLogs: async () => [],
-      windowResize: async () => ({ width: 1280, height: 720 }),
+      resizeViewport: async () => ({ width: 1280, height: 720 }),
       getNetworkLogs: async () => [],
       waitFor: async () => ({ ok: true as const, kind: 'network-idle', elapsedMs: 0, detail: 'ok' }),
       sendKey: async () => {},
@@ -38,12 +39,37 @@ describe('session-scoped tool callback merge', () => {
       scroll: async () => {},
       goBack: async () => {},
       goForward: async () => {},
+      reload: async () => {},
       evaluate: async () => 'ok',
-      focusWindow: async () => ({ instanceId: 'browser-1', title: 'Example', url: 'https://example.com' }),
+      fetchResource: async () => ({ ok: false, error: 'no session in this test' }),
+      pick: async () => null,
+      sampleVideo: async () => ({
+        durationMs: 12_000,
+        truncated: false,
+        frames: [
+          { offsetMs: 0, bytes: new Uint8Array([1]), path: null },
+        ],
+      }),
+      extractAudio: async () => ({
+        path: '/tmp/audio.wav',
+        durationMs: 12_000,
+        sampleRate: 16_000,
+        byteLength: 1,
+      }),
+      exportDrawio: async () => ({
+        bytes: new Uint8Array([1]),
+        mimeType: 'image/svg+xml',
+        extension: '.svg',
+        path: null,
+      }),
+      listDrawioPages: async () => [],
+      createTab: async () => 'tab-1',
+      targetTab: async () => {},
+      activateTab: async () => ({ movedView: true }),
+      closeTab: async () => ({ remaining: 1 }),
+      assignTab: async () => {},
+      listTabs: async () => [],
       releaseControl: async () => ({ action: 'released' as const, affectedIds: [] }),
-      closeWindow: async () => ({ action: 'closed' as const, affectedIds: [] }),
-      hideWindow: async () => ({ action: 'hidden' as const, affectedIds: [] }),
-      listWindows: async () => [],
       detectChallenge: async () => ({ detected: false, provider: 'none', signals: [] }),
     };
 

@@ -1,6 +1,7 @@
 import * as React from 'react'
 import type { ComponentEntry } from './types'
-import { Markdown, CollapsibleMarkdownProvider, CodeBlock, InlineCode, MarkdownDatatableBlock, MarkdownSpreadsheetBlock, MarkdownImageBlock, ImageCardStack, PlatformProvider } from '@craft-agent/ui'
+import readmeProbe from './readme-probe.json'
+import { Markdown, CollapsibleMarkdownProvider, CodeBlock, InlineCode, MarkdownDatatableBlock, MarkdownSpreadsheetBlock, MarkdownImageBlock, ImageCardStack, MarkdownEditorPane, SourceFilePane, HTMLPreviewOverlay, PlatformProvider } from '@craft-agent/ui'
 
 const sampleMarkdown = `# Welcome to Markdown
 
@@ -245,6 +246,331 @@ function ImageCardStackPlayground({
         )}
       </div>
     </div>
+  )
+}
+
+/**
+ * The document the pane fixture edits.
+ *
+ * **It opens with frontmatter on purpose.** The strip above the document is the one place a save can
+ * change the file without changing the text, so a fixture without one never exercised it — which is
+ * how a one-click `✕` was able to delete a file's YAML unnoticed (2026-11-03). With it here, both the
+ * strip and the way back from removing it are on screen.
+ *
+ * Two lines next, so what happens to a keystroke is the variable — then one fence the app draws and
+ * one it does not, which is the pair the source face has to get right: the first is drawn in place
+ * until the caret is in it, the second is left exactly as written.
+ */
+const editorPaneFixtureDoc = `---
+name: probe-doc
+description: 一份用来试编辑面的文档
+---
+
+# Probe
+
+Type at the end of this line: 
+
+## A second level
+
+### And a third
+
+Some **bold**, *italic*, ~~struck~~, \`inline code\`, and a [link](https://example.com). Quote:
+
+> a quoted line
+
+> [!WARNING] Mind the gap
+> The floor is missing here.
+
+- [ ] a box you can press
+- [x] one already pressed
+
+An inline ![shot](shots/picture.png) picture, then a table:
+
+| Name | Qty |
+| --- | ---: |
+| Bolts | 12 |
+| Nuts | 8 |
+
+Display math:
+
+$$
+E = mc^2
+$$
+
+\`\`\`mermaid
+graph TD
+  A[Start] --> B[End]
+\`\`\`
+
+A fence the app draws is drawn here too, and a fence it does not know is left exactly as written:
+
+\`\`\`python
+print("hello")
+\`\`\`
+`
+
+/**
+ * The same document as a conversation shows it: a `markdown-preview` block naming the file.
+ *
+ * Written as a fence rather than as the component, because the block is reached *through* the
+ * renderer in a real message — this is the path that has to keep working.
+ */
+const editorPaneFixtureBlock = '```markdown-preview\n' +
+  JSON.stringify({ src: '/playground/editor-pane-probe.md', title: 'Probe' }) +
+  '\n```'
+
+/**
+ * The markdown pane and the block that names the same file, with a host of their own.
+ *
+ * An editor needs somewhere to write to and the playground has no file to save: the "file" here is
+ * a line of memory. The host's copy is printed underneath, deliberately — the pane showing the text
+ * it holds proves nothing on its own, because a pane that never saved would look the same. What the
+ * host ended up with is the part that says a keystroke landed.
+ *
+ * Both readers are on screen on purpose: the pane is the window's face, the block is what a
+ * conversation shows, and they are two separate readers of one file.
+ */
+function MarkdownEditorPaneFixture() {
+  const fileRef = React.useRef(editorPaneFixtureDoc)
+  const [saved, setSaved] = React.useState(editorPaneFixtureDoc)
+  /**
+   * The switch between the two editing faces, with the *same* editor behind both.
+   *
+   * `edit` and `source` are one component with one flag, so flipping it must not remount the
+   * editor: the caret, the undo history and the scroll position have to survive, and the blocks
+   * have to appear and disappear without waiting for a keystroke (that is what the field's redraw
+   * effect is for).
+   */
+  const [live, setLive] = React.useState(true)
+  /** Where a `Ctrl`-clicked link went — the host's answer, which the editor only asks for. */
+  const [opened, setOpened] = React.useState<string | null>(null)
+
+  // Stable identities on purpose: the pane reads the file once per source, so a host whose
+  // callbacks changed on every write would send it back to read — and reset — on every save.
+  const actions = React.useMemo(
+    () => ({
+      onReadFile: async () => fileRef.current,
+      onWriteFile: async (path: string, content: string) => {
+        fileRef.current = content
+        setSaved(content)
+        return { path }
+      },
+      onUrlClick: (url: string) => setOpened(url),
+      /**
+       * How a picture beside the document is read: the path is handed to the host, which answers
+       * with bytes. A data URL here so the fixture needs no file — the path is what is being
+       * shown, and a relative one goes through this.
+       */
+      onReadFileDataUrl: async () =>
+        'data:image/svg+xml;utf8,' +
+        encodeURIComponent(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="96"><rect width="160" height="96" fill="#3b2f63"/><circle cx="112" cy="30" r="16" fill="#c9b7ff"/><path d="M0 96L52 46l40 36 26-22 42 36z" fill="#8f7bd8"/></svg>',
+        ),
+    }),
+    [],
+  )
+
+  return (
+    <PlatformProvider actions={actions}>
+      <div className="flex h-[80vh] flex-col gap-4">
+        {/* A definite height, because the pane takes the room it is given (`absolute inset-0`
+            inside it) — and with a document long enough to fill the frame, a `flex-1` box is
+            squeezed to nothing by the readers underneath. */}
+        <label className="flex shrink-0 items-center gap-2 text-[12px] text-muted-foreground">
+          <input
+            type="checkbox"
+            data-testid="live-preview"
+            checked={live}
+            onChange={(event) => setLive(event.target.checked)}
+          />
+          live preview (unchecked = source, same editor)
+        </label>
+
+        <div className="flex h-[360px] shrink-0 flex-col">
+          <MarkdownEditorPane
+            src="/playground/editor-pane-probe.md"
+            mode={live ? 'edit' : 'source'}
+            className="px-6 py-4"
+            onUrlClick={actions.onUrlClick}
+          />
+        </div>
+
+        <div data-testid="block-reader" className="shrink-0">
+          <Markdown mode="minimal">{editorPaneFixtureBlock}</Markdown>
+        </div>
+
+        <div className="shrink-0 border-t p-3">
+          <div className="text-[12px] text-muted-foreground">
+            Followed link (Ctrl/Cmd-click): <span data-testid="opened-url">{opened ?? '—'}</span>
+          </div>
+          <div className="mt-2 text-[12px] text-muted-foreground">
+            What the host holds — written about a second after typing stops:
+          </div>
+          <pre data-testid="saved-file" className="mt-1 whitespace-pre-wrap text-[12px]">{saved}</pre>
+        </div>
+      </div>
+    </PlatformProvider>
+  )
+}
+
+/**
+ * The same file as the pane fixture, on its **source** face — the second switch in the document
+ * window, where nothing is drawn for a fence and a block is the text it is.
+ */
+function MarkdownEditorSourceFixture() {
+  const fileRef = React.useRef(editorPaneFixtureDoc)
+  const [saved, setSaved] = React.useState(editorPaneFixtureDoc)
+  const actions = React.useMemo(
+    () => ({
+      onReadFile: async () => fileRef.current,
+      onWriteFile: async (path: string, content: string) => {
+        fileRef.current = content
+        setSaved(content)
+        return { path }
+      },
+    }),
+    [],
+  )
+
+  return (
+    <PlatformProvider actions={actions}>
+      <div className="flex flex-col gap-3">
+        <div className="flex h-[360px] flex-col overflow-hidden rounded-lg border border-border">
+          <MarkdownEditorPane src="/playground/editor-pane-source.md" mode="source" className="px-6 py-4" />
+        </div>
+        <div className="border-t pt-3 text-[12px] text-muted-foreground">
+          Saved: <span data-testid="source-saved">{saved.slice(0, 40)}</span>
+        </div>
+      </div>
+    </PlatformProvider>
+  )
+}
+
+/** A page whose source is worth having: a style block, an attribute, and a comment. */
+const htmlFixtureDoc = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Probe page</title>
+    <style>
+      body { font-family: system-ui; margin: 24px; }
+      .lede { color: rgb(120, 90, 220); }
+    </style>
+  </head>
+  <body>
+    <!-- the line a page editor cannot touch -->
+    <h1>Probe page</h1>
+    <p class="lede">Edited as its own source.</p>
+  </body>
+</html>
+`
+
+function SourceFilePaneFixture() {
+  const fileRef = React.useRef(htmlFixtureDoc)
+  const [saved, setSaved] = React.useState('')
+  /** What the badge's "Open in browser" asked for — the menu item is the story's whole point. */
+  const [opened, setOpened] = React.useState('')
+  const actions = React.useMemo(
+    () => ({
+      onReadFile: async () => fileRef.current,
+      onWriteFile: async (path: string, content: string) => {
+        fileRef.current = content
+        setSaved(content)
+        return { path }
+      },
+    }),
+    [],
+  )
+
+  return (
+    <PlatformProvider actions={actions}>
+      <div className="flex flex-col gap-3">
+        <div className="flex h-[380px] flex-col overflow-hidden rounded-lg border border-border">
+          <SourceFilePane src="/playground/page-probe.html" language="html" className="px-4 py-3" />
+        </div>
+        <div className="text-[12px] text-muted-foreground">
+          Saved bytes: <span data-testid="html-saved">{saved.length}</span>
+        </div>
+      </div>
+    </PlatformProvider>
+  )
+}
+
+/**
+ * A page opened in the app's own window, given the way the file window gives it: an item with a
+ * path, and a cache holding what was read. That is the difference between a window with an editor
+ * in it and a window that can only look — a page with no path behind it has nowhere to save to.
+ */
+function HtmlWindowFixture() {
+  const fileRef = React.useRef(htmlFixtureDoc)
+  const [saved, setSaved] = React.useState('')
+  /** What the badge's "Open in browser" asked for — the menu item is what this story shows. */
+  const [opened, setOpened] = React.useState('')
+  const actions = React.useMemo(
+    () => ({
+      onReadFile: async () => fileRef.current,
+      onWriteFile: async (path: string, content: string) => {
+        fileRef.current = content
+        setSaved(content)
+        return { path }
+      },
+      onOpenFileInBrowser: (path: string) => setOpened(path),
+    }),
+    [],
+  )
+
+  return (
+    <PlatformProvider actions={actions}>
+      <div className="h-[520px]">
+        <HTMLPreviewOverlay
+          isOpen
+          onClose={() => {}}
+          items={[{ src: '/playground/page-window.html' }]}
+          contentCache={{ '/playground/page-window.html': fileRef.current }}
+          title="page-window.html"
+          onSaved={(_, html) => setSaved(html)}
+          /* A prop, not a platform action: the overlay is handed the browser it should use —
+             `MarkdownHtmlBlock` passes `platform.onOpenFileInBrowser` here. */
+          onOpenInBrowser={(path) => setOpened(path)}
+        />
+      </div>
+      <div className="p-2 text-[12px] text-muted-foreground">
+        Saved bytes: <span data-testid="window-saved">{saved.length}</span>
+        {opened && <span> · open in browser: {opened}</span>}
+      </div>
+    </PlatformProvider>
+  )
+}
+
+/**
+ * The document a person was actually editing when the editor broke — a real README with lists and a
+ * wide table, copied here verbatim rather than retyped, because the failure is in what those lines
+ * parse to.
+ */
+function ReadmeProbeFixture() {
+  const fileRef = React.useRef(readmeProbe.doc)
+  const [saved, setSaved] = React.useState('')
+  const actions = React.useMemo(
+    () => ({
+      onReadFile: async () => fileRef.current,
+      onWriteFile: async (path: string, content: string) => {
+        fileRef.current = content
+        setSaved(content)
+        return { path }
+      },
+    }),
+    [],
+  )
+
+  return (
+    <PlatformProvider actions={actions}>
+      <div className="flex h-[560px] flex-col overflow-hidden rounded-lg border border-border">
+        <MarkdownEditorPane src="/playground/readme-probe.md" mode="edit" className="px-6 py-4" />
+      </div>
+      <div className="p-2 text-[12px] text-muted-foreground">
+        Saved bytes: <span data-testid="readme-saved">{saved.length}</span>
+      </div>
+    </PlatformProvider>
   )
 }
 
@@ -643,6 +969,51 @@ export const markdownComponents: ComponentEntry[] = [
         props: { code: '{ invalid json here' },
       },
     ],
+  },
+  {
+    id: 'markdown-editor-pane',
+    name: 'MarkdownEditorPane',
+    category: 'Markdown',
+    description: 'The markdown pane on its source face, with a host that reads and writes a file of its own — where a keystroke that does not land, or a caret that jumps, is visible.',
+    component: MarkdownEditorPaneFixture,
+    layout: 'top',
+    props: [],
+  },
+  {
+    id: 'markdown-editor-source',
+    name: 'MarkdownEditorPane (source)',
+    category: 'Markdown',
+    description: 'The same document on its source face — the way back to plain text, where nothing is drawn for a fence.',
+    component: MarkdownEditorSourceFixture,
+    layout: 'top',
+    props: [],
+  },
+  {
+    id: 'readme-probe',
+    name: 'MarkdownEditorPane (README probe)',
+    category: 'Markdown',
+    description: 'A real document with lists and a wide table — the failure is in what those lines parse to.',
+    component: ReadmeProbeFixture,
+    layout: 'top',
+    props: [],
+  },
+  {
+    id: 'html-window',
+    name: 'HTMLPreviewOverlay (file window)',
+    category: 'Markdown',
+    description: 'A page opened in a window, given a path: the way in to the visual editor and to its source.',
+    component: HtmlWindowFixture,
+    layout: 'top',
+    props: [],
+  },
+  {
+    id: 'source-file-pane',
+    name: 'SourceFilePane',
+    category: 'Markdown',
+    description: 'A page edited as its own source: the face a visual editor cannot give — a style block, an attribute, a comment.',
+    component: SourceFilePaneFixture,
+    layout: 'top',
+    props: [],
   },
   {
     id: 'rich-block-interaction-parity',

@@ -30,9 +30,7 @@ export function deriveAutomationName(event: string, matcher: AutomationMatcher):
   }
 
   if (firstAction.type === 'script') {
-    const label = firstAction.page
-      ? `Refresh page ${firstAction.page}`
-      : `Script ${firstAction.script}`;
+    const label = `Script ${firstAction.script}`;
     return label.length > 40 ? label.slice(0, 40) + '...' : label;
   }
 

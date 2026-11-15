@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+﻿import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { i18n } from '@craft-agent/shared/i18n'
+import { SESSION_MESSAGE_PAGE_SIZE } from '@craft-agent/shared/sessions/message-page'
 import { useTheme } from '@/hooks/useTheme'
 import type { ThemeOverrides } from '@config/theme'
 import { useSetAtom, useStore, useAtomValue, useAtom } from 'jotai'
@@ -11,9 +13,12 @@ import { generateMessageId } from '../shared/types'
 import { useEventProcessor } from './event-processor'
 import type { AgentEvent, Effect } from './event-processor'
 import { AppShell } from '@/components/app-shell/AppShell'
-import type { AppShellContextType } from '@/context/AppShellContext'
+import { WindowControls } from '@/components/app-shell/WindowControls'
+import { AppShellProvider, type AppShellContextType } from '@/context/AppShellContext'
+import { parseRouteToNavigationState } from '../shared/route-parser'
 import { OnboardingWizard, ReauthScreen } from '@/components/onboarding'
 import { WorkspacePicker } from '@/components/workspace'
+import { RemoteUnreachableScreen } from '@/components/remote/RemoteUnreachableScreen'
 import { ResetConfirmationDialog } from '@/components/ResetConfirmationDialog'
 import { SplashScreen } from '@/components/SplashScreen'
 import { TooltipProvider } from '@craft-agent/ui'
@@ -28,8 +33,9 @@ import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { NavigationProvider } from '@/contexts/NavigationContext'
 import { navigate, routes } from './lib/navigate'
 import { attachmentFromContentRef, toDraftRef } from './lib/drafts'
+import { readServerAttachment } from './lib/server-attachments'
 import { stripMarkdown } from './utils/text'
-import { coerceInputText } from './lib/input-text'
+import { coerceInputText, appendRestoredInput } from './lib/input-text'
 import { getSessionsToRefreshAfterStaleReconnect } from './lib/reconnect-recovery'
 import { formatSessionLoadFailure, shouldTreatSessionLoadFailureAsTransportFallback } from './lib/session-load'
 import { extractWorkspaceSlugFromPath } from '@craft-agent/shared/utils/workspace-slug'
@@ -55,24 +61,38 @@ import {
 } from '@/atoms/sessions'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
+import { openBrowserViewAtom } from '@/atoms/browser-pane'
+import { windowIsRemoteAtom, windowServerScopeAtom, windowRemoteTargetAtom } from '@/atoms/window-mode'
 import {
   showBackgroundFinishedChipAtom,
   pushBackgroundFinishedAtom,
 } from '@/atoms/background-finished'
-import { visibleSessionIdsAtom } from '@/atoms/panel-stack'
+import { visibleSessionIdsAtom, panelStackAtom, focusedPanelIdAtom } from '@/atoms/panel-stack'
 import { getSessionTitle } from '@/utils/session'
 import { extractBadges } from '@/lib/mentions'
+import { dispatchFocusInputEvent, dispatchRestoreInput } from '@/components/app-shell/input/focus-input-events'
 import { getDefaultStore } from 'jotai'
 import {
   ShikiThemeProvider,
   PlatformProvider,
   ImagePreviewOverlay,
   PDFPreviewOverlay,
+  OfficePreviewOverlay,
   CodePreviewOverlay,
-  DocumentFormattedMarkdownOverlay,
+  MarkdownFileOverlay,
   JSONPreviewOverlay,
+  DrawioOverlay,
+  HTMLPreviewOverlay,
+  classifyFile,
+  applyOfficeEdit,
+  flushDocument,
 } from '@craft-agent/ui'
 import { useLinkInterceptor, type FilePreviewState } from '@/hooks/useLinkInterceptor'
+import { ReelPreviewOverlay } from '@/components/edit/ReelPreviewOverlay'
+import { MediaPreviewOverlay } from '@/components/preview/MediaPreviewOverlay'
+import { dispatchCanvasRequest } from '@/lib/canvas-editors'
+import { fileEditorRequestAtom } from '@/atoms/file-editor'
+import { shouldOpenLinkInAppBrowser, shouldOpenFileInAppBrowser } from '@/lib/open-in-app-browser'
 import { useTransportConnectionState } from '@/hooks/useTransportConnectionState'
 import { useStaleSessionRecovery } from '@/hooks/useStaleSessionRecovery'
 import { TransportConnectionBanner, shouldShowTransportConnectionBanner } from '@/components/app-shell/TransportConnectionBanner'
@@ -80,12 +100,35 @@ import {
   markBackgroundTaskSignal,
   markLiveBackgroundTasksOrphaned,
 } from '@/components/app-shell/background-task-chip-state'
-import { getFileManagerName } from '@/lib/platform'
+import { getFileManagerName, isWebUI } from '@/lib/platform'
 import { rendererLog } from '@/lib/logger'
 import { ActionRegistryProvider } from '@/actions'
 import { toast } from 'sonner'
 
-type AppState = 'loading' | 'onboarding' | 'reauth' | 'workspace-picker' | 'ready'
+type AppState = 'loading' | 'onboarding' | 'reauth' | 'workspace-picker' | 'remote-unreachable' | 'ready'
+
+/**
+ * A remote window's setup state is answered by its hub, and a hub that is down may take the
+ * transport's full connect timeout to say so. Cap the wait so the window reaches the
+ * "cannot connect" screen instead of sitting on the splash screen.
+ */
+const REMOTE_SETUP_TIMEOUT_MS = 5000
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
 
 /** Type for the Jotai store returned by useStore() */
 type JotaiStore = ReturnType<typeof getDefaultStore>
@@ -326,6 +369,81 @@ export default function App() {
   // Window's workspace ID — shared atom so Root/ThemeProvider stays in sync on switch
   const [windowWorkspaceId, setWindowWorkspaceId] = useAtom(windowWorkspaceIdAtom)
 
+  // A window bound to a hub (opened by Connect to Server…). Its workspace belongs to that hub,
+  // and a switch re-points this window's connection in place (`switchRemoteWorkspace`) — the same
+  // way VS Code Remote reopens a folder in the same window.
+  const [isRemoteWindow, setIsRemoteWindow] = useState(false)
+  /** Where an in-app page opens: a local window's own browser, or the server's (remote + webui). */
+  const usesServerBrowser = isRemoteWindow || isWebUI
+  const setWindowIsRemote = useSetAtom(windowIsRemoteAtom)
+  const setWindowServerScope = useSetAtom(windowServerScopeAtom)
+  const setWindowRemoteTarget = useSetAtom(windowRemoteTargetAtom)
+  /** The viewer that shows a page opened on the workspace's server (remote window and webui). */
+  const openBrowserView = useSetAtom(openBrowserViewAtom)
+  useEffect(() => {
+    if (window.electronAPI.getRuntimeEnvironment() !== 'electron') return
+    let cancelled = false
+    window.electronAPI.getClientMode()
+      .then((info) => {
+        if (cancelled) return
+        setIsRemoteWindow(!!info.running)
+        setWindowIsRemote(!!info.running)
+        setWindowServerScope(info.running?.connectionId ?? null)
+        setWindowRemoteTarget(info.running ?? null)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [setWindowIsRemote, setWindowServerScope, setWindowRemoteTarget])
+
+  // A remote window names itself: its workspace lives on the hub, so main cannot look it up and
+  // every remote window would otherwise be titled with just the app name.
+  const remoteTarget = useAtomValue(windowRemoteTargetAtom)
+  const activeWorkspaceName = useMemo(
+    () => workspaces.find(w => w.id === windowWorkspaceId)?.name ?? null,
+    [workspaces, windowWorkspaceId],
+  )
+  useEffect(() => {
+    // A local window takes main's automatic title. A window that has just come back from a hub
+    // still carries the "<workspace> — <server>" custom title, so this hands it back.
+    if (!isRemoteWindow) {
+      void window.electronAPI.setWindowTitle(null).catch(() => {})
+      return
+    }
+    const label = [activeWorkspaceName, remoteTarget?.name].filter(Boolean).join(' — ')
+    void window.electronAPI.setWindowTitle(label || null).catch(() => {
+      // A title is a nicety; a window that cannot be renamed is still usable.
+    })
+  }, [isRemoteWindow, activeWorkspaceName, remoteTarget?.name])
+
+  // The saved server can be edited from under a running window, and a window can move to a saved
+  // server or back to this machine. All three arrive here: the preload has already re-pointed the
+  // transport, so the window keeps its renderer while everything the previous target answered for
+  // has to be replaced. `null` means "local again".
+  //
+  // The workspace list and the setup needs are the two answers no other effect refetches — a
+  // transport swap is not a workspace switch, so nothing keyed on the workspace re-runs. Everything
+  // else either follows `windowWorkspaceId` or is keyed by id and simply stops matching.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.onRemoteTargetChanged?.((target) => {
+      setWindowRemoteTarget(target)
+      setWindowServerScope(target?.connectionId ?? null)
+      setIsRemoteWindow(!!target)
+      setWindowIsRemote(!!target)
+      window.electronAPI.getWorkspaces().then(setWorkspaces).catch((err: unknown) => {
+        console.error('[App] Failed to reload workspaces for the new target:', err)
+      })
+      // A hub still waiting for onboarding has to say so here too, the way it would in a window
+      // opened on it. The other direction is the wizard's own business, not this listener's.
+      window.electronAPI.getSetupNeeds().then((needs) => {
+        setSetupNeeds(needs)
+        if (!needs.isFullyConfigured) setAppState('onboarding')
+      }).catch((err: unknown) => {
+        console.error('[App] Failed to read setup needs for the new target:', err)
+      })
+    })
+    return () => { unsubscribe?.() }
+  }, [setWindowRemoteTarget, setWindowServerScope, setWindowIsRemote])
+
   // Derive workspace slug for SDK skill qualification
   const windowWorkspaceSlug = useMemo(() => {
     if (!windowWorkspaceId) return null
@@ -334,20 +452,18 @@ export default function App() {
   }, [windowWorkspaceId, workspaces])
 
   // Get initial sessionId and focused mode from URL params (for "Open in New Window" feature)
-  const { initialSessionId, isFocusedMode } = useMemo(() => {
+  const { initialSessionId, isFocusedMode, isFileWindow, fileWindowPath } = useMemo(() => {
     const params = new URLSearchParams(window.location.search)
     return {
       initialSessionId: params.get('sessionId'),
       isFocusedMode: params.get('focused') === 'true',
+      // A file's own window (the works library's "open in its own window"): it shows that
+      // file's preview and nothing else. The path is in the address rather than in a deep
+      // link, so no route has to exist for "a file".
+      isFileWindow: params.get('fileWindow') === 'true',
+      fileWindowPath: params.get('filePath'),
     }
   }, [])
-
-  // Derive remote workspace ID for session matching in NavigationContext
-  const windowRemoteWorkspaceId = useMemo(() => {
-    if (!windowWorkspaceId) return null
-    const workspace = workspaces.find(w => w.id === windowWorkspaceId)
-    return workspace?.remoteServer?.remoteWorkspaceId ?? null
-  }, [windowWorkspaceId, workspaces])
 
   // LLM connections with authentication status (for provider selection)
   const [llmConnections, setLlmConnections] = useState<LlmConnectionWithStatus[]>([])
@@ -504,7 +620,12 @@ export default function App() {
 
   const refreshSessionFromServer = useCallback(async (sessionId: string): Promise<'refreshed' | 'preserved_stale_messages' | 'failed'> => {
     try {
-      const fresh = await window.electronAPI.getSessionMessages(sessionId)
+      // A page, like any other open: recovering from a reconnect must not drag
+      // a long conversation's entire history back into the renderer.
+      const fresh = await window.electronAPI.getSessionMessages(sessionId, {
+        limit: SESSION_MESSAGE_PAGE_SIZE,
+        minQuestions: 5,
+      })
       if (!fresh) return 'failed'
 
       const prevSession = store.get(sessionAtomFamily(sessionId))
@@ -554,11 +675,25 @@ export default function App() {
 
       setSessionsLoaded(true)
 
-      if (initialSessionId && windowWorkspaceId) {
+      // Where the window "was" is a guess; the URL is not. A link that names a route — the canvas,
+      // a settings page, anything — is somebody saying where to go, and this restore used to
+      // overwrite it with the last session on every load.
+      const explicitRouteInUrl = (() => {
+        if (typeof window === 'undefined') return null
+        const params = new URLSearchParams(window.location.search)
+        return params.get('route') || (params.get('panels') ? 'panels' : null)
+      })()
+
+      if (initialSessionId && windowWorkspaceId && !explicitRouteInUrl) {
         const session = loadedSessions.find(s => s.id === initialSessionId)
         if (session) {
           navigate(routes.view.allSessions(session.id))
         }
+      } else if (explicitRouteInUrl && explicitRouteInUrl !== 'panels') {
+        // The link wins. Whatever the window last showed, a URL that names its route is a person
+        // asking for that view — and it is the only way to reach a page that has no session of its
+        // own (the canvas, settings) by link.
+        navigate(explicitRouteInUrl as never)
       }
     } catch (err) {
       console.error('[App] Failed to load sessions:', err)
@@ -595,7 +730,6 @@ export default function App() {
         reason,
         removeMissing,
         windowWorkspaceId,
-        windowRemoteWorkspaceId,
         selectedSessionId,
         beforeCount: beforeIds.size,
         returnedCount: sessions.length,
@@ -632,7 +766,6 @@ export default function App() {
         reason,
         removeMissing,
         windowWorkspaceId,
-        windowRemoteWorkspaceId,
         selectedSessionId,
         beforeCount: beforeIds.size,
         beforeIds: summarizeIds(beforeIds),
@@ -642,7 +775,7 @@ export default function App() {
       })
       return null
     }
-  }, [store, syncSessionOptionsFromSession, reconcilePermissionModeState, windowWorkspaceId, windowRemoteWorkspaceId])
+  }, [store, syncSessionOptionsFromSession, reconcilePermissionModeState, windowWorkspaceId])
 
   // Stale session watchdog — catches stuck sessions that the reconnect protocol misses
   const { trackSessionActivity } = useStaleSessionRecovery({
@@ -674,8 +807,10 @@ export default function App() {
       // Reload workspaces after onboarding
       const ws = await window.electronAPI.getWorkspaces()
       if (ws.length > 0) {
-        // Switch to workspace in-place (no window close/reopen)
-        await window.electronAPI.switchWorkspace(ws[0].id)
+        // Switch to workspace in-place (no window close/reopen). A remote window completes the
+        // hub's setup, so its switch is the hub one — the local server never owned that workspace.
+        if (isRemoteWindow) await window.electronAPI.switchRemoteWorkspace(ws[0].id)
+        else await window.electronAPI.switchWorkspace(ws[0].id)
         setWindowWorkspaceId(ws[0].id)
         setWorkspaces(ws)
       } else {
@@ -686,7 +821,7 @@ export default function App() {
       // Still transition to ready — the app can recover via reconnect
     }
     setAppState('ready')
-  }, [])
+  }, [isRemoteWindow])
 
   // Onboarding hook — onConfigSaved fires immediately when billing is saved,
   // ensuring connection state updates before the wizard closes.
@@ -714,37 +849,73 @@ export default function App() {
   }, [])
 
   // Check auth state and get window's workspace ID on mount
-  useEffect(() => {
-    const initialize = async () => {
+  const initialize = useCallback(async () => {
+    // A failure to read the hub's state means two different things depending on the window:
+    // "this server still needs setup" for a local one, "this server cannot be reached" for a
+    // remote one. The window's own connection decides which screen that is.
+    let isRemote = store.get(windowIsRemoteAtom)
+    try {
+      // Get this window's workspace ID (passed via URL query param from main process)
+      const wsId = await window.electronAPI.getWindowWorkspace()
+      setWindowWorkspaceId(wsId)
+
       try {
-        // Get this window's workspace ID (passed via URL query param from main process)
-        const wsId = await window.electronAPI.getWindowWorkspace()
-        setWindowWorkspaceId(wsId)
+        const mode = await window.electronAPI.getClientMode?.()
+        if (mode) isRemote = !!mode.running
+      } catch {
+        // Direct-IPC lookup is best effort; the atom value stands.
+      }
 
-        const needs = await window.electronAPI.getSetupNeeds()
-        setSetupNeeds(needs)
+      const needs = isRemote
+        ? await withTimeout(window.electronAPI.getSetupNeeds(), REMOTE_SETUP_TIMEOUT_MS)
+        : await window.electronAPI.getSetupNeeds()
+      setSetupNeeds(needs)
 
-        if (needs.isFullyConfigured) {
-          // If no workspace is selected (thin client without CRAFT_WORKSPACE_ID),
-          // show workspace picker before entering the main app
-          if (!wsId) {
-            setAppState('workspace-picker')
-          } else {
-            setAppState('ready')
-          }
+      if (needs.isFullyConfigured) {
+        // If no workspace is selected (a remote window whose hub workspace is unset),
+        // show workspace picker before entering the main app
+        if (!wsId) {
+          setAppState('workspace-picker')
         } else {
-          // New user or needs setup - show onboarding
-          setAppState('onboarding')
+          setAppState('ready')
         }
-      } catch (error) {
-        console.error('Failed to check auth state:', error)
-        // If check fails, show onboarding to be safe
+      } else {
+        // New user or needs setup - show onboarding
         setAppState('onboarding')
       }
+    } catch (error) {
+      console.error('Failed to check auth state:', error)
+      // A remote window has nothing to onboard: its wizard would run on the same unreachable
+      // server. Give the connection its own screen, the way VS Code reports an unreachable host.
+      setAppState(isRemote ? 'remote-unreachable' : 'onboarding')
     }
+  }, [setWindowWorkspaceId, store])
 
-    initialize()
-  }, [])
+  useEffect(() => {
+    void initialize()
+  }, [initialize])
+
+  // The unreachable screen is a waiting room, not a dead end: the transport keeps retrying in the
+  // background, and the first successful handshake has to take the window back into the app.
+  useEffect(() => {
+    if (appState !== 'remote-unreachable') return
+    let cancelled = false
+    const recheck = () => {
+      if (!cancelled) void initialize()
+    }
+    const unsubscribe = window.electronAPI.onTransportConnectionStateChanged?.((state) => {
+      if (state.status === 'connected') recheck()
+    })
+    void window.electronAPI.getTransportConnectionState?.()
+      .then((state) => {
+        if (state?.status === 'connected') recheck()
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [appState, initialize])
 
   // Session selection state
   const [sessionSelection, setSession] = useSession()
@@ -810,6 +981,24 @@ export default function App() {
       cleanupApp()
     }
   }, [])
+
+  // A generation may outlive the view that started it. Say when one lands or fails, wherever the
+  // person is — the task event is the only thing that knows, and the library is not always open.
+  useEffect(() => {
+    const off = window.electronAPI.onMediaTaskChanged((changedWorkspaceId, event) => {
+      if (changedWorkspaceId !== windowWorkspaceId) return
+      const status = event.task.status
+      if (status !== 'succeeded' && status !== 'failed') return
+      const path = event.artifact?.path ?? event.task.finalPath ?? event.task.outPath
+      const name = path.split(/[\\/]/).pop() || path
+      if (status === 'succeeded') {
+        toast.success(t('library.taskDone', { name }))
+      } else {
+        toast.error(t('library.taskFailedToast', { name, message: event.task.error ?? '' }))
+      }
+    })
+    return off
+  }, [t, windowWorkspaceId])
 
   // Subscribe to LLM connections change events (live updates when models are fetched)
   useEffect(() => {
@@ -915,6 +1104,16 @@ export default function App() {
           }
           case 'toast_error': {
             toast.error(effect.message, { duration: 5000 })
+            break
+          }
+          case 'task_awaiting_approval': {
+            // A Conductor gate parked (`kind: approval`). Every other notification here is about
+            // work *arriving*; this one is about work stopping until the person answers it, and
+            // the answer lives on the task tile's Results tab.
+            const gateSession = store.get(sessionAtomFamily(sessionId))
+            if (gateSession && !gateSession.hidden) {
+              showSessionNotification(gateSession, t('tasks.approvalNotification'))
+            }
             break
           }
         }
@@ -1271,7 +1470,7 @@ export default function App() {
     window.electronAPI.sessionCommand(sessionId, { type: 'rename', name })
   }, [updateSessionById])
 
-  const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[]) => {
+  const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[], replyTo?: import('@craft-agent/core/types').MessageReply) => {
     try {
       // Capture pre-send processing state so we can flag mid-stream sends
       // for the queued badge (#616 follow-up — covers Pi steer path which
@@ -1334,13 +1533,15 @@ export default function App() {
             }
             // Include storedPath and markdownPath for all attachment types
             // Agent will use Read tool to access text/office files via these paths
-            // If image was resized, use the resized base64 for Claude API
+            // If image was resized or re-encoded (HEIC, EXIF rotation), use those bytes and the
+            // type they actually are — the original may be a sideways HEIC the API rejects.
             return {
               ...att,
               storedPath: stored.storedPath,
               markdownPath: stored.markdownPath,
-              // Use resized base64 if available (for images that exceeded size limits)
               base64: stored.resizedBase64 ?? att.base64,
+              mimeType: stored.mimeType ?? att.mimeType,
+              size: stored.size ?? att.size,
             }
           })
         )
@@ -1419,6 +1620,9 @@ export default function App() {
         skillSlugs,
         badges: badges.length > 0 ? badges : undefined,
         optimisticMessageId: userMessage.id,
+        // The quote travels with the message so the bubble can show what it answers; the model
+        // already has that message in context (see `MessageReply`).
+        ...(replyTo ? { replyTo } : {}),
       })
     } catch (error) {
       console.error('Failed to send message:', error)
@@ -1490,6 +1694,7 @@ export default function App() {
   // Hydrate persisted attachment refs into full FileAttachment objects.
   //  - Track C (ref.content set): reconstruct directly from the inlined bytes.
   //  - Track P (path-only): re-read from disk via the readUserAttachment RPC.
+  //  - Server-backed refs: read through the hub instead — their path is the server's.
   // Missing/moved files on Track P are silently dropped with a console warn — same
   // UX as any other editor draft restore when the backing file is gone.
   const hydrateDraftAttachments = useCallback(async (sessionId: string): Promise<FileAttachment[]> => {
@@ -1502,7 +1707,9 @@ export default function App() {
           return attachmentFromContentRef(ref)
         }
         try {
-          const attachment = await window.electronAPI.readUserAttachment(ref.path)
+          const attachment = ref.fromServer
+            ? await readServerAttachment(ref.path)
+            : await window.electronAPI.readUserAttachment(ref.path)
           if (!attachment) {
             console.warn('[drafts] Attachment missing on restore, dropping:', ref.path)
             return null
@@ -1676,6 +1883,11 @@ export default function App() {
   // handleOpenFile/handleOpenUrl that always opened in external apps.
   const linkInterceptor = useLinkInterceptor({
     openFileExternal: async (path) => {
+      // The path belongs to the hub in a remote window — this machine cannot open it.
+      if (isRemoteWindow) {
+        toast.info(t('toast.fileOnServer'))
+        return
+      }
       try {
         await window.electronAPI.openFile(path)
       } catch (error) {
@@ -1686,7 +1898,33 @@ export default function App() {
         })
       }
     },
-    openUrl: async (url) => {
+    openUrl: async (url, sessionId) => {
+      // An address a browser window can hold goes to the app's own window unless the person
+      // asked for their system browser (Settings → Links) — that window is the one the agent can
+      // keep working on, which is why it is the default. Everything else — `mailto:`, someone
+      // else's app scheme, `craftagents:`, and what cannot go anywhere at all — is the shell
+      // opener's business: those answers, and their wording, live there.
+      if (await shouldOpenLinkInAppBrowser(url)) {
+        try {
+          // The session decides the browser profile, so a link clicked in a conversation opens
+          // in that conversation's own window rather than the workspace's default one.
+          const opened = await window.electronAPI.browserPane.openUrl(url, sessionId)
+          // That window is on the workspace's server here, so the person sees it through the
+          // viewer — the same way the agent's pages are watched.
+          if (usesServerBrowser && opened.tabId) {
+            openBrowserView({ instanceId: opened.instanceId, tabId: opened.tabId })
+          }
+          return
+        } catch (error) {
+          // Falling through would put the link in the system browser, which is not what was
+          // asked for — say what happened and stop.
+          const message = error instanceof Error ? error.message : 'Unknown error'
+          console.error('Failed to open URL in the browser window:', error)
+          toast.error(t('toast.failedToCreateBrowser'), { description: message })
+          return
+        }
+      }
+
       try {
         await window.electronAPI.openUrl(url)
       } catch (error) {
@@ -1704,6 +1942,11 @@ export default function App() {
       }
     },
     showInFolder: async (path) => {
+      // The path belongs to the hub in a remote window — this machine cannot reveal it.
+      if (isRemoteWindow) {
+        toast.info(t('toast.fileOnServer'))
+        return
+      }
       try {
         await window.electronAPI.showInFolder(path)
       } catch (error) {
@@ -1719,6 +1962,45 @@ export default function App() {
     readFileBinary: (path) => window.electronAPI.readFileBinary(path),
   })
 
+  /**
+   * The preview window's "open in browser" — the one way out of an HTML preview that is not
+   * another preview, and where the person's own setting decides *which* browser: the app's window
+   * (the surface the agent can keep working on) or the one they use for everything else.
+   *
+   * What it opens is a file, and HTML drawn in a frame has no address to give it — a `srcDoc`
+   * frame has no origin, no base and no scripts — so this is how the file becomes a page in a
+   * browser, at its own address, where all of that works.
+   */
+  const openFileInBrowser = useCallback(async (path: string) => {
+    // A file on the workspace's server has no local address to give the system browser: the
+    // server's browser is the only place it can become a page, so the setting only decides
+    // which browser a *local* file opens in.
+    if (usesServerBrowser || await shouldOpenFileInAppBrowser()) {
+      try {
+        const opened = await window.electronAPI.browserPane.openFile(path)
+        if (usesServerBrowser && opened.tabId) {
+          openBrowserView({ instanceId: opened.instanceId, tabId: opened.tabId })
+        }
+        return
+      } catch (error) {
+        // Falling through would put the page in the system browser, which is not what was
+        // asked for — say what happened and stop.
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        console.error('Failed to open file in the browser window:', error)
+        toast.error(t('toast.failedToCreateBrowser'), { description: message })
+        return
+      }
+    }
+
+    try {
+      await window.electronAPI.openFile(path)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      console.error('Failed to open file:', error)
+      toast.error(t('toast.failedToOpenFile'), { description: message })
+    }
+  }, [t, usesServerBrowser, openBrowserView])
+
   const connectionState = useTransportConnectionState()
   const showTransportConnectionBanner = shouldShowTransportConnectionBanner(connectionState)
 
@@ -1729,8 +2011,138 @@ export default function App() {
     })
   }, [])
 
+  /**
+   * Leave an unreachable hub for a workspace on this machine, in place — the same window, the
+   * same renderer, now answered by the local server. Used by the "cannot connect" screen, so it
+   * only touches local-only channels and works while the hub is down.
+   */
+  const handleSwitchToLocalWorkspace = useCallback(async (workspaceId: string) => {
+    await window.electronAPI.switchLocalWorkspace(workspaceId)
+    setWindowWorkspaceId(workspaceId)
+    try {
+      const needs = await window.electronAPI.getSetupNeeds()
+      setSetupNeeds(needs)
+      setAppState(needs.isFullyConfigured ? 'ready' : 'onboarding')
+    } catch (error) {
+      console.error('[App] Failed to read setup needs after switching to this machine:', error)
+      setAppState('onboarding')
+    }
+  }, [setWindowWorkspaceId])
+
+  /**
+   * An anchored edit the server asked this window to perform.
+   *
+   * The editor showing the document is the only thing that can change it — that is what makes the
+   * change one undoable step of its own history instead of a file that changed underneath. When no
+   * overlay here has the document, the answer is "no", and the agent is told to write the file.
+   */
+  React.useEffect(() => {
+    if (typeof window.electronAPI.onOfficeEditRequest !== 'function') return
+    return window.electronAPI.onOfficeEditRequest((id, payload) => {
+      void applyOfficeEdit(payload.path, payload.edit).then((result) => {
+        window.electronAPI.respondOfficeEdit(id, result)
+      })
+    })
+  }, [])
+
+  /**
+   * A canvas request the server addressed to this window: the agent's edit, landing in the panel.
+   *
+   * The panel showing the canvas is the only thing that can change it — that is what makes the
+   * change one undoable step of the history the person is looking at, instead of a file that changed
+   * underneath them. When no panel here is showing that canvas, the answer says so and the caller
+   * writes the file (and tells the agent the change is outside anyone's history).
+   */
+  React.useEffect(() => {
+    if (typeof window.electronAPI.onCanvasRequest !== 'function') return
+    return window.electronAPI.onCanvasRequest((id, request) => {
+      void dispatchCanvasRequest(request).then((reply) => {
+        window.electronAPI.respondCanvasRequest(
+          id,
+          reply ?? { ok: false, message: 'no canvas panel in this window is showing that canvas' },
+        )
+      })
+    })
+  }, [])
+
+  /**
+   * "Save what you are holding" — the host asks before an agent reads a file.
+   *
+   * The editor saves on a debounce, so the file trails the screen by a second or two, and by as long
+   * as somebody keeps typing. Nothing here decides *when* that matters: the request comes with a
+   * path, the editor showing it saves itself, and the answer says whether the file is now current.
+   * A document in a conflict answers "no" — it cannot be saved by anything but its owner.
+   */
+  React.useEffect(() => {
+    return window.electronAPI.onDocumentFlushRequest((id, path) => {
+      void flushDocument(path).then((ok) => {
+        window.electronAPI.respondDocumentFlush(
+          id,
+          ok ? { ok: true } : { ok: false, message: 'no editor could save it' },
+        )
+      })
+    })
+  }, [])
+
+  // ── A file's own window ──────────────────────────────────────────────────────────────
+  // Everything about *showing* a file already exists (the interceptor classifies it, reads what
+  // the overlay needs, and renders the right surface), so this window does exactly what a click
+  // does — once, on mount — and then closes itself when the preview is dismissed. A window whose
+  // subject is one file has nothing to fall back to; leaving a blank shell behind it would be a
+  // second thing to close.
+  const fileWindowOpenedRef = React.useRef(false)
+  /** The preview has been on screen at least once — reading a file is async, and closing before
+   *  that would shut the window while its own document was still being read. */
+  const fileWindowSeenRef = React.useRef(false)
+  React.useEffect(() => {
+    if (!isFileWindow || !fileWindowPath || fileWindowOpenedRef.current) return
+    fileWindowOpenedRef.current = true
+    if (!classifyFile(fileWindowPath).canPreview) {
+      // Nothing here can show it; the system's own program is what the click would have used.
+      void window.electronAPI.openFile(fileWindowPath).catch(() => undefined)
+      void window.electronAPI.closeWindow().catch(() => undefined)
+      return
+    }
+    void linkInterceptor.handleOpenFile(fileWindowPath)
+  }, [isFileWindow, fileWindowPath, linkInterceptor.handleOpenFile])
+
+  React.useEffect(() => {
+    if (!isFileWindow) return
+    if (linkInterceptor.previewState) {
+      fileWindowSeenRef.current = true
+      return
+    }
+    if (!fileWindowSeenRef.current) return
+    void window.electronAPI.closeWindow().catch(() => undefined)
+  }, [isFileWindow, linkInterceptor.previewState])
+
   const handleOpenFile = linkInterceptor.handleOpenFile
+
+  /**
+   * "Open this file in its editor" — asked by a panel, answered here.
+   *
+   * The canvas needs it and cannot do it itself: a node's body is a file, and its editor is the
+   * app's own overlay (markdown, HTML, drawio, office). Routing by path is the same work a link in
+   * chat gets, so there is one place that decides which editor a file opens in.
+   */
+  const fileEditorRequest = useAtomValue(fileEditorRequestAtom)
+  const lastFileEditorAt = React.useRef(0)
+  React.useEffect(() => {
+    if (!fileEditorRequest) return
+    if (fileEditorRequest.at === lastFileEditorAt.current) return
+    lastFileEditorAt.current = fileEditorRequest.at
+    handleOpenFile(fileEditorRequest.path)
+  }, [fileEditorRequest, handleOpenFile])
   const handleOpenUrl = linkInterceptor.handleOpenUrl
+
+  /**
+   * A link clicked inside a sandboxed preview cannot reach React — the frame navigates the top
+   * window instead — so main hands it over here. The ordinary path decides where it goes: the
+   * workspace's browser by default, the system browser when the person asked for that.
+   */
+  useEffect(() => {
+    return window.electronAPI.onBrowserOpenLink?.((url) => handleOpenUrl(url))
+  }, [handleOpenUrl])
 
   const handleOpenSettings = useCallback(() => {
     navigate(routes.view.settings())
@@ -1775,57 +2187,80 @@ export default function App() {
   }, [onboarding, initializeSessions])
 
   // Handle workspace selection
-  // - Default: switch workspace in same window (in-window switching)
-  // - With openInNewWindow=true: open in new window (or focus existing)
+  // - Default: switch workspace in same window (in-window switching, local or remote)
+  // - With openInNewWindow=true: open a window for that workspace instead
   const handleSelectWorkspace = useCallback(async (workspaceId: string, openInNewWindow = false) => {
     // If selecting current workspace, do nothing
     if (workspaceId === windowWorkspaceId) return
 
     if (openInNewWindow) {
-      // Open (or focus) the window for the selected workspace
-      window.electronAPI.openWorkspace(workspaceId)
+      // A remote window opens another remote window on the same hub; a local one opens (or
+      // focuses) the window that workspace already has.
+      if (isRemoteWindow) await window.electronAPI.openRemoteWindow(workspaceId)
+      else window.electronAPI.openWorkspace(workspaceId)
+      return
+    }
+
+    // Where the window is *now*, read from the atom rather than the rendered state: a server
+    // switch has just re-pointed the transport, and the state update may not have flushed yet.
+    // Taking the wrong branch here would ask a freshly-local window to switch hub workspace.
+    if (store.get(windowIsRemoteAtom)) {
+      // In place — the window and its hub connection stay; only the workspace that connection
+      // speaks for changes (no handshake, no replay). The hub is the authority, so a refused
+      // switch leaves the window where it was.
+      try {
+        await window.electronAPI.switchRemoteWorkspace(workspaceId)
+      } catch (err) {
+        toast.error(t('toast.failedToSwitchWorkspace'), {
+          description: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
     } else {
-      // Switch workspace in current window
       // 1. Update the main process's window-workspace mapping
       await window.electronAPI.switchWorkspace(workspaceId)
-
-      // 2. Update React state to trigger re-renders
-      setWindowWorkspaceId(workspaceId)
-
-      // 3. Clear selected session - the old session belongs to the previous workspace
-      // and should not remain selected when switching to a new workspace.
-      // This prevents showing stale session data from the wrong workspace.
-      setSession({ selected: null })
-
-      // 4. Clear pending permissions/credentials (not relevant to new workspace)
-      setPendingPermissions(new Map())
-      setPendingCredentials(new Map())
-
-      // 5. Clear session options from previous workspace
-      // (session IDs are unique UUIDs, but clearing prevents unbounded memory growth
-      // and ensures no stale state from old workspace persists)
-      setSessionOptions(new Map())
-
-      // 6. Clear message drafts from previous workspace
-      // (prevents memory growth on repeated workspace switches)
-      sessionDraftsRef.current.clear()
-
-      // 7. Reset sources and skills atoms to empty
-      // (prevents stale data flash during workspace switch - AppShell will reload)
-      store.set(sourcesAtom, [])
-      store.set(skillsAtom, [])
-
-      // 8. Clear session atoms BEFORE workspace switch
-      // This prevents stale session data from the previous workspace being visible.
-      store.set(sessionMetaMapAtom, new Map())
-      store.set(sessionIdsAtom, [])
-
-      // Note: NavigationContext detects the workspaceId change and handles
-      // panel restoration from the stored workspace URL (or defaults to allSessions).
-      // Sessions and theme will reload automatically due to windowWorkspaceId dependency
-      // in useEffect hooks.
     }
-  }, [windowWorkspaceId, setSession, store])
+
+    // 2. Update React state to trigger re-renders
+    setWindowWorkspaceId(workspaceId)
+
+    // 3. Clear selected session - the old session belongs to the previous workspace
+    // and should not remain selected when switching to a new workspace.
+    // This prevents showing stale session data from the wrong workspace.
+    setSession({ selected: null })
+
+    // 4. Clear pending permissions/credentials (not relevant to new workspace)
+    setPendingPermissions(new Map())
+    setPendingCredentials(new Map())
+
+    // 5. Clear session options from previous workspace
+    // (session IDs are unique UUIDs, but clearing prevents unbounded memory growth
+    // and ensures no stale state from old workspace persists)
+    setSessionOptions(new Map())
+
+    // 6. Clear message drafts from previous workspace
+    // (prevents memory growth on repeated workspace switches)
+    sessionDraftsRef.current.clear()
+
+    // 7. Reset sources and skills atoms to empty
+    // (prevents stale data flash during workspace switch - AppShell will reload)
+    store.set(sourcesAtom, [])
+    store.set(skillsAtom, [])
+
+    // 8. Clear session atoms BEFORE workspace switch
+    // This prevents stale session data from the previous workspace being visible.
+    store.set(sessionMetaMapAtom, new Map())
+    store.set(sessionIdsAtom, [])
+
+    // 9. Load the session list for where the window now is.
+    // A switch does not reliably produce a stale reconnect — a hub switch does, a local one does
+    // not, and a server switch produces one whose timing is not ours to depend on. Fetching here
+    // also settles the race where that reconnect's refresh lands before the atoms were cleared.
+    void refreshSessionListMetadataFromServer({ removeMissing: false, reason: 'workspace-switch' })
+
+    // Note: NavigationContext detects the workspaceId change and handles
+    // panel restoration from the stored workspace URL (or defaults to allSessions).
+  }, [windowWorkspaceId, isRemoteWindow, setSession, store, t, refreshSessionListMetadataFromServer])
 
   // Handle workspace switch by slug (called by NavigationContext on popstate when ?ws= changes)
   const handleSwitchWorkspaceBySlug = useCallback((slug: string) => {
@@ -1938,6 +2373,48 @@ export default function App() {
     openNewChat,
   ])
 
+  /**
+   * Hand a piece of a file to the conversation.
+   *
+   * What goes in is the piece itself — an element's markup from the HTML editor, the selected
+   * words from a document — plus the file it came from, so the agent edits the file instead of
+   * answering about a copy of a snippet. It is *appended* to the draft, the way a picked element
+   * chip is: the person was writing a request, and a reference is added to it rather than
+   * replacing it.
+   *
+   * The draft is written through `handleInputChange` (which is what a composer reads on
+   * mount) *and* announced with the restore event (which is what one already open reads),
+   * then the caret is put there so the request can be finished.
+   */
+  const sendHtmlSelectionToChat = useCallback(({ path, html, text, start, end, hash, coords }: { path: string; html?: string; text?: string; start?: number; end?: number; hash?: string; coords?: 'file' | 'editor' }) => {
+    const sessionId = sessionSelection.selected
+    if (!sessionId) return
+    // A document selection is prose the person is looking at, so it travels as a quote; an
+    // element is markup, so it travels as an HTML block. The file always goes with it — and so do
+    // the offsets when the editor knew them: "characters 120–180 of version ab12cd3" is the only
+    // way to say *which* occurrence the person meant when the same words appear twice.
+    const body = html !== undefined ? `\`\`\`html\n${html}\n\`\`\`\n` : `> ${(text ?? '').replace(/\n/g, '\n> ')}\n`
+    const where =
+      start !== undefined && end !== undefined
+        ? `（${coords === 'editor' ? t('preview.anchorEditor', { start, end }) : t('preview.anchorFile', { start, end })}${
+            hash ? ` · ${t('preview.anchorVersion', { hash })}` : ''
+          }）`
+        : ''
+    const reference = `${path}${where}\n\n${body}`
+    const next = appendRestoredInput(getDraft(sessionId), reference)
+    handleInputChange(sessionId, next)
+    dispatchRestoreInput(sessionId, next)
+    dispatchFocusInputEvent({ sessionId })
+  }, [sessionSelection.selected, getDraft, handleInputChange])
+
+  // The window's own controls step aside while a fullscreen overlay is open: the overlay brings its
+  // own close button, and the two side by side read as two ways to close two different things. On
+  // Windows that is the app's own caption buttons (`WindowControls`); on macOS it is the traffic
+  // lights, which belong to the OS and are hidden by the main process instead. Overlays that are not
+  // built on `FullscreenOverlayBase` — the splash screen, the workspace picker, reauth — never ask,
+  // so the buttons stay, which is also where macOS keeps its lights.
+  const [captionButtonsVisible, setCaptionButtonsVisible] = useState(true)
+
   // Platform actions for @craft-agent/ui components (overlays, etc.)
   // Memoized to prevent re-renders when these callbacks don't change
   // NOTE: Must be defined before early returns to maintain consistent hook order
@@ -1953,17 +2430,85 @@ export default function App() {
     onReadFileDataUrl: (path: string) => window.electronAPI.readFileDataUrl(path),
     // Read file as binary Uint8Array (used by PDF preview blocks)
     onReadFileBinary: (path: string) => window.electronAPI.readFileBinary(path),
+    // Write file contents as UTF-8 string (a file the person is editing in place)
+    onWriteFile: (path: string, content: string) => window.electronAPI.writeFile(path, content),
+    // Write bytes (the office editors hand back a docx/xlsx/pptx, which is an archive, not text)
+    onWriteFileBinary: async (path: string, data: Uint8Array, overwrite?: boolean) => {
+      await window.electronAPI.writeFileBinary(path, data, overwrite)
+    },
+    // A file this host produced but could not place: the desktop saves it, a tab downloads it —
+    // so there is one delivery path and not two.
+    onSaveProducedFile: (download: { id: string; name: string; size: number; mime: string }) =>
+      window.electronAPI.saveProducedFile(download),
+    // Where a copy goes, when a document editor offers Save As (a redaction copy is one of these).
+    // The dialog is the client's — a hub can write files, but only a person knows a path they can
+    // reach — so this crosses the same capability bridge `openFileDialog` does.
+    onSaveFileDialog: async (spec: {
+      title?: string
+      defaultPath?: string
+      filters?: Array<{ name: string; extensions: string[] }>
+    }) => {
+      const answer = await window.electronAPI.saveFileDialog(spec)
+      return answer.canceled ? null : answer.filePath
+    },
+    // Open the HTML a preview window is showing in a browser (used by html-preview blocks and
+    // the file preview window). Which browser is the person's setting — see openFileInBrowser.
+    onOpenFileInBrowser: (path: string) => {
+      void openFileInBrowser(path)
+    },
+    // Hand an element from the visual HTML editor to the conversation's composer
+    onSendToChat: sendHtmlSelectionToChat,
+    // The origin the bundled drawio editor is served at (used by drawio-preview blocks).
+    // The web UI has no local app to serve `craft-local://`; its hub serves the same bundle at
+    // `/drawio/` on the app's own origin.
+    onGetDrawioOrigin: () => isWebUI
+      ? Promise.resolve(`${window.location.origin}/drawio`)
+      : window.electronAPI.getDrawioOrigin(),
+    // The origin the vendored office editors are served at (used by OfficeFrame). Same split
+    // as drawio: the hub serves them at `/office/` on its own origin, the desktop app at a
+    // `craft-local://` label only its main process can hand out.
+    // The deck editor’s document lives in the main process, so its calls are one RPC.
+    onOfficeDeck: (method: string, args: unknown[]) => window.electronAPI.officeDeck(method, args),
+    onOfficeWorkbook: (method: string, args: unknown[]) => window.electronAPI.officeWorkbook(method, args),
+    onOfficePdf: (method: string, args: unknown[]) => window.electronAPI.officePdf(method, args),
+    // The docs editor's own Export as PDF: printing happens in main (the editor has to be the top
+    // document), the renderer only names the file.
+    onOfficeExportPdf: (path: string, outPath?: string) => window.electronAPI.exportOfficePdf(path, outPath),
+    // The editors' Insert Image / Save Image As go through the same client dialogs the app uses.
+    onOpenFileDialog: () => window.electronAPI.openFileDialog(),
+    // A folder, for the editors' "export these images here". Same capability the working-directory
+    // picker uses (`dialog:openFolder`), which the client answers with a native directory dialog.
+    onPickDirectory: () => window.electronAPI.openFolderDialog(),
+    onDocumentOpenChange: (path: string, open: boolean) => {
+      void window.electronAPI.setDocumentOpen(path, open).catch(() => undefined)
+    },
+    onDocumentDirtyChange: (path: string, dirty: boolean) => {
+      void window.electronAPI.setDocumentDirty(path, dirty).catch(() => undefined)
+    },
+    onGetOfficeOrigin: () => isWebUI
+      ? Promise.resolve(`${window.location.origin}/office`)
+      : window.electronAPI.getOfficeOrigin(),
+    // The project files tree changed on disk. The event's payload is dropped on purpose: what a
+    // listener does with this is re-read the file (see PlatformActions).
+    onProjectFilesChanged: (callback: () => void) =>
+      window.electronAPI.onProjectFilesChanged(() => callback()),
+    // A document the office hosts wrote. Absolute path, unlike the watcher's, so a preview can
+    // decide for itself whether this is its own file.
+    onOfficeFileWritten: (callback: (path: string) => void) => window.electronAPI.onOfficeFileWritten(callback),
     // Reveal a file in the system file manager (Finder on macOS, Explorer on Windows, etc.)
     onRevealInFinder: (path: string) => {
       window.electronAPI.showInFolder(path).catch(() => {})
     },
     // Platform-specific file manager name for UI labels
     fileManagerName: getFileManagerName(),
-    // Hide/show macOS traffic lights when fullscreen overlays are open
+    // The window's own controls, shown or put away for as long as an overlay asks (see
+    // `captionButtonsVisible` above). The IPC reaches the macOS traffic lights; on Windows the
+    // buttons are ours, so the same call also hides them in the renderer.
     onSetTrafficLightsVisible: (visible: boolean) => {
+      setCaptionButtonsVisible(visible)
       window.electronAPI.setTrafficLightsVisible(visible)
     },
-  }), [handleOpenFile, handleOpenUrl, linkInterceptor.openFileExternal])
+  }), [handleOpenFile, handleOpenUrl, openFileInBrowser, linkInterceptor.openFileExternal, sendHtmlSelectionToChat, isRemoteWindow])
 
   // Loading state - show splash screen
   if (appState === 'loading') {
@@ -2024,7 +2569,26 @@ export default function App() {
     )
   }
 
-  // Workspace picker — thin client with no workspace selected
+  // Remote target unreachable — a remote window whose hub cannot be reached. Unlike onboarding,
+  // this is not a setup problem: the target is named, the failure is explained, and the person
+  // can either retry or keep working on this machine.
+  if (appState === 'remote-unreachable') {
+    return (
+      <DismissibleLayerProvider>
+        <ModalProvider>
+          <WindowCloseHandler />
+          <RemoteUnreachableScreen
+            target={remoteTarget}
+            connectionState={connectionState}
+            onRetry={handleReconnectTransport}
+            onSwitchToLocal={handleSwitchToLocalWorkspace}
+          />
+        </ModalProvider>
+      </DismissibleLayerProvider>
+    )
+  }
+
+  // Workspace picker — remote window with no hub workspace selected
   if (appState === 'workspace-picker') {
     return (
       <DismissibleLayerProvider>
@@ -2032,7 +2596,12 @@ export default function App() {
           <WindowCloseHandler />
           <WorkspacePicker
             onSelectWorkspace={async (id) => {
-              await window.electronAPI.switchWorkspace(id)
+              if (isRemoteWindow) {
+                // The hub had no workspace yet: this window takes the picked one, in place.
+                await window.electronAPI.switchRemoteWorkspace(id)
+              } else {
+                await window.electronAPI.switchWorkspace(id)
+              }
               setWindowWorkspaceId(id)
               setAppState('ready')
             }}
@@ -2064,7 +2633,6 @@ export default function App() {
           onAutoDeleteEmptySession={handleAutoDeleteEmptySession}
           isReady={appState === 'ready'}
           isSessionsReady={sessionsLoaded}
-          remoteWorkspaceId={windowRemoteWorkspaceId}
         >
           {/* Handle window close requests (X button, Cmd+W) - close modal first if open */}
           <WindowCloseHandler />
@@ -2094,6 +2662,9 @@ export default function App() {
                   message={sessionLoadError}
                   onRetry={() => { void loadSessionsFromServer() }}
                 />
+              ) : isFileWindow ? (
+                // The preview overlay draws over this; the pane behind it only has to exist.
+                <div className="h-full w-full bg-background" />
               ) : (
                 <AppShell
                   contextValue={appShellContextValue}
@@ -2103,6 +2674,12 @@ export default function App() {
                 />
               )}
             </div>
+            {/* The window's own caption buttons, on Windows only. A file's own window keeps the
+                standard title bar, so it wears the OS's buttons and must not get these on top.
+                Hidden for as long as a fullscreen overlay is open — that overlay has its own close
+                button, and two of them next to each other read as two ways to close two different
+                things. */}
+            {!isFileWindow && captionButtonsVisible && <WindowControls />}
             <ResetConfirmationDialog
               open={showResetDialog}
               onConfirm={executeReset}
@@ -2110,15 +2687,24 @@ export default function App() {
             />
           </div>
 
-          {/* File preview overlay — rendered by the link interceptor when a previewable file is clicked */}
+          {/* File preview overlay — rendered by the link interceptor when a previewable file is clicked.
+              A preview is one panel: when one throws, the panel says what happened and the app keeps
+              running. Before this boundary an exception in an overlay replaced the whole window with
+              "please restart", which named neither the file nor the reason. */}
           {linkInterceptor.previewState && (
+            <PreviewErrorBoundary key={linkInterceptor.previewState.filePath} onClose={linkInterceptor.closePreview}>
             <FilePreviewRenderer
               state={linkInterceptor.previewState}
               onClose={linkInterceptor.closePreview}
               loadDataUrl={linkInterceptor.readFileDataUrl}
               loadPdfData={linkInterceptor.readFileBinary}
               isDark={isDark}
+              onOpenFile={handleOpenFile}
+              onOpenUrl={handleOpenUrl}
+              onOpenFileInBrowser={openFileInBrowser}
+              workspaceId={windowWorkspaceId}
             />
+            </PreviewErrorBoundary>
           )}
         </NavigationProvider>
         </TooltipProvider>
@@ -2141,14 +2727,63 @@ function WindowCloseHandler() {
 }
 
 /**
+ * A preview that throws is one panel's problem.
+ *
+ * Every overlay is somebody else's component — an office editor in a frame, a pdf reader, an image —
+ * and one of them failing used to take the whole window down: the crash screen says "please restart
+ * the app" and names neither the file nor the exception, which is the least useful thing a person
+ * can be told while looking at a document. Here the panel keeps the app, says which file it was, and
+ * prints the message, so the next report is a diagnosis instead of a mystery.
+ */
+class PreviewErrorBoundary extends React.Component<
+  { children: React.ReactNode; onClose: () => void },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error }
+  }
+
+  componentDidCatch(error: Error): void {
+    console.error('[preview] overlay threw:', error)
+  }
+
+  render(): React.ReactNode {
+    if (!this.state.error) return this.props.children
+    return (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-background/95 p-8">
+        <div className="w-full max-w-xl rounded-lg border border-border bg-background p-6 shadow-lg">
+          <p className="text-[15px] font-medium text-foreground">{i18n.t('toast.failedToOpenFile')}</p>
+          <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-3 text-[12px] text-muted-foreground">
+            {this.state.error.message}
+          </pre>
+          <button
+            onClick={this.props.onClose}
+            className="mt-4 rounded-md bg-background px-3 py-1.5 text-[13px] text-foreground/70 shadow-minimal"
+          >
+            {i18n.t('common.close')}
+          </button>
+        </div>
+      </div>
+    )
+  }
+}
+
+/**
  * FilePreviewRenderer - Routes file preview state to the correct overlay component.
  *
  * Handles all preview types from the link interceptor:
  * - image → ImagePreviewOverlay (binary, loaded via data URL)
- * - pdf → PDFPreviewOverlay (binary, embedded via Chromium viewer)
+ * - video/audio → MediaPreviewOverlay (played from the served URL, so it can seek)
+ * - pdf → PDFPreviewOverlay (pdf.js/react-pdf, a reader; the GenOffice editor is behind its
+ *   "annotate" button, so a 8 MB editor is not what answers a click that meant "read this")
  * - code/text → CodePreviewOverlay (syntax highlighted)
- * - markdown → DocumentFormattedMarkdownOverlay
+ * - markdown → MarkdownFileOverlay (the document itself, editable, saved back to the file)
  * - json → JSONPreviewOverlay
+ * - drawio → DrawioOverlay (the diagram, drawn by the same window a `drawio-preview` block opens)
+ * - html → HTMLPreviewOverlay (the page, drawn by the same window an `html-preview` block opens)
+ * - reel → ReelPreviewOverlay (the timeline editor, for a `.reel` cut)
  *
  * File path badges with "Open" / "Reveal in {file manager}" menus are provided
  * automatically by PlatformContext — no per-overlay callback props needed.
@@ -2159,16 +2794,65 @@ function FilePreviewRenderer({
   loadDataUrl,
   loadPdfData,
   isDark,
+  onOpenFile,
+  onOpenUrl,
+  onOpenFileInBrowser,
+  workspaceId,
 }: {
   state: FilePreviewState
   onClose: () => void
   loadDataUrl: (path: string) => Promise<string>
   loadPdfData: (path: string) => Promise<Uint8Array>
   isDark: boolean
+  /** Where a link inside a previewed document goes — the app's own file and URL routing. */
+  onOpenFile: (path: string) => void
+  onOpenUrl: (url: string) => void
+  /** Send the HTML being previewed to a browser — the app's window or the person's own (their setting). */
+  onOpenFileInBrowser: (path: string) => void
+  /** The window's workspace, for an overlay that talks to the host (a cut's assets). */
+  workspaceId?: string | null
 }) {
+  // The frame reports a *remark* (see `onNotice`), which has to be worded for the person.
+  const { t } = useTranslation()
   const theme = isDark ? 'dark' : 'light' as const
+  /**
+   * The pdf being edited, if any.
+   *
+   * A pdf opens as a **reader** here, and the editor is one deliberate step away (the button in
+   * the reader's header). Keyed on the path rather than a boolean, so a different file can never
+   * inherit the previous one's choice — no effect, nothing to keep in step.
+   */
+  const [editingPdf, setEditingPdf] = React.useState<string | null>(null)
+
+  /**
+   * The HTML this window now holds, once someone has edited it.
+   *
+   * The editors write the file themselves (`useFileWriter`), so this is only what the *preview*
+   * behind them shows — without it, switching back to the page after an edit would draw the version
+   * the window was opened with. Keyed by path, so a different file never inherits it.
+   */
+  const [htmlEdit, setHtmlEdit] = React.useState<{ path: string; html: string } | null>(null)
 
   switch (state.type) {
+    case 'video':
+    case 'audio':
+      return (
+        <MediaPreviewOverlay
+          isOpen
+          onClose={onClose}
+          filePath={state.filePath}
+          kind={state.type}
+        />
+      )
+    case 'reel':
+      return (
+        <ReelPreviewOverlay
+          isOpen
+          onClose={onClose}
+          filePath={state.filePath}
+          workspaceId={workspaceId ?? undefined}
+        />
+      )
     case 'image':
       return (
         <ImagePreviewOverlay
@@ -2182,12 +2866,58 @@ function FilePreviewRenderer({
 
     case 'pdf':
       return (
-        <PDFPreviewOverlay
+        /**
+         * One window, two states — never two windows.
+         *
+         * The editor used to be opened **over** the reader: two modals, two headers, and a close
+         * that only peeled the top one off (so the obvious gesture depended on which state you were
+         * in). Now the reader and the editor are the same overlay, and the header carries the way
+         * between them: the pen enters editing, the arrow comes back. Closing closes the file,
+         * whichever state it is in — and the editor's own close handshake (save first, report a
+         * failure, close anyway) still runs, because it lives in that component.
+         */
+        editingPdf === state.filePath ? (
+          <OfficePreviewOverlay
+            isOpen
+            // Closing closes the file — not just the editing state. The editor is still asked to
+            // save first (`handleClose` in that component); the reset is for a window that stays
+            // open, so the next look at this pdf starts at the pages rather than the editor.
+            onClose={() => {
+              setEditingPdf(null)
+              onClose()
+            }}
+            filePath={state.filePath}
+            app="pdf"
+            theme={theme}
+            onBack={() => setEditingPdf(null)}
+          />
+        ) : (
+          <PDFPreviewOverlay
+            isOpen
+            onClose={onClose}
+            filePath={state.filePath}
+            loadPdfData={loadPdfData}
+            theme={theme}
+            // The vendored pdf editor annotates and saves; this window reads. Offering the one
+            // from the other is what keeps a 9 MB editor out of the way of opening a pdf to read.
+            onEdit={setEditingPdf}
+          />
+        )
+      )
+
+    // Word / Excel / PowerPoint: the vendored editor in a frame, editable in place. It reads
+    // and writes the file itself through the platform actions, so this case carries no bytes.
+    case 'office':
+      return (
+        <OfficePreviewOverlay
           isOpen
           onClose={onClose}
           filePath={state.filePath}
-          loadPdfData={loadPdfData}
+          app={state.app}
           theme={theme}
+          // A remark from the frame that must not take the document off screen — today, that a
+          // slide show runs on this screen only.
+          onNotice={(key: string) => toast.info(t(key))}
         />
       )
 
@@ -2212,12 +2942,14 @@ function FilePreviewRenderer({
         (state.filePath.includes('/plans/') || state.filePath.startsWith('plans/')) &&
         state.filePath.endsWith('.md')
       return (
-        <DocumentFormattedMarkdownOverlay
+        <MarkdownFileOverlay
           isOpen
           onClose={onClose}
-          content={state.content ?? ''}
           filePath={state.filePath}
           variant={isPlanFile ? 'plan' : 'response'}
+          theme={theme}
+          onOpenFile={onOpenFile}
+          onOpenUrl={onOpenUrl}
         />
       )
     }
@@ -2271,7 +3003,106 @@ function FilePreviewRenderer({
       )
     }
 
+    case 'drawio':
+      /* A diagram that could not be read has nothing to draw, so the read error is shown as the
+         document — the same fallback the JSON case makes. Hit by a file that is gone or not readable. */
+      if ((!state.content || !state.content.trim()) && state.error) {
+        return (
+          <CodePreviewOverlay
+            isOpen
+            onClose={onClose}
+            filePath={state.filePath}
+            content=""
+            language="xml"
+            mode="read"
+            theme={theme}
+            error={state.error}
+          />
+        )
+      }
+      return (
+        <DrawioPreviewOverlay
+          key={state.filePath}
+          filePath={state.filePath}
+          xml={state.content}
+          onClose={onClose}
+        />
+      )
+
+    case 'html': {
+      /* What the window shows: the page as it was read, or the version an editor has since written
+         (the editors save the file themselves; this only keeps the preview behind them honest). */
+      const htmlNow = htmlEdit?.path === state.filePath ? htmlEdit.html : (state.content ?? '')
+
+      /* Same fallback as the two above: HTML that could not be read is an error, not an empty box. */
+      if ((!state.content || !state.content.trim()) && state.error) {
+        return (
+          <CodePreviewOverlay
+            isOpen
+            onClose={onClose}
+            filePath={state.filePath}
+            content=""
+            language="html"
+            mode="read"
+            theme={theme}
+            error={state.error}
+          />
+        )
+      }
+      /* Keyed by path: a different file is different HTML, and the window holds which surface
+         (view or edit) and which item is showing — neither should be inherited.
+
+         Given as an **item with a path**, not as a bare string: the string form is for HTML that has
+         no file behind it, and a page with no file has nowhere to save to — which is why a window
+         opened on a real `.html` had no pencil at all. The path is what lets the visual editor and
+         the source face write the file they are showing. */
+      return (
+        <HTMLPreviewOverlay
+          key={state.filePath}
+          isOpen
+          onClose={onClose}
+          items={[{ src: state.filePath }]}
+          contentCache={{ [state.filePath]: htmlNow }}
+          title={state.filePath.split('/').pop() ?? 'HTML'}
+          theme={theme}
+          onSaved={(src, html) => setHtmlEdit({ path: src, html })}
+          onOpenInBrowser={() => onOpenFileInBrowser(state.filePath)}
+        />
+      )
+    }
+
     default:
       return null
   }
+}
+
+/**
+ * The draw.io window a `.drawio` link opens — the same `DrawioOverlay` a `drawio-preview` block
+ * opens, on the drawing rather than in the editor.
+ *
+ * It holds which page is showing, because the window does not: a page picked from the window's
+ * own row is reported back to whoever is showing the file, and here that is nobody else. `key` on
+ * the file path gives a newly opened file a fresh page instead of the last file's.
+ */
+function DrawioPreviewOverlay({
+  filePath,
+  xml,
+  onClose,
+}: {
+  filePath: string
+  xml: string | null
+  onClose: () => void
+}) {
+  const [pageId, setPageId] = useState<string | null>(null)
+  return (
+    <DrawioOverlay
+      isOpen
+      onClose={onClose}
+      filePath={filePath}
+      initialMode="view"
+      xml={xml}
+      pageId={pageId ?? undefined}
+      onSelectPage={setPageId}
+    />
+  )
 }

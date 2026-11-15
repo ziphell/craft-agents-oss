@@ -81,6 +81,9 @@ describe('ensureDefaultPermissions migration', () => {
     expect(blockedCommandHints.some(h => h.command === 'printf')).toBe(true);
     expect(blockedCommandHints.some(h => h.command === 'sed')).toBe(true);
 
+    // Leave tempRoot before deleting it: Windows refuses to remove the process's
+    // current working directory (EBUSY).
+    process.chdir(originalCwd);
     rmSync(tempRoot, { recursive: true, force: true });
     rmSync(tempConfig, { recursive: true, force: true });
   });

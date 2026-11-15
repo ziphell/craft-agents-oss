@@ -1,0 +1,18 @@
+﻿
+SPIKE_STEP 14:29:22.540 load subject
+SPIKE_STEP 14:29:22.554 load host
+SPIKE_STEP 14:29:22.646 loaded subject
+SPIKE_STEP 14:29:23.185 loaded host
+SPIKE_STEP 14:29:26.118 visible: cdp=120 media=60 paints=121
+SPIKE_STEP 14:29:28.540 offscreen: cdp=120 media=60 paints=121
+SPIKE_STEP 14:29:30.964 hidden: cdp=120 media=60 paints=120
+SPIKE_STEP 14:29:33.392 visible-again: cdp=122 media=60 paints=121
+SPIKE_JSON [{"state":"visible","cdpFrames":120,"mediaFrames":60,"paints":121,"visibility":"visible","windowVisible":true},{"state":"offscreen","cdpFrames":120,"mediaFrames":60,"paints":121,"visibility":"visible","windowVisible":true},{"state":"hidden","cdpFrames":120,"mediaFrames":60,"paints":120,"visibility":"visible","windowVisible":false},{"state":"visible-again","cdpFrames":122,"mediaFrames":60,"paints":121,"visibility":"visible","windowVisible":true}]
+
+state          window    page-vis  paints  cdp-screencast  display-media
+visible        true      visible      121             120             60
+offscreen      true      visible      121             120             60
+hidden         false     visible      120             120             60
+visible-again  true      visible      121             122             60
+
+(each sample is 2000ms; "paints" is the page's own animation frames, so a zero there means nothing was painting at all)

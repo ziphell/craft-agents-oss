@@ -88,6 +88,19 @@ export function getAssistantTurnUiKey(turn: AssistantTurn, index: number): strin
   if (turn.response?.messageId) {
     return `assistant:msg:${turn.response.messageId}`
   }
+  // This key is remembered in localStorage (which turns are expanded), so it has
+  // to name the turn itself. It cannot be positional: a conversation now grows
+  // *upwards* as well — loading an older page prepends turns, which shifts every
+  // index in the list, and every expanded card would suddenly be remembered
+  // against a different turn. The first activity's id is content, not position,
+  // and separates two cards that share a turnId and a timestamp (one agent turn
+  // split by a status or an interruption).
+  const firstActivityId = turn.activities[0]?.id
+  if (firstActivityId) {
+    return `assistant:turn:${turn.turnId}:${turn.timestamp}:${firstActivityId}`
+  }
+  // Degenerate turn (no answer, no activity at all): nothing to name it by but
+  // its place, and nothing worth remembering either.
   return `assistant:turn:${turn.turnId}:${turn.timestamp}:${index}`
 }
 
@@ -358,19 +371,104 @@ export interface GroupTurnsOptions {
  * means final response.
  */
 export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOptions = {}): Turn[] {
+  return buildTurns(messages, options).turns
+}
+
+/**
+ * One grouping result, kept so the *next* grouping can reuse what did not change.
+ *
+ * `turns` is what the chat renders. `messages` and `spans` are the bookkeeping
+ * that makes reuse provable: `spans[i]` is the inclusive range of `messages`
+ * that turn `i` was built from, and messages are compared by **identity**.
+ * A message object is replaced (never mutated) when its content changes — a
+ * streamed delta, a tool result arriving, an annotation — so "same object" is
+ * exactly "same input", and nothing has to be fingerprinted.
+ */
+export interface TurnGrouping {
+  turns: Turn[]
+  /** The sorted messages this grouping was built from. */
+  messages: readonly Message[]
+  /** Inclusive `[first, last]` index into `messages` for each turn. */
+  spans: ReadonlyArray<readonly [number, number]>
+  /** Whether the session was still processing when this grouping was built. */
+  isSessionProcessing: boolean
+}
+
+/**
+ * Group messages into turns, reusing the previous turn objects where nothing
+ * they were built from has changed.
+ *
+ * Grouping is cheap — a millisecond or two over a few thousand messages — but
+ * it returns brand-new objects every time, and that breaks `React.memo` on
+ * every turn card in the transcript: one streamed token would re-render the
+ * whole visible conversation. Reuse makes the identity of a turn mean what
+ * `React.memo` assumes it means: **this turn did not change**.
+ *
+ * The only turn that can be affected by something other than its messages is
+ * the final one, whose `isComplete` depends on `isSessionProcessing` (the
+ * "session stopped processing while a turn ended on a tool call" fallback), so
+ * that turn is rebuilt whenever the flag moves.
+ */
+export function groupMessagesByTurnCached(
+  messages: Message[],
+  previous: TurnGrouping | null,
+  options: GroupTurnsOptions = {},
+): TurnGrouping {
+  const next = buildTurns(messages, options)
+  if (!previous || previous.turns.length === 0) return next
+
+  const lastIndex = next.turns.length - 1
+  for (let i = 0; i < next.turns.length; i++) {
+    const previousTurn = previous.turns[i]
+    if (!previousTurn) continue
+
+    // The open turn also depends on the processing flag, which no message
+    // carries.
+    if (i === lastIndex && previous.isSessionProcessing !== next.isSessionProcessing) continue
+
+    const previousSpan = previous.spans[i]
+    const span = next.spans[i]
+    if (!previousSpan || !span) continue
+    if (previousSpan[0] !== span[0] || previousSpan[1] !== span[1]) continue
+
+    let unchanged = true
+    for (let k = span[0]; k <= span[1]; k++) {
+      if (previous.messages[k] !== next.messages[k]) {
+        unchanged = false
+        break
+      }
+    }
+    if (unchanged) next.turns[i] = previousTurn
+  }
+
+  return next
+}
+
+function buildTurns(messages: Message[], options: GroupTurnsOptions = {}): TurnGrouping {
   // Drop hidden messages before grouping. These are system-generated nudges that
   // must reach the model (they drive a turn) but must never render as a bubble —
   // e.g. the WS2 background-task-completion nudge that wakes an idle session. The
   // assistant response they trigger has its own turnId and still renders normally.
-  const visibleMessages = messages.filter(m => !m.hidden)
+  //
+  // Queued user messages are dropped too: they have not been sent yet, and the
+  // composer's queued tray is where they live. They enter the transcript when
+  // their `processing` event clears the flag.
+  const visibleMessages = messages.filter(m => !m.hidden && !(m.role === 'user' && m.isQueued))
   // Sort by timestamp for correct chronological order
   // This ensures correct turn grouping even if messages are added out of order during streaming
   const sortedMessages = [...visibleMessages].sort((a, b) => a.timestamp - b.timestamp)
 
   const turns: Turn[] = []
+  // Inclusive range of `sortedMessages` each turn is built from, parallel to `turns`.
+  const spans: Array<[number, number]> = []
+  // Where the turn being built started. It is set whenever a turn is created;
+  // if a branch ever forgets to set it, the span is only *wider* than needed —
+  // which costs a rebuild, never a stale turn.
+  let spanStart = 0
   let currentTurn: AssistantTurn | null = null
+  const lastIndex = sortedMessages.length - 1
 
-  const flushCurrentTurn = (interrupted = false) => {
+  const flushCurrentTurn = (endIndex: number, interrupted = false) => {
     if (currentTurn) {
       // Sort activities by timestamp to ensure correct chronological order
       // This is necessary because buffering can delay when messages are added
@@ -422,21 +520,36 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
       }
 
       turns.push(currentTurn)
+      spans.push([spanStart, endIndex])
       currentTurn = null
     }
   }
 
-  for (const message of sortedMessages) {
+  /** Flush the open assistant turn. */
+  const flushTurns = (endIndex: number, interrupted = false) => {
+    flushCurrentTurn(endIndex, interrupted)
+  }
+
+  /** A turn made of exactly one message (user, system, auth-request). */
+  const pushStandalone = (turn: Turn, index: number) => {
+    turns.push(turn)
+    spans.push([index, index])
+  }
+
+  for (let i = 0; i < sortedMessages.length; i++) {
+    const message = sortedMessages[i]!
+    // Where any turn created from this message starts.
+    const at = i
     // Auth-request messages are standalone turns (credential input, OAuth flows)
     if (message.role === 'auth-request') {
       // If there's a current turn, it's complete (something follows it)
       if (currentTurn) currentTurn.isComplete = true
-      flushCurrentTurn()
-      turns.push({
+      flushTurns(at)
+      pushStandalone({
         type: 'auth-request',
         message,
         timestamp: message.timestamp,
-      })
+      }, at)
       continue
     }
 
@@ -444,12 +557,12 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
     if (message.role === 'user') {
       // If there's a current turn, it's complete (something follows it)
       if (currentTurn) currentTurn.isComplete = true
-      flushCurrentTurn()
-      turns.push({
+      flushTurns(at)
+      pushStandalone({
         type: 'user',
         message,
         timestamp: message.timestamp,
-      })
+      }, at)
       continue
     }
 
@@ -457,6 +570,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
     if (message.role === 'status') {
       if (!currentTurn) {
         // Start a new turn for this status
+        spanStart = at
         currentTurn = {
           type: 'assistant',
           turnId: message.id,
@@ -505,12 +619,12 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
       const isInterruption = message.role === 'info'
       // For error/warning (not info), the previous turn is complete
       if (currentTurn && !isInterruption) currentTurn.isComplete = true
-      flushCurrentTurn(isInterruption)
-      turns.push({
+      flushTurns(at, isInterruption)
+      pushStandalone({
         type: 'system',
         message,
         timestamp: message.timestamp,
-      })
+      }, at)
       continue
     }
 
@@ -519,6 +633,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
     if (message.role === 'plan') {
       if (!currentTurn) {
         // Edge case: plan without preceding activities
+        spanStart = at
         currentTurn = {
           type: 'assistant',
           turnId: message.turnId || message.id,
@@ -543,7 +658,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
       })
       currentTurn.isStreaming = false
       currentTurn.isComplete = true
-      flushCurrentTurn()
+      flushTurns(at)
       continue
     }
 
@@ -553,6 +668,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
       const isToolComplete = (message.toolStatus === 'completed' || message.toolResult !== undefined) && message.toolStatus !== 'backgrounded'
       if (!currentTurn) {
         // Start a new turn
+        spanStart = at
         currentTurn = {
           type: 'assistant',
           turnId: message.turnId || message.id,
@@ -579,6 +695,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
       if (message.isIntermediate || message.isPending) {
         if (!currentTurn) {
           // Start a new turn for this intermediate message
+          spanStart = at
           currentTurn = {
             type: 'assistant',
             turnId: message.turnId || message.id,
@@ -595,7 +712,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
         // Include parentId for intermediate messages to support nesting within subagents
         const intermediateActivity: ActivityItem = {
           id: message.id,
-          type: 'intermediate',
+          type: message.isThinking ? 'thinking' : 'intermediate',
           status: message.isPending ? 'running' : 'completed',
           content: message.content,
           timestamp: message.timestamp,
@@ -621,6 +738,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
       // Non-intermediate assistant message = final response
       if (!currentTurn) {
         // This is a response-only turn (no tools)
+        spanStart = at
         currentTurn = {
           type: 'assistant',
           turnId: message.turnId || message.id,
@@ -646,7 +764,7 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
 
       // Flush when turn is complete (non-streaming = final response received)
       if (!message.isStreaming) {
-        flushCurrentTurn()
+        flushTurns(at)
       }
       continue
     }
@@ -665,10 +783,10 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
     (currentTurn as AssistantTurn).isComplete = true
   }
 
-  // Flush any remaining turn
-  flushCurrentTurn()
+  // Flush any remaining turn (and queued sends that trail it)
+  flushTurns(lastIndex)
 
-  return turns
+  return { turns, messages: sortedMessages, spans, isSessionProcessing: options.isSessionProcessing === true }
 }
 
 /**
@@ -744,9 +862,9 @@ export function formatTurnAsMarkdown(turn: AssistantTurn): string {
     lines.push('')
 
     for (const activity of turn.activities) {
-      if (activity.type === 'intermediate') {
-        // Intermediate text (thinking/commentary)
-        lines.push(`### 💭 Commentary`)
+      if (activity.type === 'intermediate' || activity.type === 'thinking') {
+        // Model reasoning vs. commentary between tool calls
+        lines.push(activity.type === 'thinking' ? `### 🧠 Reasoning` : `### 💭 Commentary`)
         lines.push('')
         if (activity.content) {
           lines.push(activity.content)
@@ -831,9 +949,9 @@ export function formatTurnAsMarkdown(turn: AssistantTurn): string {
 export function formatActivityAsMarkdown(activity: ActivityItem): string {
   const lines: string[] = []
 
-  if (activity.type === 'intermediate') {
-    // Commentary/thinking
-    lines.push('# Commentary')
+  if (activity.type === 'intermediate' || activity.type === 'thinking') {
+    // Model reasoning vs. commentary between tool calls
+    lines.push(activity.type === 'thinking' ? '# Reasoning' : '# Commentary')
     lines.push('')
     if (activity.content) {
       lines.push(activity.content)

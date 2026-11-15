@@ -157,12 +157,12 @@ export function deriveConnectionStatus(source: {
     return source.config.connectionStatus
   }
 
-  // Derive from auth state
+  // Derive from auth state. A mailbox always needs a credential, even though it
+  // has no api/mcp authType to say so.
   const api = source.config.api
   const authType = mcp?.authType ?? api?.authType
-  const isAuthenticated = authType === 'none' || authType === undefined
-    ? true
-    : source.config['isAuthenticated'] === true
+  const requiresAuth = source.config.type === 'email' || (authType !== undefined && authType !== 'none')
+  const isAuthenticated = requiresAuth ? source.config['isAuthenticated'] === true : true
 
   if (!isAuthenticated) {
     return 'needs_auth'

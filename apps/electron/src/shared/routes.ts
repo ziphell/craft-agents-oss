@@ -124,14 +124,14 @@ export const routes = {
         : `view/${encodeURIComponent(viewId)}` as const,
 
     /** Sources view (sources navigator) - supports type filtering */
-    sources: (params?: { sourceSlug?: string; type?: 'api' | 'mcp' | 'local' }) => {
+    sources: (params?: { sourceSlug?: string; type?: 'api' | 'mcp' | 'local' | 'web' }) => {
       const { sourceSlug, type } = params ?? {}
       // Build base from filter type
       const base = type ? `sources/${type}` : 'sources'
       if (sourceSlug) {
         return `${base}/source/${sourceSlug}` as const
       }
-      return base as 'sources' | `sources/${'api' | 'mcp' | 'local'}`
+      return base as 'sources' | `sources/${'api' | 'mcp' | 'local' | 'web'}`
     },
 
     /** API sources view (sources navigator, api filter) */
@@ -146,11 +146,23 @@ export const routes = {
         ? `sources/mcp/source/${sourceSlug}` as const
         : 'sources/mcp' as const,
 
+    /** Mailbox sources view (sources navigator, email filter) */
+    sourcesEmail: (sourceSlug?: string) =>
+      sourceSlug
+        ? `sources/email/source/${sourceSlug}` as const
+        : 'sources/email' as const,
+
     /** Local folder sources view (sources navigator, local filter) */
     sourcesLocal: (sourceSlug?: string) =>
       sourceSlug
         ? `sources/local/source/${sourceSlug}` as const
         : 'sources/local' as const,
+
+    /** Web page sources view (sources navigator, web filter) */
+    sourcesWeb: (sourceSlug?: string) =>
+      sourceSlug
+        ? `sources/web/source/${sourceSlug}` as const
+        : 'sources/web' as const,
 
     /** Skills view (skills navigator). Pass a slug string for a local skill detail view. */
     skills: (skillSlug?: string) => {
@@ -190,11 +202,27 @@ export const routes = {
         ? `projects/project/${projectSlug}` as const
         : 'projects' as const,
 
-    /** Pages view (full-width library grid, or one page's embedded render) */
-    pages: (pageSlug?: string) =>
-      pageSlug
-        ? `pages/page/${pageSlug}` as const
-        : 'pages' as const,
+    /** Tweaks view (library list, or one tweak's detail page) */
+    tweaks: (tweakSlug?: string) =>
+      tweakSlug
+        ? `tweaks/tweak/${tweakSlug}` as const
+        : 'tweaks' as const,
+
+    /**
+     * Creations — the full-width library of works the agent produced.
+     *
+     * No id segment: a work is a file at its own path, so there is nothing to route *into*. Opening
+     * one opens that file.
+     */
+    creations: () => 'creations' as const,
+
+    /**
+     * Craft Bot — the assistant's conversation and the tasks it handed to workspaces.
+     *
+     * Its own navigator rather than a workspace you switch to: the window stays where it is, and
+     * a task opens in the workspace it runs in.
+     */
+    bot: () => 'bot' as const,
 
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,

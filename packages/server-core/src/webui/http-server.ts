@@ -11,15 +11,22 @@
  */
 
 import { join, extname } from 'node:path'
+import { createReadStream } from 'node:fs'
+import { Readable } from 'node:stream'
 import {
   RateLimiter,
-  initPasswordHash,
-  verifyPassword,
   createSessionToken,
+  deriveWebuiSessionKey,
   validateSession,
   buildSessionCookie,
   buildLogoutCookie,
+  sessionCookieName,
 } from './auth'
+import { createDefaultWebuiRuntime, type WebuiRuntime } from './runtime'
+import { DRAWIO_ROUTE_BASE, serveDrawioRoute } from './drawio'
+import { OFFICE_ROUTE_BASE, serveOfficeRoute } from './office'
+import { serveMediaRoute } from './media'
+import { findExport } from '../services/export-store'
 import { generateCallbackPage } from '@craft-agent/shared/auth'
 import type { PlatformServices } from '../runtime/platform'
 
@@ -49,6 +56,25 @@ const MIME_TYPES: Record<string, string> = {
 function getMimeType(path: string): string {
   return MIME_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream'
 }
+
+/** `attachment`, with an ASCII fallback plus the real (possibly non-ASCII) name. */
+function contentDisposition(name: string): string {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`
+}
+
+/**
+ * Assets the browser fetches without a session cookie. The web app manifest and
+ * its icons are requested with `credentials: omit`, so gating them behind the
+ * session cookie would 302 the browser to the login page and break PWA
+ * installability.
+ */
+const UNAUTHENTICATED_ASSET_PATHS = new Set([
+  '/manifest.json',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/apple-touch-icon.png',
+])
 
 function getForwardedValue(req: Request, key: 'proto' | 'host'): string | null {
   const forwarded = req.headers.get('forwarded')
@@ -92,11 +118,61 @@ export interface ResolveWebSocketUrlOptions {
   wsPort: number
 }
 
+/** The hostname a request claims to have arrived at, without its port. */
+function requestHostname(req: Request): string | null {
+  const host = getRequestHost(req)
+  if (!host) return null
+  try {
+    return new URL(`http://${host}`).hostname.toLowerCase() || null
+  } catch {
+    const withoutPort = host.replace(/:\d+$/, '').toLowerCase()
+    return withoutPort || null
+  }
+}
+
+/**
+ * Whether this request came in through the server's external endpoint.
+ *
+ * The configured external address belongs to the requests that arrive on it — a browser that
+ * enters by the tunnel host, or that reaches the hub through a reverse proxy (which is what puts
+ * `X-Forwarded-*` on the request). A browser on the LAN calls this hub directly: its host is the
+ * LAN address and nothing sits in front of it, so the external address is not its own and must
+ * not be handed to it — a tunnel or public host it cannot reach would break a connection that
+ * works today.
+ */
+export function requestUsesExternalAddress(req: Request, publicWsUrl: string): boolean {
+  const hostname = requestHostname(req)
+  try {
+    const publicHostname = new URL(publicWsUrl).hostname.toLowerCase()
+    if (hostname && publicHostname && hostname === publicHostname) return true
+  } catch {
+    // A malformed value (validated at save time) simply never matches here.
+  }
+
+  return Boolean(
+    req.headers.get('x-forwarded-host')
+    || req.headers.get('x-forwarded-proto')
+    || req.headers.get('forwarded'),
+  )
+}
+
+/**
+ * The socket form of a configured external address.
+ *
+ * The field takes whichever form the address came in — `https://host` is the same endpoint as
+ * `wss://host` — while what a browser is handed has to be a socket URL. Only the scheme changes:
+ * a path prefix a proxy forwards is part of the address and is kept.
+ */
+function toWebSocketUrl(address: string): string {
+  return address.replace(/^http/i, 'ws')
+}
+
 export function resolveWebSocketUrl(
   req: Request,
   { publicWsUrl, wsProtocol, wsPort }: ResolveWebSocketUrlOptions,
 ): string {
-  if (publicWsUrl) return publicWsUrl
+  // Per request, not globally: the internal address stays the address a LAN browser is given.
+  if (publicWsUrl && requestUsesExternalAddress(req, publicWsUrl)) return toWebSocketUrl(publicWsUrl)
 
   const host = getRequestHost(req)
   if (host) {
@@ -119,15 +195,51 @@ export interface OAuthCallbackDeps {
 }
 
 export interface WebuiHandlerOptions {
-  /** Path to built web UI dist/ directory. */
-  webuiDir: string
-  /** Secret used to sign JWTs — typically CRAFT_SERVER_TOKEN. */
-  secret: string
-  /** Optional separate web UI password. Falls back to `secret` for verification. */
-  password?: string
+  /**
+   * Path to the built web UI `dist/` directory.
+   *
+   * Optional, and deliberately independent of the handler existing: a hub serves its protocol
+   * routes (`/api/*`) whether or not the page bundle was built. Without it the request handler
+   * answers those and 404s everything else, with no login redirect to nowhere.
+   */
+  webuiDir?: string
+  /**
+   * The vendored drawio directory, when this hub has one.
+   *
+   * Served at `/drawio/` on the app's own origin: the web UI has no Electron process to hand
+   * out a `craft-local://` address, and same-origin is what lets the editor sit behind the
+   * session cookie. No directory → the editor is reported as not installed.
+   */
+  drawioDir?: string
+  /**
+   * The vendored GenOffice editors directory, when this hub has one.
+   *
+   * Served at `/office/` on the app's own origin, for the same reasons as `drawioDir`: the
+   * frame must sit behind the session cookie, and the hub is the only thing that can serve an
+   * origin at all. No directory → the editors are reported as not installed.
+   */
+  officeDir?: string
+  /**
+   * The hub's own token. It logs a browser in directly, and it is the HMAC key the session
+   * signing key is derived from (together with `password`) — so changing either credential ends
+   * every browser session.
+   */
+  serverToken: string
+  /** Web UI login password (generated when Server Mode first starts). */
+  password: string
+  /**
+   * Accepts a bearer header for endpoints a native client fetches over HTTP (export downloads).
+   * The hub passes its token registry here; a browser's cookie never reaches this path.
+   */
+  authorizeBearer?: (header: string | null) => boolean | Promise<boolean>
   /** Explicit Secure-cookie override. When unset, infer from the request / proxy headers. */
   secureCookies?: boolean
-  /** Optional browser-facing WebSocket URL override for reverse-proxy deployments. */
+  /**
+   * Optional browser-facing WebSocket URL for the server's external address.
+   *
+   * Applied only to requests that arrive through it (see `requestUsesExternalAddress`); a browser
+   * on the network keeps the address it used.
+   */
   publicWsUrl?: string
   /** RPC WebSocket protocol used when building a browser-facing fallback URL. */
   wsProtocol: 'ws' | 'wss'
@@ -145,6 +257,11 @@ export interface WebuiHandlerOptions {
    * and 'direct' is used as the rate-limit key.
    */
   trustedProxies?: string[]
+  /**
+   * Runtime adapter for asset streaming and password hashing. When omitted it is
+   * chosen from the current runtime (Bun or Node) — see `createDefaultWebuiRuntime`.
+   */
+  runtime?: WebuiRuntime
 }
 
 // ---------------------------------------------------------------------------
@@ -169,8 +286,11 @@ export interface WebuiHandler {
 export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
   const {
     webuiDir,
-    secret,
+    drawioDir,
+    officeDir,
     password,
+    serverToken,
+    authorizeBearer,
     secureCookies,
     publicWsUrl,
     wsProtocol,
@@ -180,14 +300,34 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     trustedProxies,
   } = options
 
+  // One key for every session this handler issues or checks; see `deriveWebuiSessionKey`.
+  const sessionKey = deriveWebuiSessionKey(serverToken, password)
+
+  const runtime = options.runtime ?? createDefaultWebuiRuntime()
+
+  // Said once, at startup: without the bundle every `/drawio/` request is a 404 that the
+  // app's loading overlay hides, which reads as "the editor is still loading" forever.
+  if (drawioDir) {
+    logger.info(`[webui] drawio editor: ${drawioDir}`)
+  } else {
+    logger.warn('[webui] drawio editor not installed (resources/drawio missing)')
+  }
+
+  // Same reason: a missing bundle is a 404 the frame cannot explain by itself.
+  if (officeDir) {
+    logger.info(`[webui] office editors: ${officeDir}`)
+  } else {
+    logger.warn('[webui] office editors not installed (resources/office missing)')
+  }
+
   const rateLimiter = new RateLimiter(5, 60_000)
   const cleanupTimer = setInterval(() => rateLimiter.cleanup(), 120_000)
 
-  const loginPassword = password || secret
   const trustedProxySet = new Set(trustedProxies ?? [])
 
-  // Hash the login password at startup (async, but resolves before first auth attempt in practice)
-  const passwordReady = initPasswordHash(loginPassword)
+  // Hash both accepted passwords at startup (async, but resolves before the first auth attempt).
+  const passwordReady = runtime.hashPassword(password)
+  const tokenPasswordReady = runtime.hashPassword(serverToken)
 
   /** Extract client IP — only trusts proxy headers when trustedProxies is configured. */
   function getClientIp(req: Request): string {
@@ -214,8 +354,9 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Login page (no auth) ──
     if (path === '/login' || path === '/login/') {
-      const loginFile = Bun.file(join(webuiDir, 'login.html'))
-      if (await loginFile.exists()) {
+      if (!webuiDir) return new Response('Web UI is not built', { status: 404 })
+      const loginFile = await runtime.openAsset(join(webuiDir, 'login.html'))
+      if (loginFile) {
         return new Response(loginFile, {
           headers: { 'Content-Type': 'text/html; charset=utf-8' },
         })
@@ -223,10 +364,10 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
       return new Response('Login page not found', { status: 404 })
     }
 
-    // ── Static assets that login page needs (no auth) ──
-    if (path === '/favicon.ico' || path.startsWith('/login-assets/')) {
-      const file = Bun.file(join(webuiDir, path))
-      if (await file.exists()) {
+    // ── Static assets that login page + PWA install need (no auth) ──
+    if (webuiDir && (path === '/favicon.ico' || UNAUTHENTICATED_ASSET_PATHS.has(path) || path.startsWith('/login-assets/'))) {
+      const file = await runtime.openAsset(join(webuiDir, path))
+      if (file) {
         return new Response(file, {
           headers: { 'Content-Type': getMimeType(path) },
         })
@@ -236,7 +377,8 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Auth endpoint ──
     if (path === '/api/auth' && req.method === 'POST') {
-      await passwordReady
+      const passwordHash = await passwordReady
+      const tokenHash = await tokenPasswordReady
       const ip = getClientIp(req)
 
       if (!rateLimiter.check(ip)) {
@@ -258,18 +400,22 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
         return Response.json({ error: 'Password is required' }, { status: 400 })
       }
 
-      if (!await verifyPassword(body.password)) {
+      // Either credential is a full client of this hub, so either is a valid login.
+      const matchesPassword = await runtime.verifyPassword(body.password, passwordHash)
+      const matchesToken = matchesPassword
+        || await runtime.verifyPassword(body.password, tokenHash)
+      if (!matchesToken) {
         logger.warn(`[webui] Failed auth attempt from ${ip}`)
         return Response.json({ error: 'Invalid credentials' }, { status: 401 })
       }
 
-      const jwt = await createSessionToken(secret)
+      const jwt = await createSessionToken(sessionKey)
       logger.info(`[webui] Successful auth from ${ip}`)
 
       return Response.json({ ok: true }, {
         status: 200,
         headers: {
-          'Set-Cookie': buildSessionCookie(jwt, useSecureCookies),
+          'Set-Cookie': buildSessionCookie(jwt, useSecureCookies, sessionCookieName(req.headers.get('host'))),
         },
       })
     }
@@ -279,7 +425,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
       return new Response(null, {
         status: 204,
         headers: {
-          'Set-Cookie': buildLogoutCookie(useSecureCookies),
+          'Set-Cookie': buildLogoutCookie(useSecureCookies, sessionCookieName(req.headers.get('host'))),
         },
       })
     }
@@ -347,7 +493,7 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
     // ── Config endpoint (requires session cookie) ──
     if (path === '/api/config' && req.method === 'GET') {
-      const configSession = await validateSession(req.headers.get('cookie'), secret)
+      const configSession = await validateSession(req.headers.get('cookie'), sessionKey)
       if (!configSession) {
         return Response.json({ error: 'Unauthorized' }, { status: 401 })
       }
@@ -356,50 +502,107 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
       })
     }
 
-    // Return the default workspace ID so the webui can include it in the WS handshake
+    // Workspace IDs for the webui handshake. The first workspace is the default (stable, unlike
+    // `activeWorkspaceId` which only tracks the most recently created one); the full list lets a
+    // tab validate a workspace it remembered before using it.
     if (path === '/api/config/workspaces' && req.method === 'GET') {
-      const configSession = await validateSession(req.headers.get('cookie'), secret)
+      const configSession = await validateSession(req.headers.get('cookie'), sessionKey)
       if (!configSession) {
         return Response.json({ error: 'Unauthorized' }, { status: 401 })
       }
-      const { getActiveWorkspace } = await import('@craft-agent/shared/config/storage')
-      const active = getActiveWorkspace()
+      const { loadStoredConfig } = await import('@craft-agent/shared/config/storage')
+      const workspaceIds = (loadStoredConfig()?.workspaces ?? []).map((w) => w.id)
       return Response.json({
-        defaultWorkspaceId: active?.id ?? null,
+        defaultWorkspaceId: workspaceIds[0] ?? null,
+        workspaceIds,
+      })
+    }
+
+    // ── Export downloads ──
+    // A file this hub produced for a caller that is not on this machine. The browser brings its
+    // session cookie; a native client brings a hub credential as a bearer header. Either way the
+    // bytes travel here, not over the RPC socket.
+    if (path.startsWith('/api/exports/') && req.method === 'GET') {
+      const authorized = !!await validateSession(req.headers.get('cookie'), sessionKey)
+        || !!await authorizeBearer?.(req.headers.get('authorization'))
+      if (!authorized) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+
+      const file = findExport(decodeURIComponent(path.slice('/api/exports/'.length)))
+      if (!file) return new Response('Not Found', { status: 404 })
+
+      return new Response(Readable.toWeb(createReadStream(file.path)) as unknown as ReadableStream, {
+        headers: {
+          'Content-Type': file.mime,
+          'Content-Length': String(file.size),
+          'Content-Disposition': contentDisposition(file.name),
+          'Cache-Control': 'no-store',
+        },
       })
     }
 
     // ── Everything below requires a valid session cookie ──
     const cookieHeader = req.headers.get('cookie')
-    const session = await validateSession(cookieHeader, secret)
+    const session = await validateSession(cookieHeader, sessionKey)
 
     if (!session) {
       const accept = req.headers.get('accept') ?? ''
-      if (accept.includes('text/html') || path === '/' || path === '') {
-        return Response.redirect('/login', 302)
+      // Only a hub that actually has a page has somewhere to send the person.
+      if (webuiDir && (accept.includes('text/html') || path === '/' || path === '')) {
+        // A relative `Location` is valid HTTP, but `Response.redirect()` demands an
+        // absolute URL and throws `ERR_INVALID_URL` under Node's undici (Bun is
+        // lenient) — so build the redirect response directly.
+        return new Response(null, { status: 302, headers: { Location: '/login' } })
       }
       return Response.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    // ── Project media: a url a <video> can seek, not a data URL ──
+    if (path === '/api/media') {
+      const mediaResponse = await serveMediaRoute(req, path)
+      if (mediaResponse) return mediaResponse
+    }
+
+    // ── The bundled drawio editor, on this app's own origin ──
+    // After the session check on purpose: the assets are not a secret, but there is no reason
+    // for an anonymous visitor to use the hub as a static host either.
+    if (path === DRAWIO_ROUTE_BASE || path.startsWith(`${DRAWIO_ROUTE_BASE}/`)) {
+      if (!drawioDir) {
+        return new Response('The bundled drawio editor is not installed on this hub.', { status: 404 })
+      }
+      const drawioResponse = await serveDrawioRoute(req, path, { dir: drawioDir, runtime })
+      if (drawioResponse) return drawioResponse
+    }
+
+    // ── The bundled office editors, likewise same-origin and behind the session ──
+    if (path === OFFICE_ROUTE_BASE || path.startsWith(`${OFFICE_ROUTE_BASE}/`)) {
+      if (!officeDir) {
+        return new Response('The bundled office editors are not installed on this hub.', { status: 404 })
+      }
+      const officeResponse = await serveOfficeRoute(req, path, { dir: officeDir, runtime })
+      if (officeResponse) return officeResponse
+    }
+
     // ── Serve SPA static files ──
-    if (path !== '/') {
-      const file = Bun.file(join(webuiDir, path))
-      if (await file.exists()) {
-        return new Response(file, {
-          headers: { 'Content-Type': getMimeType(path) },
+    if (webuiDir) {
+      if (path !== '/') {
+        const file = await runtime.openAsset(join(webuiDir, path))
+        if (file) {
+          return new Response(file, {
+            headers: { 'Content-Type': getMimeType(path) },
+          })
+        }
+      }
+
+      // SPA fallback — serve index.html for all non-file routes
+      const indexFile = await runtime.openAsset(join(webuiDir, 'index.html'))
+      if (indexFile) {
+        return new Response(indexFile, {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
         })
       }
     }
 
-    // SPA fallback — serve index.html for all non-file routes
-    const indexFile = Bun.file(join(webuiDir, 'index.html'))
-    if (await indexFile.exists()) {
-      return new Response(indexFile, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      })
-    }
-
-    return new Response('Not Found', { status: 404 })
+    return new Response(webuiDir ? 'Not Found' : 'Web UI is not built', { status: 404 })
   }
 
   return {

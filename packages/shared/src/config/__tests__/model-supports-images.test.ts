@@ -11,70 +11,59 @@ const BASE_COMPAT: LlmConnection = {
   createdAt: 1,
 }
 
-describe('modelSupportsImages — pi_compat precedence', () => {
-  it('returns true when per-model supportsImages: true (override wins over connection default)', () => {
+describe('modelSupportsImages — pi_compat', () => {
+  it('returns true when the model entry opts into image input', () => {
     const conn: LlmConnection = {
       ...BASE_COMPAT,
-      customEndpoint: { api: 'openai-completions', supportsImages: false },
-      models: [{ id: 'vision', supportsImages: true } as never],
+      models: [{ id: 'vision', supportsImages: true }],
     }
     expect(modelSupportsImages(conn, 'vision')).toBe(true)
   })
 
-  it('returns false when per-model supportsImages: false (override wins over connection default true)', () => {
+  it('returns false when the model entry opts out', () => {
     const conn: LlmConnection = {
       ...BASE_COMPAT,
-      customEndpoint: { api: 'openai-completions', supportsImages: true },
-      models: [{ id: 'text-only', supportsImages: false } as never],
+      models: [{ id: 'text-only', supportsImages: false }],
     }
     expect(modelSupportsImages(conn, 'text-only')).toBe(false)
   })
 
-  it('falls back to connection-level supportsImages when no per-model override', () => {
-    const conn: LlmConnection = {
-      ...BASE_COMPAT,
-      customEndpoint: { api: 'openai-completions', supportsImages: true },
-      models: ['plain'],
-    }
+  it('defaults to true when the model entry does not declare it', () => {
+    const conn: LlmConnection = { ...BASE_COMPAT, models: ['plain'] }
     expect(modelSupportsImages(conn, 'plain')).toBe(true)
   })
 
-  it('returns false when neither per-model override nor connection default is set', () => {
+  it('defaults to true when the model is not in models[] at all', () => {
     const conn: LlmConnection = { ...BASE_COMPAT, models: ['plain'] }
-    expect(modelSupportsImages(conn, 'plain')).toBe(false)
-  })
-
-  it('returns false when the model is not in models[] (matches Pi default)', () => {
-    const conn: LlmConnection = { ...BASE_COMPAT, models: ['plain'] }
-    expect(modelSupportsImages(conn, 'unknown')).toBe(false)
-  })
-
-  it('returns connection default when the model is missing but connection default is true', () => {
-    const conn: LlmConnection = {
-      ...BASE_COMPAT,
-      customEndpoint: { api: 'openai-completions', supportsImages: true },
-      models: ['plain'],
-    }
     expect(modelSupportsImages(conn, 'unknown')).toBe(true)
   })
 })
 
-describe('modelSupportsImages — non-pi_compat fallthrough', () => {
-  it('returns true for anthropic regardless of override (renderer does not gate built-in catalogs)', () => {
+describe('modelSupportsImages — the model entry wins on every connection type', () => {
+  it('honours an explicit false on an anthropic connection', () => {
     const conn: LlmConnection = {
       slug: 'a', name: 'a', providerType: 'anthropic', authType: 'api_key',
-      models: [{ id: 'claude-haiku', supportsImages: false } as never],
+      models: [{ id: 'claude-haiku', supportsImages: false }],
       createdAt: 1,
     }
-    expect(modelSupportsImages(conn, 'claude-haiku')).toBe(true)
+    expect(modelSupportsImages(conn, 'claude-haiku')).toBe(false)
   })
 
-  it('returns true for pi regardless of override', () => {
+  it('honours an explicit false on a pi connection', () => {
     const conn: LlmConnection = {
       slug: 'p', name: 'p', providerType: 'pi', authType: 'api_key',
-      models: [{ id: 'gpt-x', supportsImages: false } as never],
+      models: [{ id: 'gpt-x', supportsImages: false }],
       createdAt: 1,
     }
-    expect(modelSupportsImages(conn, 'gpt-x')).toBe(true)
+    expect(modelSupportsImages(conn, 'gpt-x')).toBe(false)
+  })
+
+  it('defaults to true for a built-in entry that says nothing (upstream catalog decides)', () => {
+    const conn: LlmConnection = {
+      slug: 'a', name: 'a', providerType: 'anthropic', authType: 'api_key',
+      models: ['claude-opus-4-8'],
+      createdAt: 1,
+    }
+    expect(modelSupportsImages(conn, 'claude-opus-4-8')).toBe(true)
   })
 })

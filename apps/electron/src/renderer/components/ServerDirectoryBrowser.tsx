@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useRegisterModal } from '@/context/ModalContext'
 import type { DirectoryListingResult } from '../../shared/types'
-import { FolderIcon, FolderSymlinkIcon, ChevronRightIcon } from 'lucide-react'
+import { FileIcon, FolderIcon, FolderSymlinkIcon, ChevronRightIcon } from 'lucide-react'
 import { Spinner } from '@craft-agent/ui'
 
 /**
@@ -36,6 +36,19 @@ interface ServerDirectoryBrowserProps {
   onSelect: (path: string) => void
   onCancel: () => void
   initialPath?: string
+  /**
+   * What the caller is choosing. `file` also lists files and only lets a file be picked —
+   * folders stay navigable. Used by the composer to attach a file that already sits on the
+   * server, so it never leaves this machine.
+   */
+  selectionKind?: 'directory' | 'file'
+  /**
+   * Browse this saved server instead of whichever server the window is on.
+   *
+   * Workspace creation picks a host first and then a folder, and the host is often a server the
+   * current window is not connected to. Without it, the listing rides the window's transport.
+   */
+  connectionId?: string
 }
 
 export function ServerDirectoryBrowser({
@@ -44,6 +57,8 @@ export function ServerDirectoryBrowser({
   onSelect,
   onCancel,
   initialPath,
+  selectionKind = 'directory',
+  connectionId,
 }: ServerDirectoryBrowserProps) {
   useRegisterModal(open, onCancel)
   const { t } = useTranslation()
@@ -55,6 +70,21 @@ export function ServerDirectoryBrowser({
   const [selectedEntry, setSelectedEntry] = useState<string | null>(null)
   const [serverHomePath, setServerHomePath] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const pickingFile = selectionKind === 'file'
+
+  // An explicitly chosen host is asked directly; otherwise the listing follows this window.
+  const listDirectory = useCallback((dirPath: string) => {
+    const options = { includeFiles: pickingFile }
+    return connectionId
+      ? window.electronAPI.listRemoteDirectories(connectionId, dirPath, options)
+      : window.electronAPI.listServerDirectory(dirPath, options)
+  }, [connectionId, pickingFile])
+
+  const resolveHomeDir = useCallback(() => (
+    connectionId
+      ? window.electronAPI.getRemoteHomeDir(connectionId)
+      : window.electronAPI.getServerHomeDir()
+  ), [connectionId])
 
   // Navigate to a directory (for browse mode)
   const navigateTo = useCallback(async (dirPath: string) => {
@@ -62,7 +92,7 @@ export function ServerDirectoryBrowser({
     setError(null)
     setSelectedEntry(null)
     try {
-      const result = await window.electronAPI.listServerDirectory(dirPath)
+      const result = await listDirectory(dirPath)
       setListing(result)
       setPathInput(result.currentPath)
     } catch (err) {
@@ -71,7 +101,7 @@ export function ServerDirectoryBrowser({
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [listDirectory])
 
   // Load initial directory when opened
   useEffect(() => {
@@ -91,11 +121,11 @@ export function ServerDirectoryBrowser({
 
         // Resolve the start path with cascading fallback for backward compat:
         // 1. initialPath (if provided and valid)
-        // 2. getServerHomeDir() — REMOTE_ELIGIBLE, returns server's home (new servers)
-        // 3. listServerDirectory('~') — server-side ~ resolution (medium-age servers)
-        // 4. listServerDirectory('/') — root directory (old servers)
+        // 2. the host's home directory (server:homeDir — REMOTE_ELIGIBLE)
+        // 3. listDirectory('~') — server-side ~ resolution (medium-age servers)
+        // 4. listDirectory('/') — root directory (old servers)
         const tryNavigate = async (path: string) => {
-          const result = await window.electronAPI.listServerDirectory(path)
+          const result = await listDirectory(path)
           setListing(result)
           setPathInput(result.currentPath)
           setServerHomePath(result.currentPath)
@@ -105,9 +135,9 @@ export function ServerDirectoryBrowser({
           if (initialPath) {
             await tryNavigate(initialPath)
           } else {
-            // Try server home dir API first (REMOTE_ELIGIBLE — correct for remote workspaces)
+            // Try the host's home dir first (correct for remote workspaces and chosen hosts)
             try {
-              const serverHome = await window.electronAPI.getServerHomeDir()
+              const serverHome = await resolveHomeDir()
               await tryNavigate(serverHome)
             } catch {
               // Fallback: ~ resolution (server-side)
@@ -125,13 +155,18 @@ export function ServerDirectoryBrowser({
           setLoading(false)
         }
       } else {
-        // Manual mode — fetch home dir for platform detection
-        const homeDir = await window.electronAPI.getHomeDir()
+        // Manual mode — fetch a home dir for platform detection. For a chosen host that is the
+        // host's own home; otherwise this machine's (the window's picker is a local one).
+        const homeDir = await resolveHomeDir().catch(() => window.electronAPI.getHomeDir())
         setServerHomePath(homeDir)
       }
     }
     void init()
-  }, [open, mode, initialPath, navigateTo])
+  }, [open, mode, initialPath, navigateTo, listDirectory, resolveHomeDir])
+
+  // The entry the person highlighted, and whether it is a file (only files can be picked
+  // when the caller is choosing a file).
+  const selectedIsFile = listing?.entries.some(entry => entry.path === selectedEntry && !entry.isDirectory) ?? false
 
   // Handle path input submission (Enter key or navigate button)
   const handlePathSubmit = useCallback(() => {
@@ -160,18 +195,31 @@ export function ServerDirectoryBrowser({
     }
 
     if (selectedEntry) {
+      // While choosing a file, a highlighted folder is not a choice — it is navigation.
+      if (pickingFile && !selectedIsFile) return
       onSelect(selectedEntry)
     } else if (listing) {
+      // A folder is only a valid answer for a folder picker.
+      if (pickingFile) {
+        // Typed path fallback (older servers list no files): take it as the file itself.
+        const typed = pathInput.trim()
+        if (typed && typed !== listing.currentPath) onSelect(typed)
+        return
+      }
       onSelect(listing.currentPath)
     } else if (pathInput.trim()) {
       onSelect(pathInput.trim())
     }
-  }, [mode, selectedEntry, listing, pathInput, onSelect, handlePathSubmit])
+  }, [mode, selectedEntry, selectedIsFile, pickingFile, listing, pathInput, onSelect, handlePathSubmit])
 
-  // Handle double-click on an entry to navigate into it
-  const handleEntryDoubleClick = useCallback((entryPath: string) => {
-    void navigateTo(entryPath)
-  }, [navigateTo])
+  // Handle double-click: folders open, files are picked
+  const handleEntryDoubleClick = useCallback((entry: { path: string; isDirectory: boolean }) => {
+    if (pickingFile && !entry.isDirectory) {
+      onSelect(entry.path)
+      return
+    }
+    void navigateTo(entry.path)
+  }, [navigateTo, pickingFile, onSelect])
 
   // Handle single-click to select an entry
   const handleEntryClick = useCallback((entryPath: string) => {
@@ -234,13 +282,15 @@ export function ServerDirectoryBrowser({
 
           {!loading && !error && listing?.truncated && (
             <div className="border-b border-foreground/10 px-3 py-2 text-xs text-muted-foreground">
-              Showing the first {listing.entries.length} folders out of {listing.totalEntries}. Narrow the path if the folder you want is missing.
+              Showing the first {listing.entries.length} entries out of {listing.totalEntries}. Narrow the path if what you want is missing.
             </div>
           )}
 
           {!loading && !error && listing && listing.entries.length === 0 && (
             <div className="px-3 py-4 text-sm text-muted-foreground">
-              No subdirectories. Use the path input above to navigate.
+              {pickingFile
+                ? t('settings.server.noFiles')
+                : 'No subdirectories. Use the path input above to navigate.'}
             </div>
           )}
 
@@ -249,14 +299,16 @@ export function ServerDirectoryBrowser({
               key={entry.path}
               type="button"
               onClick={() => handleEntryClick(entry.path)}
-              onDoubleClick={() => handleEntryDoubleClick(entry.path)}
+              onDoubleClick={() => handleEntryDoubleClick(entry)}
               className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors hover:bg-foreground/5 ${
                 selectedEntry === entry.path ? 'bg-foreground/5' : ''
               }`}
             >
-              {entry.isSymlink
-                ? <FolderSymlinkIcon className="size-4 shrink-0 text-muted-foreground" />
-                : <FolderIcon className="size-4 shrink-0 text-muted-foreground" />
+              {entry.isDirectory
+                ? entry.isSymlink
+                  ? <FolderSymlinkIcon className="size-4 shrink-0 text-muted-foreground" />
+                  : <FolderIcon className="size-4 shrink-0 text-muted-foreground" />
+                : <FileIcon className="size-4 shrink-0 text-muted-foreground" />
               }
               <span className="truncate">{entry.name}</span>
               {entry.isSymlink && (
@@ -293,7 +345,9 @@ export function ServerDirectoryBrowser({
     <Dialog open={open} onOpenChange={isOpen => { if (!isOpen) onCancel() }}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{t("settings.server.selectDirectory")}</DialogTitle>
+          <DialogTitle>
+            {pickingFile ? t('settings.server.selectFile') : t('settings.server.selectDirectory')}
+          </DialogTitle>
         </DialogHeader>
 
         <div className="flex flex-col gap-2">
@@ -306,7 +360,13 @@ export function ServerDirectoryBrowser({
           </Button>
           <Button
             onClick={handleSelect}
-            disabled={mode === 'manual' ? !pathInput.trim() : (!listing && !pathInput.trim())}
+            disabled={
+              mode === 'manual'
+                ? !pathInput.trim()
+                : pickingFile
+                  ? !(selectedIsFile || (pathInput.trim() !== '' && pathInput.trim() !== listing?.currentPath))
+                  : (!listing && !pathInput.trim())
+            }
           >
             Select
           </Button>

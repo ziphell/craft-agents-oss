@@ -35,10 +35,18 @@ export type CredentialType =
   | 'source_basic'       // Basic auth (base64 encoded user:pass)
   // Messaging gateway credentials (keyed by workspaceId + platform)
   | 'messaging_bearer'   // Platform tokens (e.g., Telegram bot token)
-  // Page publication admin token (keyed by workspaceId + pageId)
-  | 'page_publish_token' // Secret capability that authorizes publication update/unpublish
   // Decision layer (Jev / System One) API key, keyed by decision provider id via `name`
-  | 'decision_api_key';
+  | 'decision_api_key'
+  // Search service API key (e.g. DeepSeek search), keyed by service id via `name`
+  | 'search_api_key'
+  // Page-fetching service API key (e.g. DeepSeek fetch), keyed by service id via `name`
+  | 'fetch_api_key'
+  // Media generation channel API key, keyed by channel id via `name`
+  | 'media_channel_api_key'
+  // Speech recognition cloud provider API key, keyed by provider id via `name`
+  | 'asr_api_key'
+  // Reference-material object storage (S3-compatible) secret access key
+  | 'object_storage_secret';
 
 /** Valid credential types for validation */
 const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
@@ -54,8 +62,12 @@ const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
   'source_apikey',
   'source_basic',
   'messaging_bearer',
-  'page_publish_token',
   'decision_api_key',
+  'search_api_key',
+  'fetch_api_key',
+  'media_channel_api_key',
+  'asr_api_key',
+  'object_storage_secret',
 ] as const;
 
 /** Check if a string is a valid CredentialType */
@@ -156,14 +168,29 @@ function isMessagingCredential(type: CredentialType): boolean {
   return (MESSAGING_CREDENTIAL_TYPES as readonly string[]).includes(type);
 }
 
-/** Check if type is a page publication credential (workspaceId + pageId via `name`) */
-function isPageCredential(type: CredentialType): boolean {
-  return type === 'page_publish_token';
-}
-
 /** Check if type is a decision-layer credential (decision provider id via `name`) */
 function isDecisionCredential(type: CredentialType): boolean {
   return type === 'decision_api_key';
+}
+
+/** Check if type is a search-service credential (service id via `name`) */
+function isSearchCredential(type: CredentialType): boolean {
+  return type === 'search_api_key';
+}
+
+/** Check if type is a page-fetching credential (service id via `name`) */
+function isFetchCredential(type: CredentialType): boolean {
+  return type === 'fetch_api_key';
+}
+
+/** Check if type is a media channel credential (channel id via `name`) */
+function isMediaChannelCredential(type: CredentialType): boolean {
+  return type === 'media_channel_api_key';
+}
+
+/** Check if type is a speech recognition provider credential (provider id via `name`) */
+function isAsrCredential(type: CredentialType): boolean {
+  return type === 'asr_api_key';
 }
 
 /** LLM connection credential types */
@@ -219,17 +246,37 @@ export function credentialIdToAccount(id: CredentialId): string {
     return parts.join(CREDENTIAL_DELIMITER);
   }
 
-  // Page-scoped format:
-  // page_publish_token::{workspaceId}::{pageId}
-  if (isPageCredential(id.type) && id.workspaceId && id.name) {
-    parts.push(id.workspaceId);
+  // Decision-provider format:
+  // decision_api_key::{provider}
+  if (isDecisionCredential(id.type) && id.name) {
     parts.push(id.name);
     return parts.join(CREDENTIAL_DELIMITER);
   }
 
-  // Decision-provider format:
-  // decision_api_key::{provider}
-  if (isDecisionCredential(id.type) && id.name) {
+  // Search-service format:
+  // search_api_key::{service}
+  if (isSearchCredential(id.type) && id.name) {
+    parts.push(id.name);
+    return parts.join(CREDENTIAL_DELIMITER);
+  }
+
+  // Page-fetching format:
+  // fetch_api_key::{service}
+  if (isFetchCredential(id.type) && id.name) {
+    parts.push(id.name);
+    return parts.join(CREDENTIAL_DELIMITER);
+  }
+
+  // Media-channel format:
+  // media_channel_api_key::{channelId}
+  if (isMediaChannelCredential(id.type) && id.name) {
+    parts.push(id.name);
+    return parts.join(CREDENTIAL_DELIMITER);
+  }
+
+  // Speech recognition provider format:
+  // asr_api_key::{provider}
+  if (isAsrCredential(id.type) && id.name) {
     parts.push(id.name);
     return parts.join(CREDENTIAL_DELIMITER);
   }
@@ -302,15 +349,33 @@ export function accountToCredentialId(account: string): CredentialId | null {
     return { type, workspaceId: parts[1], name: parts[2] };
   }
 
-  // Page-scoped format:
-  // page_publish_token::{workspaceId}::{pageId}
-  if (isPageCredential(type) && parts.length === 3) {
-    return { type, workspaceId: parts[1], name: parts[2] };
-  }
-
   // Decision-provider format:
   // decision_api_key::{provider}
   if (isDecisionCredential(type) && parts.length === 2 && parts[1] && parts[1] !== 'global') {
+    return { type, name: parts[1] };
+  }
+
+  // Search-service format:
+  // search_api_key::{service}
+  if (isSearchCredential(type) && parts.length === 2 && parts[1] && parts[1] !== 'global') {
+    return { type, name: parts[1] };
+  }
+
+  // Page-fetching format:
+  // fetch_api_key::{service}
+  if (isFetchCredential(type) && parts.length === 2 && parts[1] && parts[1] !== 'global') {
+    return { type, name: parts[1] };
+  }
+
+  // Media-channel format:
+  // media_channel_api_key::{channelId}
+  if (isMediaChannelCredential(type) && parts.length === 2 && parts[1] && parts[1] !== 'global') {
+    return { type, name: parts[1] };
+  }
+
+  // Speech recognition provider format:
+  // asr_api_key::{provider}
+  if (isAsrCredential(type) && parts.length === 2 && parts[1] && parts[1] !== 'global') {
     return { type, name: parts[1] };
   }
 

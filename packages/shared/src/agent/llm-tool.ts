@@ -22,14 +22,32 @@ type ToolResult = {
   content: Array<{ type: 'text'; text: string }>;
   isError?: boolean;
 };
-import { readFile } from 'fs/promises';
+import { readFile, mkdtemp, rm } from 'fs/promises';
 import { existsSync, statSync } from 'fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getModelById, getDefaultSummarizationModel, MODEL_REGISTRY } from '../config/models.ts';
+import { runCliTool } from '../utils/cli-tool.ts';
 
 // ============================================================================
 // QUERY INTERFACES (used by agent backends to implement queryFn)
 // ============================================================================
+
+/**
+ * One image in a request, with where it sits in a recording when it came from one.
+ *
+ * The prompt text names the offsets too (an ordered list, one per image) so every backend can
+ * pair an image with a moment by position alone; `timestampMs` is the same fact on the data
+ * side, for a backend that can interleave it (Claude can) instead of re-reading the text.
+ */
+export interface LLMQueryImage {
+  /** Base64, without a `data:` prefix. */
+  data: string;
+  /** e.g. `image/jpeg`. */
+  mimeType: string;
+  /** Position in the recording, ms from its start. */
+  timestampMs?: number;
+}
 
 /**
  * Request passed to the agent-native queryFn callback.
@@ -38,6 +56,13 @@ import { getModelById, getDefaultSummarizationModel, MODEL_REGISTRY } from '../c
 export interface LLMQueryRequest {
   /** Full prompt including serialized file content */
   prompt: string;
+  /**
+   * Images to send with the prompt, in order.
+   *
+   * A recording becomes a sequence of frames the model can look at; this is that sequence. An
+   * empty array is the same as omitting it.
+   */
+  images?: LLMQueryImage[];
   /** Optional system prompt */
   systemPrompt?: string;
   /** Model to use (validated against registry) */
@@ -63,6 +88,14 @@ export interface LLMQueryResult {
 }
 
 /**
+ * The agent-native query callback, as the registry holds it.
+ *
+ * Named once because more than one door needs the same call: `call_llm` is a prompt someone else
+ * wrote, and the canvas's describe action sends a picture with a prompt this app assembles.
+ */
+export type LlmQueryFn = (request: LLMQueryRequest) => Promise<LLMQueryResult>;
+
+/**
  * Unified timeout for secondary LLM calls (call_llm and mini-completion flows).
  * Keep this consistent across backends to avoid model-specific timeout behavior.
  */
@@ -85,13 +118,18 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, message: string)
 // CONSTANTS
 // ============================================================================
 
-const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'avif'];
+/** Formats whose stored pixels may not be the ones a viewer shows, so they go through `normalize`. */
+const NEEDS_NORMALIZING = new Set(['jpg', 'jpeg', 'webp', 'heic', 'heif', 'avif']);
+/** Containers no vision API accepts: if they cannot be converted, there is nothing to send. */
+const MUST_TRANSCODE = new Set(['heic', 'heif', 'avif']);
 
 // Limits - chosen to balance capability with reasonable resource usage
 const MAX_FILE_LINES = 2000;
 const MAX_FILE_BYTES = 500_000; // 500KB per text file
 const MAX_ATTACHMENTS = 20;
 const MAX_TOTAL_CONTENT_BYTES = 2_000_000; // 2MB total across all attachments
+const MAX_TOTAL_IMAGE_BYTES = 20_000_000; // 20MB total across all image attachments
 
 // ============================================================================
 // PREDEFINED OUTPUT FORMATS
@@ -166,6 +204,12 @@ export interface BuildCallLlmOptions {
   validateModel?: (resolvedModelId: string) => string | undefined;
   /** Session directory for resolving relative attachment paths */
   sessionPath?: string;
+  /**
+   * Lazy resolver for the connection's vision model. Same contract as
+   * {@link LLMToolOptions.getImageModel}: consulted only when the call carries
+   * images and no explicit model was given; `undefined` refuses images.
+   */
+  getImageModel?: () => string | undefined;
 }
 
 /**
@@ -186,7 +230,13 @@ export async function buildCallLlmRequest(
 
   // Process attachments
   const textParts: string[] = [];
+  const images: LLMQueryImage[] = [];
   const attachments = input.attachments as Array<string | { path: string; startLine?: number; endLine?: number }> | undefined;
+
+  // Images are accepted only when a model that can read them exists: the
+  // caller's explicit pick, else the connection's vision model. Otherwise the
+  // historical refusal stands (this backend cannot read the picture).
+  const imageModel = (input.model as string | undefined)?.trim() || options.getImageModel?.();
 
   if (attachments?.length) {
     for (let i = 0; i < attachments.length; i++) {
@@ -195,9 +245,13 @@ export async function buildCallLlmRequest(
         throw new Error(result.message);
       }
       if (result.type === 'image') {
-        throw new Error(
-          `Attachment ${i + 1}: Image attachments are not supported in ${options.backendName} mode. Use text files only.`
-        );
+        if (!imageModel) {
+          throw new Error(
+            `Attachment ${i + 1}: Image attachments are not supported in ${options.backendName} mode. Use text files only.`
+          );
+        }
+        images.push({ data: result.base64, mimeType: result.mediaType });
+        continue;
       }
       if (result.type === 'text') {
         textParts.push(`<file path="${result.filename}">\n${result.content}\n</file>`);
@@ -221,6 +275,12 @@ export async function buildCallLlmRequest(
     if (options.validateModel) {
       model = options.validateModel(model) ?? undefined;
     }
+  }
+
+  // No explicit model but images are present: route them to the resolved vision
+  // model so they reach something that can actually read them.
+  if (!model && images.length > 0) {
+    model = imageModel;
   }
 
   // Build system prompt with structured output injection if needed
@@ -247,6 +307,7 @@ export async function buildCallLlmRequest(
     maxTokens: input.maxTokens as number | undefined,
     temperature: input.temperature as number | undefined,
     outputSchema: schema ?? undefined,
+    ...(images.length > 0 ? { images } : {}),
   };
 }
 
@@ -336,8 +397,38 @@ interface AttachmentInput {
 
 type AttachmentResult =
   | { type: 'text'; content: string; filename: string; bytes: number }
-  | { type: 'image'; base64: string; mediaType: string }
+  | { type: 'image'; base64: string; mediaType: string; bytes: number }
   | { type: 'error'; message: string };
+
+/**
+ * The bytes to hand a model: upright, and in a container the API accepts.
+ *
+ * A phone photo is often HEIC (which every vision API rejects) or a JPEG whose pixels are stored
+ * sideways with `Orientation=6/8` (which no API promises to honour). `img-tool normalize` decodes
+ * and bakes the direction in — the same command the app uses when a photo is attached — so the
+ * model sees the picture a person sees instead of trusting each provider's decoder.
+ *
+ * Returns null when the tool cannot run or the picture is already right; the caller then keeps the
+ * original bytes, which is exactly today's behaviour.
+ */
+async function normalizeImageForModel(
+  filePath: string,
+): Promise<{ base64: string; mimeType: string; bytes: number } | null> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'craft-image-'));
+  const output = path.join(dir, 'normalized.jpg');
+  try {
+    const run = await runCliTool('img-tool', ['normalize', filePath, '-o', output], { timeoutMs: 120_000 });
+    if (!run.ok) return null;
+    const answer = JSON.parse(run.stdout) as { changed?: boolean };
+    if (answer.changed !== true) return null;
+    const buffer = await readFile(output);
+    return { base64: buffer.toString('base64'), mimeType: 'image/jpeg', bytes: buffer.byteLength };
+  } catch {
+    return null;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
 
 export async function processAttachment(
   input: string | AttachmentInput,
@@ -355,7 +446,9 @@ export async function processAttachment(
   if (basePath && filePath && !path.isAbsolute(filePath) && !filePath.startsWith('~')) {
     filePath = path.resolve(basePath, filePath);
   }
-  const filename = filePath.split('/').pop() || filePath;
+  // basename() understands both separators, so Windows paths yield the bare
+  // filename instead of the whole path (which split('/') would have produced).
+  const filename = path.basename(filePath) || filePath;
   const safeFilename = escapeXml(filename); // Escape for use in XML-like tags
 
   // --- Validate path exists and is a file ---
@@ -425,10 +518,28 @@ export async function processAttachment(
     }
 
     try {
+      // HEIC (no vision API takes it) and the formats whose pixels may be stored sideways (EXIF
+      // `Orientation`) are re-encoded upright first. A picture that is already right comes back
+      // unchanged, and a tool that cannot run leaves the bytes alone — today's behaviour.
+      const normalized = NEEDS_NORMALIZING.has(ext) ? await normalizeImageForModel(filePath) : null;
+      if (normalized) {
+        if (normalized.bytes > maxImageBytes) {
+          const sizeMB = (normalized.bytes / 1_000_000).toFixed(1);
+          return { type: 'error', message: `Attachment ${index + 1}: Image is still too large after conversion (${sizeMB}MB, max ${maxImageBytes / 1_000_000}MB): ${safeFilename}` };
+        }
+        return { type: 'image', base64: normalized.base64, mediaType: normalized.mimeType, bytes: normalized.bytes };
+      }
+      if (MUST_TRANSCODE.has(ext)) {
+        return {
+          type: 'error',
+          message: `Attachment ${index + 1}: "${safeFilename}" is ${ext.toUpperCase()}, which images sent to a model cannot be. It could not be converted here — rebuild the bundled tools (\`bun run build:cli-tools\`) or save it as JPEG.`,
+        };
+      }
+
       const imageData = await readFile(filePath);
       const base64 = imageData.toString('base64');
       const mediaType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
-      return { type: 'image', base64, mediaType };
+      return { type: 'image', base64, mediaType, bytes: stats.size };
     } catch (err) {
       return { type: 'error', message: `Attachment ${index + 1}: Failed to read image "${safeFilename}": ${err instanceof Error ? err.message : err}` };
     }
@@ -553,7 +664,18 @@ export interface LLMToolOptions {
    * Called at execution time to get the current callback from the session registry.
    * Each backend implements queryLlm() with native structured output support.
    */
-  getQueryFn: () => ((request: LLMQueryRequest) => Promise<LLMQueryResult>) | undefined;
+  getQueryFn: () => LlmQueryFn | undefined;
+  /**
+   * Lazy resolver for the connection's vision model (see `resolveImageModel` in
+   * `@craft-agent/shared/config`). Consulted only when the call carries image
+   * attachments and no explicit `model` was given.
+   *
+   * `undefined` means no image-capable model can be resolved — images are then
+   * refused with the same message as before (the connection has nothing that
+   * can read them). Resolved at execution time like `getQueryFn`, because the
+   * session may switch connection or model between calls.
+   */
+  getImageModel?: () => string | undefined;
 }
 
 export function createLLMTool(options: LLMToolOptions) {
@@ -570,6 +692,7 @@ export function createLLMTool(options: LLMToolOptions) {
 
 Put text/content directly in the 'prompt' parameter. Do NOT pass inline text via attachments.
 Only use 'attachments' for existing file paths on disk - the tool loads file content automatically.
+Images are supported: give an image's file path and a model that can see reads it (the connection's vision model, or this model when it can see). Use this when the image cannot be sent to you directly.
 For large files (>2000 lines), use {path, startLine, endLine} to select a portion.`,
     {
       prompt: z.string().min(1, 'Prompt cannot be empty')
@@ -577,9 +700,6 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
 
       attachments: z.array(AttachmentSchema).max(MAX_ATTACHMENTS).optional()
         .describe(`File paths on disk (max ${MAX_ATTACHMENTS}). NOT for inline text — put text in prompt instead. Use {path, startLine, endLine} for large files.`),
-
-      model: z.string().optional()
-        .describe('Model ID or short name (e.g., "haiku", "sonnet"). Defaults to a fast model.'),
 
       systemPrompt: z.string().optional()
         .describe('Optional system prompt'),
@@ -615,22 +735,8 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
       }
 
       // --- Validate and resolve model against registry ---
-      if (args.model) {
-        let modelDef = getModelById(args.model);
-        if (!modelDef) {
-          modelDef = MODEL_REGISTRY.find(m => m.shortName.toLowerCase() === args.model!.toLowerCase())
-            || MODEL_REGISTRY.find(m => m.name.toLowerCase() === args.model!.toLowerCase());
-          if (modelDef) {
-            args.model = modelDef.id;
-          } else {
-            const available = MODEL_REGISTRY.map(m => `  - ${m.id} (${m.shortName})`).join('\n');
-            return errorResponse(
-              `Unknown model: "${args.model}"\n\n` +
-              `Available models:\n${available}`
-            );
-          }
-        }
-      }
+      // The model is the session's own choice (fast/default, or the vision model for pictures),
+      // not something a tool call names.
 
       // ========================================
       // RESOLVE QUERY FUNCTION
@@ -650,7 +756,14 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
       // ========================================
 
       const textParts: string[] = [];
+      const images: LLMQueryImage[] = [];
       let totalContentBytes = 0;
+      let totalImageBytes = 0;
+
+      // Images are accepted only when the connection's vision model is resolvable.
+      // No such model -> keep the historical refusal, so an unconfigured setup behaves
+      // exactly as before (nothing on this connection can see the picture).
+      const imageModel = options.getImageModel?.();
 
       if (args.attachments?.length) {
         for (let i = 0; i < args.attachments.length; i++) {
@@ -662,9 +775,23 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
           }
 
           if (result.type === 'image') {
-            return errorResponse(
-              `Attachment ${i + 1}: Image attachments are not supported. Use text files only.`
-            );
+            if (!imageModel) {
+              return errorResponse(
+                `Attachment ${i + 1}: Image attachments are not supported. Use text files only.`
+              );
+            }
+            totalImageBytes += result.bytes;
+            if (totalImageBytes > MAX_TOTAL_IMAGE_BYTES) {
+              return errorResponse(
+                `Total image size exceeds ${MAX_TOTAL_IMAGE_BYTES / 1_000_000}MB limit.\n\n` +
+                'Options:\n' +
+                '1. Send fewer images\n' +
+                '2. Compress them first\n' +
+                '3. Split into multiple call_llm calls'
+              );
+            }
+            images.push({ data: result.base64, mimeType: result.mediaType });
+            continue;
           }
 
           if (result.type === 'text') {
@@ -691,7 +818,9 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
       // EXECUTE QUERY
       // ========================================
 
-      const model = args.model || getDefaultSummarizationModel();
+      const model = images.length > 0
+        ? imageModel!
+        : getDefaultSummarizationModel();
       const schema = args.outputSchema || (args.outputFormat ? OUTPUT_FORMATS[args.outputFormat] : null);
 
       try {
@@ -702,6 +831,7 @@ For large files (>2000 lines), use {path, startLine, endLine} to select a portio
           maxTokens: args.maxTokens,
           temperature: args.temperature,
           outputSchema: schema ? (schema as Record<string, unknown>) : undefined,
+          ...(images.length > 0 ? { images } : {}),
         });
 
         if (!result.text && !result.warning) {

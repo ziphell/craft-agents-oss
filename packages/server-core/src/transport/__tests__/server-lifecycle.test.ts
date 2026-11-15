@@ -15,19 +15,28 @@ const TEST_TOKEN = 'test-token-with-enough-entropy-to-pass'
 function createServer(opts?: {
   maxClients?: number
   requireAuth?: boolean
-  validateToken?: (token: string) => Promise<boolean>
+  validateToken?: (token: string) => Promise<{ tokenId: string; scope: 'client' | 'device' | 'both' } | null>
 }) {
   return new WsRpcServer({
     host: '127.0.0.1',
     port: 0,
     requireAuth: opts?.requireAuth ?? true,
-    validateToken: opts?.validateToken ?? (async (t) => t === TEST_TOKEN),
+    validateToken: opts?.validateToken
+      ?? (async (t) => (t === TEST_TOKEN ? { tokenId: 'test-token', scope: 'both' } : null)),
     maxClients: opts?.maxClients,
     serverId: 'test',
   })
 }
 
-function handshake(url: string, token: string): Promise<{ ws: WebSocket; clientId: string }> {
+function handshake(
+  url: string,
+  token: string,
+  extra?: {
+    workspaceId?: string
+    webContentsId?: number
+    clientInfo?: { name?: string; platform?: string; mode?: 'local' | 'remote'; deviceId?: string; version?: string }
+  },
+): Promise<{ ws: WebSocket; clientId: string; ack: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url)
     const timeout = setTimeout(() => {
@@ -41,13 +50,14 @@ function handshake(url: string, token: string): Promise<{ ws: WebSocket; clientI
         type: 'handshake',
         protocolVersion: PROTOCOL_VERSION,
         token,
+        ...extra,
       }))
     })
     ws.on('message', (data) => {
       const msg = JSON.parse(data.toString())
       if (msg.type === 'handshake_ack') {
         clearTimeout(timeout)
-        resolve({ ws, clientId: msg.clientId })
+        resolve({ ws, clientId: msg.clientId, ack: msg })
       } else if (msg.type === 'error') {
         clearTimeout(timeout)
         reject(new Error(`Auth error: ${msg.error?.message}`))
@@ -93,6 +103,45 @@ describe('WsRpcServer lifecycle', () => {
     expect(clientId).toBeTruthy()
     expect(ws.readyState).toBe(WebSocket.OPEN)
     expect(server.getConnectedClientCount()).toBe(1)
+  })
+
+  it('answers the handshake with the protocol version it agreed to', async () => {
+    server = createServer()
+    await server.listen()
+    const url = `ws://127.0.0.1:${server.port}`
+
+    const { ws, ack } = await handshake(url, TEST_TOKEN)
+    openSockets.push(ws)
+
+    expect(ack.protocolVersion).toBe(PROTOCOL_VERSION)
+  })
+
+  it('reports connected clients with the identity they advertised', async () => {
+    server = createServer()
+    await server.listen()
+    const url = `ws://127.0.0.1:${server.port}`
+
+    const { ws, clientId } = await handshake(url, TEST_TOKEN, {
+      workspaceId: 'ws-1',
+      webContentsId: 42,
+      clientInfo: { name: 'Office Mac', platform: 'darwin', mode: 'remote', deviceId: 'device-office', version: '0.9.3' },
+    })
+    openSockets.push(ws)
+
+    const clients = server.getConnectedClients()
+    expect(clients).toHaveLength(1)
+    expect(clients[0]).toMatchObject({
+      clientId,
+      deviceId: 'device-office',
+      name: 'Office Mac',
+      platform: 'darwin',
+      version: '0.9.3',
+      mode: 'remote',
+      workspaceId: 'ws-1',
+      webContentsId: 42,
+    })
+    expect(clients[0]!.connectedAt).toBeGreaterThan(0)
+    expect(server.isLocalClient(clientId)).toBe(false)
   })
 
   it('rejects invalid token with 4005', async () => {
@@ -205,7 +254,8 @@ describe('WsRpcServer lifecycle', () => {
     const ws = new WebSocket(url)
     openSockets.push(ws)
 
-    const closeCode = await new Promise<number>((resolve) => {
+    const { closeCode, message } = await new Promise<{ closeCode: number; message: string }>((resolve) => {
+      let message = ''
       ws.on('open', () => {
         ws.send(JSON.stringify({
           id: crypto.randomUUID(),
@@ -214,10 +264,18 @@ describe('WsRpcServer lifecycle', () => {
           token: TEST_TOKEN,
         }))
       })
-      ws.on('close', (code) => resolve(code))
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString())
+        if (msg.type === 'error') message = msg.error?.message ?? ''
+      })
+      ws.on('close', (code) => resolve({ closeCode: code, message }))
     })
 
     expect(closeCode).toBe(4004)
+    // The person needs both numbers and a way out, not just "unsupported".
+    expect(message).toContain(PROTOCOL_VERSION)
+    expect(message).toContain('99.0')
+    expect(message.toLowerCase()).toContain('upgrade')
   })
 
   // -- Close behavior --

@@ -10,8 +10,37 @@ import type { LlmConnection } from '@craft-agent/shared/config/llm-connections'
 import {
   formatTokenCount,
   groupConnectionsByProvider,
+  modelLabel,
   stripPiPrefixForDisplay,
 } from '../model-picker-helpers'
+
+// -----------------------------------------------------------------------------
+// modelLabel
+// -----------------------------------------------------------------------------
+
+describe('modelLabel', () => {
+  test('keeps a registry model name for a built-in provider', () => {
+    expect(modelLabel({ id: 'pi/claude-opus-4-7', name: 'Claude Opus 4.7' }, { customEndpoint: false }))
+      .toBe('Claude Opus 4.7')
+  })
+
+  test('humanizes a bare registry id for a built-in provider', () => {
+    // Anthropic connections may store bare ids; the picker shows the registry
+    // short name for those and must keep doing so.
+    expect(modelLabel('claude-opus-4-7', { customEndpoint: false })).toBe('Opus')
+  })
+
+  test('shows a custom endpoint id verbatim when the entry has no display name', () => {
+    expect(modelLabel({ id: 'deepseek-flash', contextWindow: 1_000_000 }, { customEndpoint: true }))
+      .toBe('deepseek-flash')
+    expect(modelLabel('deepseek-flash', { customEndpoint: true })).toBe('deepseek-flash')
+  })
+
+  test('prefers an explicit display name on a custom endpoint', () => {
+    expect(modelLabel({ id: 'deepseek-flash', name: 'DS Flash' }, { customEndpoint: true }))
+      .toBe('DS Flash')
+  })
+})
 
 // -----------------------------------------------------------------------------
 // stripPiPrefixForDisplay

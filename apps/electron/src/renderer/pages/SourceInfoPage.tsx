@@ -8,11 +8,11 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useAtomValue } from 'jotai'
 import { AlertCircle } from 'lucide-react'
 import { EditPopover, EditButton, getEditConfig } from '@/components/ui/EditPopover'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import { SourceMenu } from '@/components/app-shell/SourceMenu'
-import { cn } from '@/lib/utils'
 import { routes, navigate } from '@/lib/navigate'
 import { useNavigation } from '@/contexts/NavigationContext'
 import { toast } from 'sonner'
@@ -28,6 +28,7 @@ import {
   type ToolRow,
 } from '@/components/info'
 import type { LoadedSource, McpToolWithPermission } from '../../shared/types'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import type { PermissionsConfigFile } from '@craft-agent/shared/agent/modes'
 
 interface SourceInfoPageProps {
@@ -59,11 +60,13 @@ function formatRelativeTime(timestamp: number | undefined, t: (key: string, opti
  * Get source URL for display
  */
 function getSourceUrl(source: LoadedSource): string | null {
-  const { type, mcp, api, local } = source.config
+  const { type, mcp, api, local, web, email } = source.config
 
   if (type === 'mcp' && mcp?.url) return mcp.url
   if (type === 'api' && api?.baseUrl) return api.baseUrl
   if (type === 'local' && local?.path) return local.path
+  if (type === 'web' && web?.url) return web.url
+  if (type === 'email' && email?.address) return email.address
 
   return null
 }
@@ -150,6 +153,12 @@ function getConnectionDescription(source: LoadedSource, t: (key: string) => stri
   if (type === 'local') {
     return t('sourceInfo.filesystemPath')
   }
+  if (type === 'web') {
+    return t('sourceInfo.pageUrl')
+  }
+  if (type === 'email') {
+    return t('sourceInfo.emailAddress')
+  }
   return t('sourceInfo.connectionDetails')
 }
 
@@ -171,6 +180,8 @@ function getPermissionsDescription(source: LoadedSource, t: (key: string) => str
 export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: SourceInfoPageProps) {
   const { t } = useTranslation()
   const { navigateToSource } = useNavigation()
+  // A remote window's source files are on the hub, so nothing here can reveal them.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
   const [source, setSource] = useState<LoadedSource | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -179,7 +190,6 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false)
   const [mcpToolsError, setMcpToolsError] = useState<string | null>(null)
   const [localMcpEnabled, setLocalMcpEnabled] = useState(true)
-
 
   // Load source data
   useEffect(() => {
@@ -314,25 +324,35 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
     return buildToolsData(mcpTools)
   }, [mcpTools])
 
+  /**
+   * Hand a target to the app, which is the only place that knows what to do with it: an address
+   * goes to the browser, a path to whatever shows that kind of file. One rule, used by the
+   * Connection rows and by a link inside the guide alike.
+   */
+  const openTarget = useCallback(async (target: string) => {
+    if (!window.electronAPI) return
+    if (target.startsWith('http://') || target.startsWith('https://')) {
+      await window.electronAPI.openUrl(target)
+    } else if (canRevealLocally) {
+      await window.electronAPI.showInFolder(target)
+    } else {
+      toast.info(t('toast.fileOnServer'))
+    }
+  }, [canRevealLocally, t])
+
   // Handle opening URL (website or folder)
   const handleOpenUrl = useCallback(async () => {
     if (!source || !sourceUrl) return
-    if (window.electronAPI) {
-      if (sourceUrl.startsWith('http://') || sourceUrl.startsWith('https://')) {
-        await window.electronAPI.openUrl(sourceUrl)
-      } else {
-        await window.electronAPI.showInFolder(sourceUrl)
-      }
-    }
-  }, [source, sourceUrl])
+    await openTarget(sourceUrl)
+  }, [source, sourceUrl, openTarget])
 
   // Handle opening source folder
   const handleOpenSourceFolder = useCallback(async () => {
-    if (!source) return
+    if (!source || !canRevealLocally) return
     if (window.electronAPI) {
       await window.electronAPI.showInFolder(source.folderPath)
     }
-  }, [source])
+  }, [source, canRevealLocally])
 
   // Handle deleting source (navigates to source list, preserving current filter)
   const handleDelete = useCallback(async () => {
@@ -371,6 +391,7 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
             sourceName={sourceName}
             onOpenInNewWindow={handleOpenInNewWindow}
             onShowInFinder={handleOpenSourceFolder}
+            canShowInFinder={canRevealLocally}
             onDelete={handleDelete}
           />
         }
@@ -432,7 +453,10 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
                   </button>
                 </Info_Table.Row>
               )}
-              <Info_Table.Row label={t('sourceInfo.lastTested')} value={formatRelativeTime(source.config.lastTestedAt, t)} />
+              {/* A web source has no server, so "last tested" would only ever read "never". */}
+              {source.config.type !== 'web' && (
+                <Info_Table.Row label={t('sourceInfo.lastTested')} value={formatRelativeTime(source.config.lastTestedAt, t)} />
+              )}
             </Info_Table>
           </Info_Section>
 

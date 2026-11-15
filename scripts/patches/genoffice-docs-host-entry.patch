@@ -1,0 +1,29 @@
+diff --git a/apps/docs/src/main/index.ts b/apps/docs/src/main/index.ts
+index 2cd3aad7..eafb8f08 100644
+--- a/apps/docs/src/main/index.ts
++++ b/apps/docs/src/main/index.ts
+@@ -1,3 +1,22 @@
+-import { startDocsStandalone } from './docs-main'
++import { join } from 'node:path'
++import { installRendererProtocol, registerRendererScheme } from '@genoffice/electron-utils'
++import { createDocsView, configureDocsRuntime, openExternalDocx, registerDocsIpc, startDocsStandalone } from './docs-main'
+ 
+-startDocsStandalone()
++// Host mode: a foreign Electron main process requires this bundle and calls the factories itself.
++// It must run `registerDocsScheme()` before app ready and `installDocsProtocol()` after.
++if (process.env.GENOFFICE_EMBED === '1') registerRendererScheme()
++else startDocsStandalone()
++
++export function registerDocsScheme(): void {
++  registerRendererScheme()
++}
++
++export function registerDocsHostIpc(): void {
++  registerDocsIpc()
++}
++
++export function installDocsProtocol(): void {
++  installRendererProtocol({ docs: join(__dirname, '../renderer') })
++}
++
++export { createDocsView, configureDocsRuntime, openExternalDocx }

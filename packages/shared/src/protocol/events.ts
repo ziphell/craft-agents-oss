@@ -7,13 +7,17 @@ import type { ThemeOverrides } from '../config/index'
 import type { LoadedSource } from '../sources/types'
 import type { LoadedSkill } from '../skills/types'
 import type { LoadedProject } from '../projects/types'
-import type { LoadedPage } from '../pages/types'
+import type { TweakSummary } from '../tweaks/summary'
+import type { CreationsSnapshot } from '../creations/types'
+import type { MediaTaskEvent } from '../media/tasks'
+import type { CanvasChange } from '../canvas/store'
 import { RPC_CHANNELS } from './channels'
 import type {
   SessionEvent,
   UnreadSummary,
   UpdateInfo,
   BrowserInstanceInfo,
+  BrowserStreamFrame,
   DeepLinkNavigation,
   TaskGenerateResult,
 } from './dto'
@@ -31,8 +35,17 @@ export interface BroadcastEventMap {
   [RPC_CHANNELS.automations.CHANGED]: [workspaceId: string]
   [RPC_CHANNELS.skills.CHANGED]: [workspaceId: string, skills: LoadedSkill[]]
   [RPC_CHANNELS.projects.CHANGED]: [workspaceId: string, projects: LoadedProject[]]
-  [RPC_CHANNELS.pages.CHANGED]: [workspaceId: string, pages: LoadedPage[]]
+  [RPC_CHANNELS.tweaks.CHANGED]: [workspaceId: string, tweaks: TweakSummary[]]
+  /** Sent when a session transcript grew: a turn finished writing, so the library may have grown. */
+  [RPC_CHANNELS.creations.CHANGED]: [workspaceId: string, snapshot: CreationsSnapshot]
   [RPC_CHANNELS.tasks.GENERATED]: [workspaceId: string, result: TaskGenerateResult]
+  [RPC_CHANNELS.projects.FILES_CHANGED]: [workspaceId: string, file: string | null]
+  /** A generation task moved: submitted, still running, landed, failed. The board that asked reads it. */
+  [RPC_CHANNELS.media.TASK_CHANGED]: [workspaceId: string, event: MediaTaskEvent]
+  /** A file the office hosts wrote: an agent's save, so a view of it knows the copy it drew is old. */
+  [RPC_CHANNELS.office.FILE_WRITTEN]: [path: string]
+  /** A canvas moved — applied by someone, undone, redone, or its viewport written. */
+  [RPC_CHANNELS.canvas.CHANGED]: [workspaceId: string, change: CanvasChange]
   [RPC_CHANNELS.llmConnections.CHANGED]: []
   [RPC_CHANNELS.permissions.DEFAULTS_CHANGED]: [value: null]
 
@@ -52,12 +65,17 @@ export interface BroadcastEventMap {
 
   // Window events (per-window)
   [RPC_CHANNELS.window.FOCUS_STATE]: [isFocused: boolean]
+  [RPC_CHANNELS.window.MAXIMIZED_STATE]: [isMaximized: boolean]
   [RPC_CHANNELS.window.CLOSE_REQUESTED]: []
 
   // Browser pane events (global)
   [RPC_CHANNELS.browserPane.STATE_CHANGED]: [info: BrowserInstanceInfo]
   [RPC_CHANNELS.browserPane.REMOVED]: [id: string]
   [RPC_CHANNELS.browserPane.INTERACTED]: [id: string]
+  /** One frame, to the single client that is watching that tab (docs/browser-view-streaming.md). */
+  [RPC_CHANNELS.browserPane.STREAM_FRAME]: [frame: BrowserStreamFrame]
+  /** The watched stream ended on its own — the tab or window is gone. */
+  [RPC_CHANNELS.browserPane.STREAM_ENDED]: [streamId: string, reason: string]
 
   // Navigation events (per-window)
   [RPC_CHANNELS.notification.NAVIGATE]: [data: { workspaceId: string; sessionId: string }]

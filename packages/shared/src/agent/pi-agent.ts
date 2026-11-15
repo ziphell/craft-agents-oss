@@ -13,7 +13,7 @@
  * and passed to the subprocess during initialization.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createInterface, type Interface as ReadlineInterface } from 'node:readline';
 import type { AgentEvent } from '@craft-agent/core/types';
 import type { FileAttachment } from '../utils/files.ts';
@@ -47,9 +47,10 @@ import { EventQueue } from './backend/event-queue.ts';
 
 // System prompt for Craft Agent context
 import { getSystemPrompt } from '../prompts/system.ts';
+import { PromptDriftNotices, collectPromptDrift, formatPromptDriftNotice } from './core/prompt-drift.ts';
 import { formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
-import type { ProjectPromptContext } from '../projects/types.ts';
+import type { LoadedProject, ProjectPromptContext } from '../projects/types.ts';
 
 // Credential manager for token storage
 import { getCredentialManager } from '../credentials/manager.ts';
@@ -69,6 +70,9 @@ import { attachSessionSelfManagementBindings } from './session-self-management-b
 
 // Session tool proxy definitions (for registering with subprocess)
 import { getSessionToolProxyDefs, SESSION_TOOL_NAMES } from './backend/pi/session-tool-defs.ts';
+import { readMediaChannels } from '../media/channels.ts';
+import { asrReady } from '../media/asr.ts';
+import { mediaCapabilities, mediaToolBrief } from '../media/tool-brief.ts';
 
 // Session tool registry (for executing proxy tool calls)
 import {
@@ -95,11 +99,16 @@ import { getSessionDataPath, getSessionPath, getSessionPlansPath } from '../sess
 import { parseError, type AgentError } from './errors.ts';
 
 // Centralized PreToolUse pipeline
-import { runPreToolUseChecks, type PreToolUseCheckResult, type PreToolUseInput } from './core/pre-tool-use.ts';
+import { FILE_WRITE_TOOLS, runPreToolUseChecks, type PreToolUseCheckResult, type PreToolUseInput } from './core/pre-tool-use.ts';
 import type { PermissionRemember } from './core/permission-remember.ts';
 import { applyGuardedModeCheck, needsGuardedModeCheck } from './core/guarded-mode.ts';
+import { dirtyDocuments } from '../office/open-documents.ts';
 import { getRtkPath } from './core/rtk-detector.ts';
-import { getRtkEnabled, getRtkExcludeCommands, getBrowserToolEnabled } from '../config/storage.ts';
+import { getRtkEnabled, getRtkExcludeCommands, getBrowserToolEnabled, getComputerUseEnabled } from '../config/storage.ts';
+import { getBrowserHostState, getRecordingHostState } from './browser-host-state.ts';
+
+/** How long a document that would not save is left alone before it is asked again. */
+const FLUSH_RETRY_MS = 30_000;
 import type { RtkContext } from './core/rtk-rewrite.ts';
 
 // Workspace slug extraction for skill qualification
@@ -107,7 +116,17 @@ import { extractWorkspaceSlug } from '../utils/workspace.ts';
 
 // LLM tool types
 import { LLM_QUERY_TIMEOUT_MS, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
-import { executeBrowserToolCommand } from './browser-tool-runtime.ts';
+import { executeComputerToolCommand } from './computer-commands.ts';
+import { executeBrowserToolCommand } from './browser-commands.ts';
+import type { BrowserCommandImage } from './command-cli.ts';
+import { executeRecordingToolCommand } from './recording-commands.ts';
+import { executeDrawioToolCommand } from './drawio-commands.ts';
+import { executeOfficeToolCommand } from './office-commands.ts';
+import { executeMarkdownToolCommand } from './markdown-commands.ts';
+import { executeHtmlToolCommand } from './html-commands.ts'
+import { executeMediaToolCommand } from './media-commands.ts';
+import { executeAsrToolCommand } from './asr-commands.ts';
+import { executeDeviceToolCommand, type DeviceToolName } from './device-tools.ts';
 import { saveBinaryResponse } from '../utils/binary-detection.ts';
 
 // ============================================================
@@ -119,7 +138,50 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
+  'device_tool',
+  'drawio_tool',
+  'markdown_tool',
+  'html_tool',
+  'media_tool',
+  'asr_tool',
+  'recording_tool',
+  'docx_tool',
+  'xlsx_tool',
+  'pptx_tool',
+  'pdf_tool',
+  'convert_tool',
+  'computer_tool',
 ]);
+
+/**
+ * Which command table a pane tool name runs — the doors, in one place.
+ *
+ * One command table per door: `browser_tool` for the window itself, `media_tool` for accounts,
+ * `recording_tool` for a recording's frames. A name not in here is not a pane tool at all, and falls
+ * through to the registry below.
+ */
+/**
+ * One dispatcher, six doors. The only thing a door changes is which commands it answers, and
+ * the dispatcher is where that is enforced (`doorRefusal`), so the name is all that travels.
+ */
+function officeDoor(toolName: string) {
+  return (args: Parameters<typeof executeOfficeToolCommand>[0]) => executeOfficeToolCommand({ ...args, tool: toolName })
+}
+
+const PANE_TOOL_EXECUTORS: Record<string, typeof executeBrowserToolCommand> = {
+  browser_tool: executeBrowserToolCommand,
+  drawio_tool: executeDrawioToolCommand,
+  docx_tool: officeDoor('docx_tool'),
+  xlsx_tool: officeDoor('xlsx_tool'),
+  pptx_tool: officeDoor('pptx_tool'),
+  pdf_tool: officeDoor('pdf_tool'),
+  convert_tool: officeDoor('convert_tool'),
+  markdown_tool: executeMarkdownToolCommand,
+  html_tool: executeHtmlToolCommand,
+  media_tool: executeMediaToolCommand,
+  asr_tool: executeAsrToolCommand,
+  recording_tool: executeRecordingToolCommand,
+};
 
 /**
  * Map a transport `err.code` to an agent-facing string for `browser_tool` failures.
@@ -140,16 +202,41 @@ function mapBrowserToolErrorCode(code: string): string | null {
     case 'CLIENT_REQUEST_TIMEOUT':
       return 'Browser operation timed out (>30s). The desktop client may be unresponsive.';
     case 'BROWSER_INSTANCE_NOT_OWNED':
-      return 'That browser instance ID doesn\'t belong to this session. ' +
-        'Use `windows` to list owned instances, or `open` to create a new one.';
+      return 'That browser instance ID is not in this workspace. ' +
+        'Use `windows` to list the windows here, or `open` to open one.';
     case 'BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED':
       return 'File upload from a remote agent is not supported. ' +
         'Ask the user to attach the file to the session.';
     case 'BROWSER_REMOTE_EVALUATE_BLOCKED':
       return 'JavaScript evaluation is disabled on this desktop client. ' +
         'Ask the user to enable it in settings.';
+    case 'BROWSER_REMOTE_FETCH_BLOCKED':
+      return 'Fetching a url through this desktop client\'s browser session is disabled for remote ' +
+        'agents. Ask the user to enable it in settings.';
     default:
       return null;
+  }
+}
+
+/**
+ * Best-effort Mach-O architecture of a runtime binary, via `file(1)`.
+ *
+ * Returns 'arm64' | 'x64' for a single-arch executable, or null when the
+ * architecture is irrelevant/unknown: a fat (universal) binary runs natively on
+ * either arch, and a non-Mach-O file (script, missing file) is not ours to
+ * judge. Only ever called on macOS.
+ */
+function runtimeBinaryArch(path: string): 'arm64' | 'x64' | null {
+  try {
+    const out = execFileSync('/usr/bin/file', ['-b', path], { encoding: 'utf8' }).toLowerCase();
+    if (out.includes('universal')) return null;
+    const x64 = out.includes('x86_64');
+    const arm = out.includes('arm64');
+    if (x64 && !arm) return 'x64';
+    if (arm && !x64) return 'arm64';
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -178,6 +265,10 @@ export class PiAgent extends BaseAgent {
   private readline: ReadlineInterface | null = null;
   private subprocessReady: Promise<void> | null = null;
   private subprocessReadyResolve: (() => void) | null = null;
+  private subprocessReadyReject: ((error: Error) => void) | null = null;
+  // A spawn in progress. Concurrent `ensureSubprocess` callers share it so credential
+  // resolution (which awaits) can't let two children race for the same agent.
+  private spawnInFlight: Promise<void> | null = null;
 
   // Pi session ID (managed by subprocess, reported back)
   private piSessionId: string | null = null;
@@ -197,6 +288,18 @@ export class PiAgent extends BaseAgent {
   // Event queue for streaming (AsyncGenerator pattern over subprocess JSONL)
   private eventQueue = new EventQueue();
 
+  /**
+   * Abort handshake. Set when an abort is sent to the subprocess, resolved by
+   * its `abort_settled` reply. `chatImpl` awaits it before resetting the queue,
+   * because the aborted run's trailing events (message_end error, agent_end)
+   * would otherwise land in the *new* turn and close it before the model answers
+   * — exactly what "send now" on a queued message used to do.
+   */
+  private abortSettlePromise: Promise<void> | null = null;
+  private resolveAbortSettle: (() => void) | null = null;
+  private abortSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly ABORT_SETTLE_TIMEOUT_MS = 2_500;
+
   // Error deduplication — suppress identical consecutive errors after a threshold
   // to prevent a broken subprocess from flooding the user's session.
   private lastSubprocessError: string | null = null;
@@ -209,39 +312,45 @@ export class PiAgent extends BaseAgent {
   private pinnedPreferencesPrompt: string | null = null;
   private pinnedIncludeCoAuthoredBy: boolean | null = null;
   private pinnedProjectContext: ProjectPromptContext | null = null;
-  private promptDriftNotified = false;
+  // Which drift notices this session has already emitted. Per-kind rather than a single
+  // flag: each kind has its own exit (see core/prompt-drift.ts), so each is said once.
+  private readonly promptDrift = new PromptDriftNotices();
 
   /**
-   * Look up the bound project (if any) and return a snapshot for system-prompt injection.
-   * Mirrors ClaudeAgent.resolveProjectContext — safe to call on every turn since the
-   * project config file is small.
+   * Look up the session's bound project once. The project block and the spec block
+   * both build from this single load, so the two can never disagree about where the
+   * session's project lives. Mirrors ClaudeAgent.loadBoundProject — safe to call on
+   * every turn since the project config file is small.
    */
-  private resolveProjectContext(): ProjectPromptContext | null {
+  private loadBoundProject(): LoadedProject | null {
     const projectId = this.config.session?.projectId;
     if (!projectId) return null;
 
     try {
-      const root = this.config.workspace.rootPath;
-      const project = loadProjectById(root, projectId);
-      if (!project) return null;
-      const slug = project.config.slug;
-      return {
-        name: project.config.name,
-        description: project.config.description,
-        details: project.config.details,
-        assetsPath: getProjectAssetsPath(root, slug),
-        assets: listProjectAssets(root, slug).map((a) => ({
-          filename: a.filename,
-          mimeType: a.mimeType,
-          sizeBytes: a.sizeBytes,
-        })),
-        memoryPath: getProjectMemoryPath(root, slug),
-        memoryContent: loadProjectMemory(root, slug) ?? undefined,
-      };
+      return loadProjectById(this.config.workspace.rootPath, projectId);
     } catch (error) {
       this.debug(`[resolveProjectContext] Failed to load project ${projectId}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
+  }
+
+  /** Snapshot a loaded project for system-prompt injection. */
+  private buildProjectPromptContext(project: LoadedProject): ProjectPromptContext {
+    const root = this.config.workspace.rootPath;
+    const slug = project.config.slug;
+    return {
+      name: project.config.name,
+      description: project.config.description,
+      details: project.config.details,
+      assetsPath: getProjectAssetsPath(root, slug),
+      assets: listProjectAssets(root, slug).map((a) => ({
+        filename: a.filename,
+        mimeType: a.mimeType,
+        sizeBytes: a.sizeBytes,
+      })),
+      memoryPath: getProjectMemoryPath(root, slug),
+      memoryContent: loadProjectMemory(root, slug) ?? undefined,
+    };
   }
 
   private resetSubprocessErrorDedup(): void {
@@ -249,11 +358,27 @@ export class PiAgent extends BaseAgent {
     this.subprocessErrorRepeatCount = 0;
   }
 
+  /**
+   * Reject a pending `subprocessReady` await.
+   *
+   * No-op once the child has reported `ready` (the reject handle is cleared at
+   * that point), so a normal exit after a successful startup is unaffected. Used
+   * to surface a startup failure (spawn error or an exit before `ready`) as a
+   * fast, clear error instead of hanging until the caller's own timeout.
+   */
+  private failSubprocessStartup(error: Error): void {
+    const reject = this.subprocessReadyReject;
+    if (!reject) return;
+    this.subprocessReadyResolve = null;
+    this.subprocessReadyReject = null;
+    reject(error);
+  }
+
   private clearPinnedPromptSnapshot(): void {
     this.pinnedPreferencesPrompt = null;
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
-    this.promptDriftNotified = false;
+    this.promptDrift.reset();
   }
 
   // Ring buffer of recent subprocess stderr. Always on (independent of CRAFT_DEBUG)
@@ -262,6 +387,8 @@ export class PiAgent extends BaseAgent {
   private stderrBuffer: string[] = [];
   private stderrBufferBytes = 0;
   private static readonly STDERR_BUFFER_MAX_BYTES = 8 * 1024;
+  /** How much of the stderr tail a mid-run crash message carries (kept short so the UI stays readable). */
+  private static readonly MAX_CRASH_STDERR_CHARS = 2000;
 
   private recordStderr(chunk: string): void {
     if (!chunk) return;
@@ -446,13 +573,27 @@ export class PiAgent extends BaseAgent {
       return;
     }
 
-    await this.spawnSubprocess();
+    // One spawn at a time: `spawnSubprocess` awaits credentials before it spawns, and two
+    // callers arriving in that window used to spawn two children into one agent.
+    if (!this.spawnInFlight) {
+      const spawn = this.spawnSubprocess().finally(() => {
+        // Only clear our own slot — a stop may have released it for a newer spawn.
+        if (this.spawnInFlight === spawn) this.spawnInFlight = null;
+      });
+      this.spawnInFlight = spawn;
+    }
+    await this.spawnInFlight;
   }
 
   /**
    * Spawn the pi-agent-server subprocess and set up JSONL communication.
    */
   private async spawnSubprocess(): Promise<void> {
+    // A wiring gap is knowable before anything is spawned. Check it first so the caller gets
+    // the real cause instead of a child that starts, is killed after `ready`, and reports its
+    // own SIGTERM as a startup failure.
+    this.assertBackendSessionToolParity();
+
     const runtime = getBackendRuntime(this.config);
     const piServerPath = runtime.paths?.piServer;
     if (!piServerPath) {
@@ -462,13 +603,23 @@ export class PiAgent extends BaseAgent {
     const nodePath = runtime.paths?.node || process.execPath;
     const cwd = this.resolvedCwd();
 
+    // Refuse a wrong-arch runtime (macOS) before it can fall into Rosetta.
+    this.assertRuntimeArch(nodePath);
+
     this.debug(`Spawning Pi subprocess: ${nodePath} ${piServerPath}`);
     this.resetSubprocessErrorDedup();
 
-    // Set up ready promise before spawning
-    this.subprocessReady = new Promise<void>((resolve) => {
+    // Set up ready promise before spawning. It rejects (not only resolves) so a
+    // runtime that never reaches `ready` — e.g. a packaged build that shipped
+    // without the bundled Bun and fell back to the Electron binary — fails fast
+    // with a clear cause instead of hanging until the caller's own timeout.
+    this.subprocessReady = new Promise<void>((resolve, reject) => {
       this.subprocessReadyResolve = resolve;
+      this.subprocessReadyReject = reject;
     });
+    // Await *this* spawn's promise, not whatever `this.subprocessReady` points at later: a stop
+    // or a newer spawn must not make this caller wait on (or report) someone else's child.
+    const ready = this.subprocessReady;
 
     // Build session ID and session dir path upfront (used for spawn env + init command)
     const sessionId = this.config.session?.id || `agent-${Date.now()}`;
@@ -512,12 +663,23 @@ export class PiAgent extends BaseAgent {
     // Derive AWS env vars from the piAuth credential (single fetch, no race).
     const awsEnv = this.buildAwsEnv(piAuth, runtime);
 
+    // When no bundled Bun resolves, the runtime resolver falls back to
+    // process.execPath — which in a packaged Electron app is the Electron
+    // binary. Electron must be told to behave as plain Node, otherwise it boots
+    // a second app instance that never speaks our JSONL protocol. Scoped to the
+    // Electron binary itself so a real Bun/Node path never receives it.
+    const isElectronFallback = nodePath === process.execPath && typeof process.versions?.electron === 'string';
+    if (isElectronFallback) {
+      this.debug('No bundled Bun runtime resolved — running the Pi subprocess with the Electron binary as Node (ELECTRON_RUN_AS_NODE=1)');
+    }
+
     // Spawn the subprocess
     const child = spawn(nodePath, args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
+        ...(isElectronFallback ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
         ...getProxyEnvVars(),
         ...this.config.envOverrides,
         ...awsEnv,
@@ -552,14 +714,27 @@ export class PiAgent extends BaseAgent {
       }
     });
 
-    // Handle subprocess exit
+    // Handle subprocess exit. Exit is asynchronous, so a child we stopped can deliver its exit
+    // event after a newer spawn has taken its place. That older child is already accounted for;
+    // treating it as the live one failed the new child's startup with the old child's SIGTERM and
+    // dropped the live child on the floor.
     child.on('exit', (code, signal) => {
+      if (this.subprocess !== null && this.subprocess !== child) {
+        this.debug(`Pi subprocess exited after being replaced: code=${code}, signal=${signal}`);
+        return;
+      }
       this.handleSubprocessExit(code, signal);
     });
 
     child.on('error', (error) => {
       this.debug(`Subprocess error: ${error.message}`);
       this.resetSubprocessErrorDedup();
+      // Reject the startup promise so a caller awaiting `ready` fails fast with
+      // the real cause (e.g. ENOENT/EACCES on the resolved runtime) rather than
+      // hanging until its own timeout.
+      this.failSubprocessStartup(new Error(
+        `Failed to start the Pi runtime (${nodePath}): ${error.message}`,
+      ));
       this.eventQueue.enqueue({ type: 'error', message: `Pi subprocess error: ${error.message}` });
       this.eventQueue.complete();
     });
@@ -569,6 +744,16 @@ export class PiAgent extends BaseAgent {
       : '';
     const plansFolderPath = getSessionPlansPath(this.config.workspace.rootPath, sessionId);
     const workingDirectory = this.config.session?.workingDirectory || cwd;
+
+    // A stop can land while credentials are being resolved — before this child existed. The
+    // stop already rejected `ready`, so don't hand the child an init nobody will answer for:
+    // drop it and let the caller see the stop reason.
+    if (this.subprocessReady !== ready) {
+      this.debug('Pi subprocess stop requested during startup; discarding the new child');
+      child.kill('SIGTERM');
+      await ready;
+      return;
+    }
 
     // Send init command (flat structure matching subprocess InboundMessage type)
     this.send({
@@ -583,6 +768,7 @@ export class PiAgent extends BaseAgent {
       workingDirectory,
       plansFolderPath,
       miniModel: this.config.miniModel,
+      imageModel: this.config.imageModel,
       providerType: this.config.providerType,
       authType: this.config.authType,
       workspaceId: this.config.workspace.id,
@@ -596,8 +782,8 @@ export class PiAgent extends BaseAgent {
       branchFromSdkTurnId: this.config.session?.branchFromSdkTurnId,
     });
 
-    // Wait for subprocess to report ready
-    await this.subprocessReady;
+    // Wait for this spawn to report ready
+    await ready;
     this.debug('Pi subprocess is ready');
 
     // Ensure auto-compaction is explicitly enabled for embedded sessions.
@@ -612,22 +798,63 @@ export class PiAgent extends BaseAgent {
     // Register session-scoped tools as proxy tools in the subprocess.
     // These tools (SubmitPlan, config_validate, source auth, call_llm, etc.)
     // are executed in the main process when the LLM calls them.
-    this.assertBackendSessionToolParity();
-    let sessionToolDefs = getSessionToolProxyDefs();
+    let sessionToolDefs = getSessionToolProxyDefs(
+      Boolean(this.config.session?.projectId),
+      // Only a hub with a paired device offers the device door — read once at spawn, because
+      // these defs are registered once per subprocess. `devices` remains the live answer for
+      // which of the paired machines are connected and allowed.
+      getSessionScopedToolCallbacks(this._sessionId)?.hasDevicesFn?.() ?? true,
+    );
 
     // Mirror Claude's gate: hide `browser_tool` when the user has disabled
     // the built-in browser tool. Without this filter, Pi would still advertise
     // `mcp__session__browser_tool` while Claude doesn't — sessions would behave
-    // inconsistently depending on backend.
-    if (!getBrowserToolEnabled()) {
+    // inconsistently depending on backend. The same applies to a host with no browser of its own:
+    // there the tool could only refuse, and `device_tool` is the browser door.
+    if (!getBrowserToolEnabled() || getBrowserHostState(this._sessionId) === false) {
       sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__browser_tool');
+    }
+
+    // Desktop control is opt-in. Claude hides `computer_tool` when it is off; Pi must hide the
+    // same proxy or the two backends would offer different tools for the same settings.
+    if (!getComputerUseEnabled()) {
+      sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__computer_tool');
+    }
+
+    // A hub with no browser of its own has no Chromium to decode with either — unless it staged
+    // the render host, whose decoder answers the same call. The *built-in browser toggle* does not
+    // apply: decoding a file is not driving a page, and a person who turned the browser door off
+    // still has recordings to read.
+    if ((getRecordingHostState(this._sessionId) ?? (getBrowserHostState(this._sessionId) !== false)) === false) {
+      sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__recording_tool');
+    }
+
+    // `media_tool` follows what this machine can actually make — an image-only account is not
+    // described as if it also filmed clips, and a machine with no generation account gets no door
+    // at all: the brief is the largest part of the tool list, and every call could only refuse.
+    // These defs are registered once per subprocess, so a channel added later reaches the next
+    // session; the same rule the browser and computer toggles follow.
+    const mediaBrief = mediaToolBrief(mediaCapabilities(readMediaChannels().channels))
+    if (mediaBrief) {
+      const mediaDef = sessionToolDefs.find(d => d.name === 'mcp__session__media_tool');
+      if (mediaDef) mediaDef.description = mediaBrief;
+    } else {
+      sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__media_tool');
+    }
+
+    // Speech recognition follows what this machine can actually do: a local model installed, or
+    // cloud recognition chosen. With neither, every call could only refuse, so the door is not
+    // offered — and the defs are registered once per subprocess, so setting it up later reaches
+    // the next session, the same rule the media door follows.
+    if (!asrReady()) {
+      sessionToolDefs = sessionToolDefs.filter(d => d.name !== 'mcp__session__asr_tool');
     }
 
     // Patch call_llm description with provider-specific model hint
     if (this.config.miniModel) {
       const callLlmDef = sessionToolDefs.find(d => d.name === 'mcp__session__call_llm');
       if (callLlmDef) {
-        callLlmDef.description += `\n\nDefault fast model for this session: ${this.config.miniModel}. Omit the model parameter to use it automatically.`;
+        callLlmDef.description += `\n\nAnswers come from this session's fast model: ${this.config.miniModel}.`;
       }
     }
 
@@ -959,6 +1186,10 @@ export class PiAgent extends BaseAgent {
           this.config.onSdkSessionIdUpdate?.(this.piSessionId!);
         }
         this.subprocessReadyResolve?.();
+        // Clear both handles: startup succeeded, so a later exit must not be
+        // reported as a startup failure.
+        this.subprocessReadyResolve = null;
+        this.subprocessReadyReject = null;
         break;
 
       case 'event':
@@ -1043,6 +1274,11 @@ export class PiAgent extends BaseAgent {
           this.piSessionId = msg.sessionId as string;
           this.config.onSdkSessionIdUpdate?.(this.piSessionId!);
         }
+        break;
+
+      case 'abort_settled':
+        // The interrupted run has finished unwinding; a new turn may start.
+        this.completeAbortSettle('subprocess');
         break;
 
       case 'error': {
@@ -1151,6 +1387,91 @@ export class PiAgent extends BaseAgent {
     }
   }
 
+  // ============================================================
+  // Abort handshake (see abortSettlePromise)
+  // ============================================================
+
+  /**
+   * Start waiting for the subprocess to finish unwinding an abort. Called right
+   * after `{ type: 'abort' }` is sent, so the wait covers the very next turn.
+   */
+  private armAbortSettle(): void {
+    this.clearAbortSettle(true);
+    // Nothing is running that could emit trailing events (and nothing to answer
+    // the handshake) — the next turn may start immediately.
+    if (!this.subprocess) return;
+    this.abortSettlePromise = new Promise<void>((resolve) => {
+      this.resolveAbortSettle = resolve;
+    });
+    this.abortSettleTimer = setTimeout(() => {
+      this.completeAbortSettle('timeout');
+    }, PiAgent.ABORT_SETTLE_TIMEOUT_MS);
+  }
+
+  /** Resolve the handshake — the interrupted run can no longer emit events. */
+  private completeAbortSettle(why: string): void {
+    if (this.abortSettleTimer) {
+      clearTimeout(this.abortSettleTimer);
+      this.abortSettleTimer = null;
+    }
+    const resolve = this.resolveAbortSettle;
+    this.resolveAbortSettle = null;
+    this.abortSettlePromise = null;
+    if (resolve) {
+      this.debug(`Abort settled (${why})`);
+      resolve();
+    }
+  }
+
+  /**
+   * Drop the handshake without waiting for the subprocess (teardown, exit).
+   * `releaseWaiters` resolves a chat that is already awaiting it so it is never
+   * stranded.
+   */
+  private clearAbortSettle(releaseWaiters = true): void {
+    const resolve = this.resolveAbortSettle;
+    this.resolveAbortSettle = null;
+    this.abortSettlePromise = null;
+    if (this.abortSettleTimer) {
+      clearTimeout(this.abortSettleTimer);
+      this.abortSettleTimer = null;
+    }
+    if (releaseWaiters && resolve) resolve();
+  }
+
+  /** True while an aborted run may still deliver its trailing events. */
+  private get isAbortSettling(): boolean {
+    return this.resolveAbortSettle !== null;
+  }
+
+  /**
+   * Does this event end (or poison with an error) the run that was interrupted?
+   * Only these are discarded while the abort is still settling.
+   */
+  private isInterruptedRunEnding(eventType: string, event: Record<string, unknown>): boolean {
+    if (eventType === 'agent_end') return true
+    if (eventType === 'message_end') {
+      const message = event.message as { stopReason?: string } | undefined
+      return message?.stopReason === 'error'
+    }
+    return false
+  }
+
+  /**
+   * Wait (bounded) for the previous abort to settle. A no-op when no abort is in
+   * flight; never throws, so a wedged subprocess cannot block the next turn
+   * forever — `abortSettleTimer` releases the wait.
+   */
+  private async awaitAbortSettle(): Promise<void> {
+    const pending = this.abortSettlePromise;
+    if (!pending) return;
+    try {
+      await pending;
+    } catch {
+      // The promise only ever resolves; keep the guard for safety.
+    }
+  }
+
   /**
    * Forward a Pi SDK event from the subprocess through the event adapter.
    */
@@ -1160,6 +1481,19 @@ export class PiAgent extends BaseAgent {
 
     // Detect session MCP tool completions (same pattern as in-process version)
     const eventType = event.type as string;
+
+    // An interrupted run keeps talking for a few hundred ms after the abort:
+    // message_end carrying the abort error, then agent_end. Those two are the
+    // turn's ending, and the stream has no turn identity — forwarded after a new
+    // turn has begun, they close *that* turn (agent_end → eventQueue.complete())
+    // or paint a red error into it before the model ever answers. Everything else
+    // (a tool_result that was still in flight, usage counts) stays harmless: the
+    // queue is reset before the new turn starts, or the old loop still consumes
+    // it, so it is let through.
+    if (this.isAbortSettling && this.isInterruptedRunEnding(eventType, event)) {
+      this.debug(`Dropping "${eventType}" from the interrupted run (abort not settled)`);
+      return;
+    }
     // Manual /compact uses an RPC-owned generator rather than the event queue.
     // Its SDK end arrives before compact_result; only the correlated response
     // may report success (including after a timeout/stop discarded the request).
@@ -1276,6 +1610,12 @@ export class PiAgent extends BaseAgent {
       tool_input: input,
     });
 
+    // The file is what this step is about to read, and an editor writes to it on a debounce — so a
+    // document somebody is typing into is ahead of its own file, for as long as they keep typing.
+    // Asking the editors to save first costs nothing when nothing is open, and makes every read in
+    // the step — a `Read`, a `Bash cat`, an `office_tool` command — see the screen.
+    await this.flushOpenDocuments(toolName);
+
     const rootPath = this.config.workspace.rootPath ?? this.workingDirectory;
     const workspaceSlug = extractWorkspaceSlug(rootPath, this.config.workspace.id);
     const sessionId = this.config.session?.id || this._sessionId;
@@ -1285,6 +1625,10 @@ export class PiAgent extends BaseAgent {
     const dataFolderPath = sessionId
       ? getSessionDataPath(rootPath, sessionId)
       : undefined;
+    // The session's project folder — where its specs are written, and therefore one of the
+    // folders Explore mode allows writes to. Resolved through the same loader the project and
+    // spec prompt blocks read; absent when the session is in no project.
+    const projectFolderPath = this.loadBoundProject()?.folderPath;
 
     // Build RTK context fresh per call so toggling the preference takes
     // effect without restart. `getRtkPath()` is cached per process.
@@ -1302,6 +1646,7 @@ export class PiAgent extends BaseAgent {
       workspaceId: workspaceSlug,
       plansFolderPath,
       dataFolderPath,
+      projectFolderPath,
       workingDirectory: this.config.session?.workingDirectory,
       activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
       allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),
@@ -1388,6 +1733,66 @@ export class PiAgent extends BaseAgent {
         return;
       }
 
+      case 'source_activation_needed': {
+        const { sourceSlug, sourceExists } = checkResult;
+        this.debug(`PreToolUse(sessionId=${sessionId}): Source "${sourceSlug}" not active, attempting activation...`);
+
+        if (this.onSourceActivationRequest) {
+          try {
+            const activated = await this.onSourceActivationRequest(sourceSlug);
+            if (!activated) {
+              const reason = sourceExists
+                ? `Source "${sourceSlug}" is not active. Activate it by @mentioning it in your message or via the source icon at the bottom of the input field.`
+                : `Source "${sourceSlug}" is not available yet. It needs to be created and configured first.`;
+              this.send({ type: 'pre_tool_use_response', requestId, action: 'block', reason });
+              return;
+            }
+            this.debug(`PreToolUse(sessionId=${sessionId}): Source "${sourceSlug}" activated successfully`);
+            this.eventQueue.enqueue({
+              type: 'source_activated' as const,
+              sourceSlug,
+              originalMessage: this.getCurrentTurnUserMessage() ?? '',
+            });
+          } catch (err) {
+            const reason = sourceExists
+              ? `Source "${sourceSlug}" could not be activated: ${err}`
+              : `Source "${sourceSlug}" is not available yet. It needs to be created and configured first.`;
+            this.send({ type: 'pre_tool_use_response', requestId, action: 'block', reason });
+            return;
+          }
+        }
+
+        // Re-run pipeline after activation
+        const postResult = runPreToolUseChecks({
+          toolName,
+          input,
+          sessionId,
+          permissionMode: this.permissionManager.getPermissionMode(),
+          workspaceRootPath: rootPath,
+          workspaceId: workspaceSlug,
+          plansFolderPath,
+          dataFolderPath,
+          projectFolderPath,
+          workingDirectory: this.config.session?.workingDirectory,
+          activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
+          allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),
+          hasSourceActivation: !!this.onSourceActivationRequest,
+          permissionManager: this.permissionManager,
+          prerequisiteManager: this.prerequisiteManager,
+          rtkContext,
+          onDebug: (msg) => this.debug(`PreToolUse(sessionId=${sessionId}): ${msg}`),
+        });
+
+        if (postResult.type === 'modify') {
+          this.send({ type: 'pre_tool_use_response', requestId, action: 'modify', input: postResult.input });
+        } else if (postResult.type === 'block') {
+          this.send({ type: 'pre_tool_use_response', requestId, action: 'block', reason: postResult.reason });
+        } else {
+          this.send({ type: 'pre_tool_use_response', requestId, action: 'allow' });
+        }
+        return;
+      }
+
       case 'call_llm_intercept':
       case 'spawn_session_intercept':
         // These tools are proxy tools handled via tool_execute_request — just allow
@@ -1460,6 +1865,54 @@ export class PiAgent extends BaseAgent {
    * The subprocess expects responses in the format:
    *   { content: string; isError: boolean }
    */
+  /**
+   * Save what the editors are holding, so the files this step reads are the ones on screen.
+   *
+   * Not a write of the agent's: it is the person's own pending work, which the editor would have
+   * written a moment later anyway. Nothing is said unless something happened — a flush that changes
+   * nothing is not news — and a refusal is not turned into an error: a document in a conflict
+   * cannot be saved by anybody but its owner, and the read that follows is simply a little older.
+   */
+  private async flushOpenDocuments(toolName: string): Promise<void> {
+    // **Not before a write.** Those tools carry a document the model composed earlier, and saving the
+    // person's newer work first would put it on the disk only for that document to land on top of
+    // it — a silent loss, and precisely what the unsaved-work guard below exists to prevent. The
+    // write guard keeps its meaning by keeping its input: a dirty document still blocks a write.
+    if (FILE_WRITE_TOOLS.has(toolName)) return;
+
+    const pending = dirtyDocuments().filter((path) => {
+      const refusedAt = this.flushRefusedAt.get(path);
+      // A document that would not save — a conflict waiting on the person — stays dirty until they
+      // deal with it. Asking again on every tool call would spend the wait twice over, and the
+      // answer would not change until somebody clicks.
+      return refusedAt === undefined || Date.now() - refusedAt > FLUSH_RETRY_MS;
+    });
+    if (pending.length === 0) return;
+
+    const callbacks = getSessionScopedToolCallbacks(this._sessionId);
+    if (!callbacks?.documentFlushFn) return;
+
+    const results = await callbacks.documentFlushFn(pending);
+    for (const result of results) {
+      if (result.ok) this.flushRefusedAt.delete(result.path);
+      else this.flushRefusedAt.set(result.path, Date.now());
+    }
+    const saved = results.filter((result) => result.ok).map((result) => result.path);
+    const kept = results.filter((result) => !result.ok);
+    if (saved.length > 0) {
+      this.debug(`Flushed ${saved.length} open document(s) before ${toolName}: ${saved.join(', ')}`);
+    }
+    if (kept.length > 0) {
+      this.debug(
+        `Could not flush ${kept.map((result) => result.path).join(', ')} before ${toolName}: ` +
+          `${kept.map((result) => result.message ?? 'refused').join('; ')}`,
+      );
+    }
+  }
+
+  /** When each document last refused to save, so a stuck one is not asked on every tool call. */
+  private readonly flushRefusedAt = new Map<string, number>();
+
   private async handleToolExecuteRequest(request: {
     requestId: string;
     toolName: string;
@@ -1596,46 +2049,94 @@ export class PiAgent extends BaseAgent {
         }
       }
 
-      // browser_tool — single CLI-like tool for all browser actions
-      if (toolName === 'browser_tool') {
+      // The desktop door: its own tool, its own command table. Not a device capability — the
+      // device door answers "which machine", this one drives *this* machine's GUI.
+      if (toolName === 'computer_tool') {
+        if (!getComputerUseEnabled()) {
+          return { content: 'Desktop control is turned off in Settings → App → Tools.', isError: true }
+        }
+        const getFns = getSessionScopedToolCallbacks(this._sessionId)?.getComputerPaneFns
+        if (!getFns) {
+          return { content: 'Desktop control is not available on this host.', isError: true }
+        }
+        try {
+          const fns = await getFns()
+          const result = await executeComputerToolCommand({
+            command: (args.command as string | string[]) ?? '',
+            fns,
+            workspaceRootPath: this.config.workspace.rootPath,
+          })
+          return { content: this.withCommandImages(result.output, result), isError: false }
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error)
+          return { content: `computer_tool failed: ${msg}`, isError: true }
+        }
+      }
+
+      // The pane tools — one command table per door, reached by name: `browser_tool` for the
+      // window itself, `media_tool` for accounts, `recording_tool` for a recording's frames.
+      const paneExecute = PANE_TOOL_EXECUTORS[toolName];
+      if (paneExecute) {
         const callbacks = getSessionScopedToolCallbacks(this._sessionId);
         const browserFns = callbacks?.browserPaneFns;
-        if (!browserFns) {
+        // `recording_tool` is its own case: what it lacks on a hub is the decoder, not the window. A
+        // hub has no pane, but it may have staged the render host, whose `sampleVideo` is the same
+        // capability this door reads.
+        const decoder = toolName === 'recording_tool' ? browserFns ?? callbacks?.recordingFns : browserFns;
+        if (!decoder && toolName === 'recording_tool') {
+          return {
+            content:
+              'Reading a recording needs a decoder: frames are decoded by Chromium — ' +
+              'the desktop app’s hidden window, or a hub’s render host. This host has neither.',
+            isError: true,
+          };
+        }
+        // Every door here is a command line except the ones that *are* the window: a document is
+        // its own bytes, so `office_tool` runs on a hub where no browser exists, and requiring a
+        // pane to reach it would have contradicted the one thing it promises. The same is true of
+        // the media door — it reads and writes files, not a page — so a hub offers it too.
+        if (
+          !browserFns &&
+          toolName !== 'office_tool' &&
+          toolName !== 'markdown_tool' &&
+          toolName !== 'html_tool' &&
+          toolName !== 'media_tool' &&
+          toolName !== 'asr_tool'
+        ) {
           return { content: 'Browser window controls are not available. This tool requires the desktop app.', isError: true };
         }
 
         try {
-          const result = await executeBrowserToolCommand({
+          const result = await paneExecute({
             command: (args.command as string | string[]) ?? '',
-            fns: browserFns,
+            // Read by `office_tool` and `markdown_tool`: an anchored edit goes to the editor showing
+            // the document, never to the file. Absent on a host with no client, and the command says so.
+            applyEdit: callbacks?.officeApplyEditFn,
+            // Reaches `render`: draw the page in its editor instead of printing the document.
+            capturePages: callbacks?.officeCapturePagesFn,
+            // `html_tool shot`: draw the page, scripting off.
+            captureWebShot: callbacks?.officeWebShotFn,
+            // `markdown_tool shot`: the app's own renderer, at the size asked for.
+            captureMarkdownShot: callbacks?.officeMarkdownShotFn,
+            // Undefined only for the doors that never read it (`office_tool`, the library, media).
+            // For `recording_tool` this is the pane or the render host — whichever this host has.
+            fns: (decoder ?? browserFns) as NonNullable<typeof browserFns>,
             sessionId: this._sessionId,
+            workspaceRootPath: this.config.workspace.rootPath,
+            // The project this conversation is bound to: bare paths anchor to it, and a session in
+            // none anchors to its own folder.
+            projectId: this.config.session?.projectId,
+            // Project-scoped doors refuse at the handler too, even if a stale tool list calls them.
+            hasProject: Boolean(this.config.session?.projectId),
+            // The project folder when the session is in one: a door that works on the project's
+            // own files counts its default path from here.
+            sessionWorkingDirectory: this.resolvedCwd(),
+            // Explore is read-only, and a door that writes a file directly is told so, rather
+            // than relying on a boundary it does not go through.
+            readOnly: this.permissionManager.getPermissionMode() === 'safe',
           });
 
-          let content = result.output;
-          if (result.image) {
-            const sessionPath = getSessionPath(this.config.workspace.rootPath, this._sessionId);
-            const imageBuffer = Buffer.from(result.image.data, 'base64');
-            const ext = result.image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
-            const saved = saveBinaryResponse(sessionPath, `browser-screenshot.${ext}`, imageBuffer, result.image.mimeType);
-
-            if (saved.type === 'file_download') {
-              content += [
-                '',
-                `Saved screenshot: ${saved.path}`,
-                '',
-                '```image-preview',
-                JSON.stringify({
-                  src: saved.path,
-                  title: 'Browser Screenshot',
-                }, null, 2),
-                '```',
-              ].join('\n');
-            } else {
-              content += `\n\n[Screenshot captured (${Math.round(result.image.sizeBytes / 1024)}KB ${result.image.mimeType}) but failed to save: ${saved.error}]`;
-            }
-          }
-
-          return { content, isError: false };
+          return { content: this.withCommandImages(result.output, result), isError: false };
         } catch (error) {
           // Branch on `err.code` (string), not `instanceof CodedError` — the
           // transport reconstructs a plain Error on the receiving side, so
@@ -1645,6 +2146,32 @@ export class PiAgent extends BaseAgent {
           const msg = error instanceof Error ? error.message : String(error);
           const friendly = mapBrowserToolErrorCode(code) ?? msg;
           return { content: friendly, isError: true };
+        }
+      }
+
+      // The device meta-tool: the device is an argument of this one tool, and the nested
+      // tool name is resolved against the same callback registry the pane tools use.
+      if (toolName === 'device_tool') {
+        const deviceFns = getSessionScopedToolCallbacks(this._sessionId)?.deviceFns;
+        if (!deviceFns) {
+          return {
+            content: 'Devices are not available. This tool requires the desktop app connected to a hub.',
+            isError: true,
+          };
+        }
+        try {
+          const result = await executeDeviceToolCommand({
+            tool: args.tool as DeviceToolName,
+            device: typeof args.device === 'string' ? args.device : undefined,
+            args: (args.args as Record<string, unknown> | undefined) ?? undefined,
+            fns: deviceFns,
+            sessionId: this._sessionId,
+            workspaceRootPath: this.config.workspace.rootPath,
+          });
+          return { content: this.withCommandImages(result.output, result), isError: false };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return { content: `device_tool failed: ${msg}`, isError: true };
         }
       }
 
@@ -1672,7 +2199,95 @@ export class PiAgent extends BaseAgent {
     }
   }
 
+  /**
+   * Show a command result's images the way this backend does: written into the session folder and
+   * pointed at with an `image-preview` block. Shared by the pane doors and `device_tool`, because a
+   * screenshot means the same thing whichever door asked for it.
+   */
+  private withCommandImages(
+    content: string,
+    result: { image?: BrowserCommandImage; images?: BrowserCommandImage[] },
+  ): string {
+    let output = content
+    let picturePath: string | null = null
+    if (result.image) {
+      const ext = result.image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
+      if (result.image.path) {
+        // The command already wrote the file (`screenshot --out`); the file is the record and the
+        // command text already named it, so show it from there rather than saving a second copy.
+        picturePath = result.image.path;
+        output += [
+          '',
+          '```image-preview',
+          JSON.stringify({
+            src: result.image.path,
+            title: 'Screenshot',
+          }, null, 2),
+          '```',
+        ].join('\n');
+      } else {
+        const sessionPath = getSessionPath(this.config.workspace.rootPath, this._sessionId);
+        const imageBuffer = Buffer.from(result.image.data, 'base64');
+        const saved = saveBinaryResponse(sessionPath, `browser-screenshot.${ext}`, imageBuffer, result.image.mimeType);
 
+        if (saved.type === 'file_download') {
+          picturePath = saved.path
+          output += [
+            '',
+            `Saved screenshot: ${saved.path}`,
+            '',
+            '```image-preview',
+            JSON.stringify({
+              src: saved.path,
+              title: 'Browser Screenshot',
+            }, null, 2),
+            '```',
+          ].join('\n');
+        } else {
+          output += `\n\n[Screenshot captured (${Math.round(result.image.sizeBytes / 1024)}KB ${result.image.mimeType}) but failed to save: ${saved.error}]`;
+        }
+      }
+    }
+
+    // A frame that came back as a file is shown from that file — the file is the record, and
+    // saving a second copy would be a second record of the same moment. A frame that did not
+    // (`media_tool sample` without `--out`) has no file of its own, so it is saved here for the
+    // person to look at, the same way a screenshot is.
+    for (const [index, frame] of (result.images ?? []).entries()) {
+      let src = frame.path;
+      if (!src) {
+        const ext = frame.mimeType === 'image/jpeg' ? 'jpg' : 'png';
+        const saved = saveBinaryResponse(
+          getSessionPath(this.config.workspace.rootPath, this._sessionId),
+          `video-frame-${index + 1}.${ext}`,
+          Buffer.from(frame.data, 'base64'),
+          frame.mimeType,
+        );
+        if (saved.type !== 'file_download') continue;
+        src = saved.path;
+      }
+      picturePath ??= src
+      output += [
+        '',
+        '```image-preview',
+        JSON.stringify({
+          src,
+          title: src.split(/[/\\]/).pop() ?? 'Frame',
+        }, null, 2),
+        '```',
+      ].join('\n');
+    }
+
+    // A picture the model itself cannot see is a capability boundary, not a missing command: the
+    // path is the hand-off, and `call_llm` is the door that reads it. Said only in that state, so a
+    // seeing model is not taught a detour it does not need.
+    if (picturePath && this.config.mainModelSeesImages === false) {
+      output += this.config.imageModel
+        ? `\n\nThis model cannot see images — give the path above to \`call_llm\`, which reads them with ${this.config.imageModel}.`
+        : '\n\nThis model cannot see images, and no vision model is configured — the picture is for the person to open.';
+    }
+    return output
+  }
 
   /**
    * Handle session_tool_completed from subprocess.
@@ -1815,18 +2430,41 @@ export class PiAgent extends BaseAgent {
   private handleSubprocessExit(code: number | null, signal: string | null): void {
     this.debug(`Pi subprocess exited: code=${code}, signal=${signal}`);
 
+    // A child that exits before `ready` never spoke the protocol — surface it as
+    // a startup failure so the awaiting caller fails fast with a clear cause
+    // (plus any captured stderr) instead of waiting for its own timeout.
+    if (this.subprocessReadyReject) {
+      const reason = signal ? `signal ${signal}` : `code ${code}`;
+      const startupStderr = this.getRecentStderr().trim();
+      this.failSubprocessStartup(new Error(
+        `Pi runtime exited during startup (${reason}) before becoming ready.` +
+        (startupStderr ? `\n--- subprocess stderr ---\n${startupStderr}` : ''),
+      ));
+    }
+
     this.subprocess = null;
     this.readline = null;
     this.resetSubprocessErrorDedup();
     this.subprocessReady = null;
     this.subprocessReadyResolve = null;
+    this.subprocessReadyReject = null;
+
+    // A dead subprocess will never answer the abort handshake.
+    this.clearAbortSettle();
 
     // If we were processing, emit error + complete
     if (this._isProcessing) {
       const exitReason = signal ? `signal ${signal}` : `code ${code}`;
+      // A mid-run crash is otherwise a bare exit code with no cause. The
+      // subprocess's last stderr lines (a Bun abort, a native crash, a fatal
+      // error log) are the only evidence left, so carry a bounded tail into
+      // the error the user sees instead of dropping it.
+      const crashStderr = this.getRecentStderr().trim().slice(-PiAgent.MAX_CRASH_STDERR_CHARS);
       this.eventQueue.enqueue({
         type: 'error',
-        message: `Pi subprocess exited unexpectedly (${exitReason})`,
+        message:
+          `Pi subprocess exited unexpectedly (${exitReason})` +
+          (crashStderr ? `\n--- subprocess stderr (tail) ---\n${crashStderr}` : ''),
       });
       this.eventQueue.complete();
     }
@@ -2050,7 +2688,20 @@ export class PiAgent extends BaseAgent {
     // Reset state for new turn
     this._isProcessing = true;
     this.abortReason = undefined;
-    this.turnAbort = new AbortController();
+
+    // A turn may only begin once the interrupted one is over in the subprocess.
+    // "Send now" on a queued message interrupts and replays ~50 ms later; without
+    // this wait the aborted run's trailing agent_end lands in *this* turn's queue
+    // and completes it before the model answers (the message then looks like it
+    // was sent and instantly stopped). Resetting the queue afterwards also drops
+    // anything that slipped in while we waited.
+    await this.awaitAbortSettle();
+    // A Stop that landed during the wait is newer than this send: don't start a
+    // turn the user already cancelled. (forceAbort/abort clear _isProcessing.)
+    if (!this._isProcessing) {
+      this.debug('Turn cancelled while waiting for the previous abort to settle');
+      return;
+    }
     this.eventQueue.reset();
     this.adapter.startTurn();
 
@@ -2123,24 +2774,37 @@ export class PiAgent extends BaseAgent {
       // Build system prompt from a pinned session snapshot. Pi folds stable
       // blocks into its cached system prefix, so changing these mid-session
       // would silently churn cache and diverge from Claude's behavior.
+      const boundProject = this.loadBoundProject();
       const currentPreferencesPrompt = formatPreferencesForPrompt();
       const currentIncludeCoAuthoredBy = getCoAuthorPreference();
-      const currentProjectContext = this.resolveProjectContext();
+      const currentProjectContext = boundProject ? this.buildProjectPromptContext(boundProject) : null;
 
       if (this.pinnedPreferencesPrompt === null) {
         this.pinnedPreferencesPrompt = currentPreferencesPrompt;
         this.pinnedIncludeCoAuthoredBy = currentIncludeCoAuthoredBy;
         this.pinnedProjectContext = currentProjectContext;
       } else {
-        const preferencesDrifted = currentPreferencesPrompt !== this.pinnedPreferencesPrompt;
-        const coAuthorDrifted = currentIncludeCoAuthoredBy !== this.pinnedIncludeCoAuthoredBy;
-        const projectDrifted = JSON.stringify(currentProjectContext) !== JSON.stringify(this.pinnedProjectContext);
-        if ((preferencesDrifted || coAuthorDrifted || projectDrifted) && !this.promptDriftNotified) {
-          yield {
-            type: 'info',
-            message: 'Note: System prompt context changed since this session started. Start a new session to apply preference or project-memory changes.',
+        // Report what drifted, not that something did: instructions baked into the prefix
+        // can only be applied by a new session, while the project's files can simply be
+        // re-read — so one sentence covering both would give the wrong advice to one of
+        // them. See core/prompt-drift.ts.
+        const drifted = collectPromptDrift({
+          currentPreferencesPrompt,
+          pinnedPreferencesPrompt: this.pinnedPreferencesPrompt,
+          currentIncludeCoAuthoredBy,
+          pinnedIncludeCoAuthoredBy: this.pinnedIncludeCoAuthoredBy,
+          currentProject: currentProjectContext,
+          pinnedProject: this.pinnedProjectContext,
+        });
+        if (drifted.length > 0) {
+          const paths = {
+            memoryPath: currentProjectContext?.memoryPath ?? this.pinnedProjectContext?.memoryPath,
+            assetsPath: currentProjectContext?.assetsPath ?? this.pinnedProjectContext?.assetsPath,
           };
-          this.promptDriftNotified = true;
+          for (const kind of this.promptDrift.take(drifted)) {
+            this.debug(`[chat] Prompt drift: ${kind}`);
+            yield { type: 'info', message: formatPromptDriftNotice(kind, paths) };
+          }
         }
       }
 
@@ -2173,7 +2837,12 @@ export class PiAgent extends BaseAgent {
       const plansFolderPath = getSessionPlansPath(this.config.workspace.rootPath, this._sessionId);
       const stableParts = this.promptBuilder.buildStableContextParts();
       const volatileParts = this.promptBuilder.buildVolatileContextParts(
-        { plansFolderPath },
+        {
+          plansFolderPath,
+          // The session's project folder — named in `<session_state>` so the agent knows where
+          // its specs go (and that Explore mode lets it write them there).
+          projectFolderPath: boundProject?.folderPath,
+        },
         sourceContext
       );
 
@@ -2426,6 +3095,7 @@ export class PiAgent extends BaseAgent {
 
     // Send abort to subprocess
     this.send({ type: 'abort' });
+    this.armAbortSettle();
     this.eventQueue.complete();
 
     // Clear bridge cache for this interrupted turn.
@@ -2470,8 +3140,11 @@ export class PiAgent extends BaseAgent {
       return;
     }
 
-    // For other reasons, send abort to subprocess
+    // For other reasons, send abort to subprocess. The next chat() waits for the
+    // subprocess's `abort_settled` so the aborted run's trailing events cannot
+    // close it (see abortSettlePromise).
     this.send({ type: 'abort' });
+    this.armAbortSettle();
   }
 
   /**
@@ -2575,6 +3248,13 @@ export class PiAgent extends BaseAgent {
     this.cancelPendingCompactions();
     this.rejectAllPendingEphemeral(new Error('Pi subprocess stopped'));
 
+    // An intentional stop is not a startup crash. Answer anyone still waiting on `ready`
+    // before the exit event can report the SIGTERM below as the child dying on its own.
+    this.failSubprocessStartup(new Error('Pi runtime was stopped before it became ready'));
+    // Release the spawn slot: an in-flight spawn sees the rejection and discards its child,
+    // while the next caller may start a fresh one instead of waiting for the stopped attempt.
+    this.spawnInFlight = null;
+
     const child = this.subprocess;
     if (!child) {
       this.killSubprocess();
@@ -2646,6 +3326,12 @@ export class PiAgent extends BaseAgent {
     this.cancelPendingCompactions();
     this.rejectAllPendingEphemeral(new Error('Pi subprocess stopped'));
 
+    // An intentional stop is not a startup crash. Answer anyone still waiting on `ready`
+    // before the exit event can report the SIGTERM below as the child dying on its own.
+    this.failSubprocessStartup(new Error('Pi runtime was stopped before it became ready'));
+    // Release the spawn slot for the next caller (see killSubprocessGracefully).
+    this.spawnInFlight = null;
+
     if (this.readline) {
       this.readline.close();
       this.readline = null;
@@ -2670,6 +3356,9 @@ export class PiAgent extends BaseAgent {
     // Clear any in-flight overflow/auto-retry recovery state so a stale
     // fallback timer doesn't fire on a torn-down adapter.
     this.adapter.resetRecoveryState();
+
+    // Release any turn waiting on the abort handshake of the process we stopped.
+    this.clearAbortSettle();
   }
 
   // ============================================================
@@ -2740,12 +3429,35 @@ export class PiAgent extends BaseAgent {
   // ============================================================
 
   /**
+   * On macOS, refuse to spawn a runtime whose architecture differs from the app's.
+   *
+   * An arm64 app that spawns an x86_64 binary runs it under Rosetta 2; when
+   * Rosetta is stale/absent the child aborts with a bare SIGABRT
+   * ("... runtime library is newer than runtime", Library.cpp) that tells the
+   * user nothing. Catching the mismatch up front turns it into an actionable
+   * error. No-op off macOS, or when the arch is unknown/universal.
+   */
+  private assertRuntimeArch(nodePath: string): void {
+    if (process.platform !== 'darwin') return;
+    // Only the arm64-app → x86_64-runtime direction needs Rosetta (an arm64
+    // runtime from an x64 app runs natively), so flag exactly that pair.
+    if (process.arch !== 'arm64') return;
+    if (runtimeBinaryArch(nodePath) !== 'x64') return;
+    throw new Error(
+      `Pi runtime architecture mismatch: this app is arm64 but the runtime at ${nodePath} ` +
+      `is x86_64. On Apple Silicon an x86_64 child runs under Rosetta 2 and aborts when ` +
+      `Rosetta is stale. Install the arm64 build of Craft Agents, or run ` +
+      `'softwareupdate --install-rosetta --agree-to-license'.`,
+    );
+  }
+
+  /**
    * Resolve working directory to an absolute path.
    * BaseAgent stores paths with tilde (~) but Node.js spawn doesn't expand tilde.
    */
   private resolvedCwd(): string {
     const wd = this.workingDirectory;
-    if (wd.startsWith('~/')) return join(homedir(), wd.slice(2));
+    if (wd.startsWith('~/') || wd.startsWith('~\\')) return join(homedir(), wd.slice(2));
     if (wd === '~') return homedir();
     return wd;
   }

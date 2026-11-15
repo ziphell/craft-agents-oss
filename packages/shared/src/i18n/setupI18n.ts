@@ -15,6 +15,20 @@ const resources = Object.fromEntries(
 let initialized = false;
 
 /**
+ * Map a detected browser language to an exact code we ship.
+ *
+ * i18next matches `supportedLngs` literally, so a browser reporting `zh-CN`,
+ * `zh-TW` or bare `zh` would miss `zh-Hans` and fall back to English. Only
+ * Simplified Chinese is shipped, so every Chinese variant maps to it; all other
+ * languages rely on i18next's own region stripping (e.g. `en-US` → `en`).
+ */
+function normalizeDetectedLanguage(lng: string): string {
+  const lower = lng.toLowerCase();
+  if (lower === "zh" || lower.startsWith("zh-")) return "zh-Hans";
+  return lng;
+}
+
+/**
  * Initialize i18next with bundled translations.
  * Call once at app startup. Pass `plugins` to add framework integrations
  * (e.g. initReactI18next for React apps, LanguageDetector for browser apps).
@@ -40,6 +54,7 @@ export function setupI18n(
       order: ["localStorage", "navigator"],
       caches: ["localStorage"],
       lookupLocalStorage: "i18nextLng",
+      convertDetectedLanguage: normalizeDetectedLanguage,
     },
   } as InitOptions);
 

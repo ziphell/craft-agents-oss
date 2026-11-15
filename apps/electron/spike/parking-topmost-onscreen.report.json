@@ -1,0 +1,89 @@
+{
+ "display": {
+  "workArea": {
+   "x": 0,
+   "y": 0,
+   "width": 1440,
+   "height": 912
+  },
+  "scaleFactor": 2
+ },
+ "rect": {
+  "x": 270,
+  "y": 116,
+  "width": 900,
+  "height": 680
+ },
+ "coverFocusedBefore": true,
+ "rightAfterRaise": {
+  "coverFocused": true,
+  "parkFocused": false,
+  "coverStillVisible": true,
+  "getFocusedWindow": "USER-WINDOW"
+ },
+ "parkState": {
+  "raf": 40,
+  "visibility": "visible",
+  "hasFocus": false,
+  "screenX": 270,
+  "outer": [
+   900,
+   680
+  ],
+  "inner": [
+   900,
+   680
+  ],
+  "rafTicks": 13
+ },
+ "coverState": {
+  "raf": 69,
+  "visibility": "visible",
+  "hasFocus": true,
+  "screenX": 270,
+  "outer": [
+   900,
+   680
+  ],
+  "inner": [
+   884,
+   640
+  ],
+  "rafTicks": 14
+ },
+ "parkCaptureBytes": 48590,
+ "hitTest": {
+  "parkHwnd": "215419192",
+  "coverHwnd": "88870764",
+  "windowFromPoint": "58264956",
+  "point": [
+   1440,
+   912
+  ]
+ },
+ "clickRouting": {
+  "park": {
+   "down": 0,
+   "up": 0,
+   "move": 0,
+   "lastXY": null
+  },
+  "user": {
+   "down": 1,
+   "up": 1,
+   "move": 11,
+   "lastXY": [
+    443,
+    284,
+    true
+   ]
+  }
+ },
+ "parkInWindowEnumeration": [
+  "215419192|136839464|"
+ ],
+ "totalVisibleTitledWindows": 31,
+ "coverInEnumeration": [
+  "88870764|2097408|USER-WINDOW"
+ ]
+}

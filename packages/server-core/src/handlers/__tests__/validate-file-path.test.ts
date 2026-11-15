@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test'
 import { homedir, tmpdir } from 'os'
 import { join, sep } from 'path'
-import { validateFilePath } from '../utils'
+import { validateFilePath, resolveWorkspacePath } from '../utils'
 
 const home = homedir()
 const tmp = tmpdir()
@@ -25,6 +25,13 @@ describe('validateFilePath', () => {
     await expect(validateFilePath(path)).rejects.toThrow('Access denied')
   })
 
+  it('allows a drive-relative /tmp path on Windows', async () => {
+    // `/tmp/x` is rooted at the current drive on Windows, so it names `<drive>:\tmp\x` — the
+    // junction the app creates to the temp directory (or that folder itself).
+    if (sep !== '\\') return
+    await expect(validateFilePath('/tmp/craft-test.txt')).resolves.toContain('craft-test.txt')
+  })
+
   it('allows paths inside additionalAllowedDirs', async () => {
     const projectDir = sep === '\\' ? 'D:\\Projects\\myapp' : '/opt/projects/myapp'
     const path = join(projectDir, 'src', 'main.ts')
@@ -36,6 +43,15 @@ describe('validateFilePath', () => {
     const path = join(home, 'test.txt')
     const result = await validateFilePath(path, ['/some/other/dir'])
     expect(result).toContain('test.txt')
+  })
+
+  it('compares paths case-insensitively on Windows', async () => {
+    // Windows folders are case-insensitive: a path whose case differs from the
+    // allowed dir must still be allowed.
+    if (sep !== '\\') return
+    const path = join(home.toUpperCase(), 'test.txt')
+    const result = await validateFilePath(path)
+    expect(result.toLowerCase()).toContain('test.txt')
   })
 
   it('blocks sensitive files even inside allowed dirs', async () => {
@@ -83,5 +99,21 @@ describe('validateFilePath', () => {
     // Should not throw even with undefined/empty values in the array
     const result = await validateFilePath(path, ['', undefined as unknown as string])
     expect(result).toContain('test.txt')
+  })
+})
+
+describe('resolveWorkspacePath', () => {
+  it('leaves an absolute path exactly as it was', () => {
+    const path = join(home, 'notes', 'plan.md')
+    expect(resolveWorkspacePath(path, 'no-such-workspace')).toBe(path)
+  })
+
+  it('expands a tilde path the way the boundary check does', () => {
+    expect(resolveWorkspacePath('~/notes.md', 'no-such-workspace')).toBe(join(home, 'notes.md'))
+  })
+
+  it('leaves a relative path alone when there is no workspace to resolve it against', () => {
+    expect(resolveWorkspacePath('docs/plan.md')).toBe('docs/plan.md')
+    expect(resolveWorkspacePath('docs/plan.md', 'no-such-workspace')).toBe('docs/plan.md')
   })
 })

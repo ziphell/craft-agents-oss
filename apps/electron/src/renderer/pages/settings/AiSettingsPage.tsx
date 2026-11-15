@@ -16,14 +16,14 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { HeaderMenu } from '@/components/ui/HeaderMenu'
 import { routes } from '@/lib/navigate'
-import { X, MoreHorizontal, Pencil, Trash2, Star, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, RefreshCcw, Settings2, MessageSquareMore, Zap, Clock, Check } from 'lucide-react'
+import { X, MoreHorizontal, Pencil, Trash2, Star, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, RefreshCcw, Settings2 } from 'lucide-react'
 import type { CredentialHealthStatus, CredentialHealthIssue } from '../../../shared/types'
 import { Spinner, FullscreenOverlayBase, Tooltip, TooltipTrigger, TooltipContent } from '@craft-agent/ui'
 import { useSetAtom } from 'jotai'
 import { fullscreenOverlayOpenAtom } from '@/atoms/overlay'
 import { DECISION_SETTINGS_CHANGED_EVENT } from '@/atoms/permission-modes'
 import { motion, AnimatePresence } from 'motion/react'
-import type { LlmConnectionWithStatus, ThinkingLevel, WorkspaceSettings, Workspace } from '../../../shared/types'
+import type { LlmConnectionWithStatus, ThinkingLevel, WorkspaceSettings, Workspace, WebSearchProviderPreference, WebFetchMode } from '../../../shared/types'
 import type { DecisionLayerFeature, DecisionLayerStatus, DecisionLayerSettingsPatch, DecisionProviderId, DecisionServerProbe, DecisionTestResult, DecisionToggleUsage } from '../../../shared/types'
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVELS } from '@craft-agent/shared/agent/thinking-levels'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
@@ -35,9 +35,6 @@ import {
   StyledDropdownMenuContent,
   StyledDropdownMenuItem,
   StyledDropdownMenuSeparator,
-  DropdownMenuSub,
-  StyledDropdownMenuSubTrigger,
-  StyledDropdownMenuSubContent,
 } from '@/components/ui/styled-dropdown'
 import { cn } from '@/lib/utils'
 import { ConnectionIcon } from '@/components/icons/ConnectionIcon'
@@ -50,14 +47,18 @@ import {
   SettingsToggle,
   SettingsInput,
 } from '@/components/settings'
+import { MediaChannelsSection } from '@/components/settings/MediaChannelsSection'
+import { AsrSection } from '@/components/settings/AsrSection'
+import { ObjectStorageSection } from '@/components/settings/ObjectStorageSection'
 import { useOnboarding } from '@/hooks/useOnboarding'
 import { RtkUpdateDialog, type RtkStatusInfo } from '@/components/RtkUpdateDialog'
 import { useWorkspaceIcon } from '@/hooks/useWorkspaceIcon'
 import { OnboardingWizard, type ApiSetupMethod } from '@/components/onboarding'
+import type { ApiKeyInitialValues } from '@/components/apisetup'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { getModelShortName, type ModelDefinition } from '@config/models'
-import { getModelsForProviderType, resolveMidStreamBehavior, type CustomEndpointApi, type MidStreamBehavior } from '@config/llm-connections'
+import { getModelsForProviderType, isCompatProvider, type CustomEndpointApi } from '@config/llm-connections'
 import { toast } from 'sonner'
 
 /** Checks with an outcome after which a feature that changed nothing is pointed out. */
@@ -83,15 +84,27 @@ function getModelOptionsForConnection(
 ): Array<{ value: string; label: string; description: string; descriptionKey?: string }> {
   if (!connection) return []
 
+  // A custom endpoint's models are named by the user, so the id *is* the display
+  // name unless they set one — showing a prettified guess ("Deepseek Flash")
+  // would name a model the endpoint has never heard of.
+  const isCustomEndpoint = isCompatProvider(connection.providerType)
+
   // If connection has explicit models, use those
   if (connection.models && connection.models.length > 0) {
     return connection.models.map((m) => {
       if (typeof m === 'string') {
-        return { value: m, label: getModelShortName(m), description: '' }
+        return { value: m, label: isCustomEndpoint ? m : getModelShortName(m), description: '' }
       }
-      // ModelDefinition object
+      // ModelDefinition object. Custom-endpoint entries carry only what the user
+      // set — `name` is optional there, so falling back to the id keeps the
+      // option (and therefore the whole dropdown) from rendering blank.
       const def = m as ModelDefinition
-      return { value: def.id, label: def.name, description: def.description, descriptionKey: def.descriptionKey }
+      return {
+        value: def.id,
+        label: def.name ?? (isCustomEndpoint ? def.id : getModelShortName(def.id)),
+        description: def.description ?? '',
+        descriptionKey: def.descriptionKey,
+      }
     })
   }
 
@@ -205,14 +218,13 @@ interface ConnectionRowProps {
   onValidate: () => void
   onReauthenticate: () => void
   onEdit: () => void
-  onSetMidStreamBehavior: (behavior: MidStreamBehavior) => void
   validationState: ValidationState
   validationError?: string
   /** True when another OAuth connection resolves to the same Anthropic account (issue #838) */
   isDuplicateAccount?: boolean
 }
 
-function ConnectionRow({ connection, isLastConnection, onRenameClick, onDelete, onSetDefault, onValidate, onReauthenticate, onEdit, onSetMidStreamBehavior, validationState, validationError, isDuplicateAccount }: ConnectionRowProps) {
+function ConnectionRow({ connection, isLastConnection, onRenameClick, onDelete, onSetDefault, onValidate, onReauthenticate, onEdit, validationState, validationError, isDuplicateAccount }: ConnectionRowProps) {
   const { t } = useTranslation()
   const [menuOpen, setMenuOpen] = useState(false)
   const [piBaseUrl, setPiBaseUrl] = useState<string | undefined>(undefined)
@@ -368,29 +380,6 @@ function ConnectionRow({ connection, isLastConnection, onRenameClick, onDelete, 
             <CheckCircle2 className="h-3.5 w-3.5" />
             <span>{t("settings.ai.validateConnection")}</span>
           </StyledDropdownMenuItem>
-          {(() => {
-            const currentBehavior = resolveMidStreamBehavior(connection)
-            return (
-              <DropdownMenuSub>
-                <StyledDropdownMenuSubTrigger>
-                  <MessageSquareMore className="h-3.5 w-3.5" />
-                  <span>{t("settings.ai.midStream.title")}</span>
-                </StyledDropdownMenuSubTrigger>
-                <StyledDropdownMenuSubContent>
-                  <StyledDropdownMenuItem onClick={() => onSetMidStreamBehavior('steer')}>
-                    <Zap className="h-3.5 w-3.5" />
-                    <span className="flex-1">{t("settings.ai.midStream.steer")}</span>
-                    {currentBehavior === 'steer' && <Check className="h-3.5 w-3.5" />}
-                  </StyledDropdownMenuItem>
-                  <StyledDropdownMenuItem onClick={() => onSetMidStreamBehavior('queue')}>
-                    <Clock className="h-3.5 w-3.5" />
-                    <span className="flex-1">{t("settings.ai.midStream.queue")}</span>
-                    {currentBehavior === 'queue' && <Check className="h-3.5 w-3.5" />}
-                  </StyledDropdownMenuItem>
-                </StyledDropdownMenuSubContent>
-              </DropdownMenuSub>
-            )
-          })()}
           <StyledDropdownMenuSeparator />
           <StyledDropdownMenuItem
             onClick={onDelete}
@@ -643,14 +632,7 @@ export default function AiSettingsPage() {
   const [showApiSetup, setShowApiSetup] = useState(false)
   const [editingConnectionSlug, setEditingConnectionSlug] = useState<string | null>(null)
   const [isDirectEdit, setIsDirectEdit] = useState(false)
-  const [editInitialValues, setEditInitialValues] = useState<{
-    apiKey?: string
-    baseUrl?: string
-    connectionDefaultModel?: string
-    activePreset?: string
-    models?: string[]
-    customApi?: CustomEndpointApi
-  } | undefined>(undefined)
+  const [editInitialValues, setEditInitialValues] = useState<ApiKeyInitialValues | undefined>(undefined)
   const setFullscreenOverlayOpen = useSetAtom(fullscreenOverlayOpenAtom)
 
   // Workspaces for override cards
@@ -665,6 +647,14 @@ export default function AiSettingsPage() {
   const [rtkUpdateOpen, setRtkUpdateOpen] = useState(false)
   const [rtkRechecking, setRtkRechecking] = useState(false)
   const [rtkGain, setRtkGain] = useState<{ totalCommands: number; totalInput: number; totalOutput: number; totalSaved: number; avgSavingsPct: number; totalTimeMs: number; avgTimeMs: number } | null>(null)
+  const [webSearchProvider, setWebSearchProvider] = useState<WebSearchProviderPreference>('auto')
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true)
+  const [webFetchEnabled, setWebFetchEnabled] = useState(true)
+  const [webFetchMode, setWebFetchMode] = useState<WebFetchMode>('direct')
+  const [deepSeekSearchKeyDraft, setDeepSeekSearchKeyDraft] = useState('')
+  const [deepSeekSearchKeySet, setDeepSeekSearchKeySet] = useState(false)
+  const [deepSeekFetchKeyDraft, setDeepSeekFetchKeyDraft] = useState('')
+  const [deepSeekFetchKeySet, setDeepSeekFetchKeySet] = useState(false)
 
   // Decision model (Jev / TypeSafe System One) — opt-in decision layer.
   // The card is always shown; everything behind it stays off until the user enables it.
@@ -717,6 +707,24 @@ export default function AiSettingsPage() {
 
         const rtkOn = await window.electronAPI.getRtkEnabled()
         setRtkEnabled(rtkOn)
+
+        const searchProvider = await window.electronAPI.getWebSearchProvider()
+        setWebSearchProvider(searchProvider)
+
+        const searchEnabled = await window.electronAPI.getWebSearchEnabled()
+        setWebSearchEnabled(searchEnabled)
+
+        const fetchEnabled = await window.electronAPI.getWebFetchEnabled()
+        setWebFetchEnabled(fetchEnabled)
+
+        const fetchMode = await window.electronAPI.getWebFetchMode()
+        setWebFetchMode(fetchMode)
+
+        const deepSeekKeySet = await window.electronAPI.getDeepSeekSearchKeyStatus()
+        setDeepSeekSearchKeySet(deepSeekKeySet)
+
+        const deepSeekFetchKeyStored = await window.electronAPI.getDeepSeekFetchKeyStatus()
+        setDeepSeekFetchKeySet(deepSeekFetchKeyStored)
 
         const status = await window.electronAPI.getRtkStatus()
         setRtkStatus(status)
@@ -857,23 +865,29 @@ export default function AiSettingsPage() {
 
     // Build model string from connection's models array
     const modelStr = connection.models
-      ?.map((m: string | ModelDefinition) => typeof m === 'string' ? m : m.id)
+      ?.map(m => typeof m === 'string' ? m : m.id)
       .join(', ') || connection.defaultModel || ''
-
-    // Set initial values before opening overlay so ApiKeyInput mounts with them
-    const modelIds = connection.models
-      ?.map((m: string | ModelDefinition) => typeof m === 'string' ? m : m.id)
-      .filter(Boolean)
 
     const isCustomEndpointConnection = !!connection.customEndpoint && !!connection.baseUrl?.trim()
 
     setEditInitialValues({
       apiKey,
       baseUrl: connection.baseUrl,
-      connectionDefaultModel: modelStr,
+      // The custom endpoint editor edits models as rows and keeps the default as
+      // a single picked id, so this field carries one id there — the comma list
+      // is only the seed for the flows that edit models as a comma string.
+      connectionDefaultModel: isCustomEndpointConnection
+        ? (connection.defaultModel ?? '')
+        : modelStr,
+      fastModel: connection.fastModel,
+      visionModel: connection.visionModel,
+      omniModel: connection.omniModel,
       activePreset: isCustomEndpointConnection ? 'custom' : (connection.piAuthProvider || undefined),
-      models: modelIds,
+      // Pass the stored entries themselves (not just ids): the custom endpoint
+      // editor edits per-model parameters, and unknown keys must survive a save.
+      models: connection.models,
       customApi: connection.customEndpoint?.api,
+      connectionHeaders: connection.customEndpoint?.headers,
     })
 
     // Open overlay and jump directly to credentials step (no reset — jumpToCredentials sets state)
@@ -947,30 +961,6 @@ export default function AiSettingsPage() {
     }
   }, [refreshLlmConnections])
 
-  // Update a connection's mid-stream send behavior (steer vs queue).
-  // Uses the same saveLlmConnection RPC as other connection edits.
-  const handleSetMidStreamBehavior = useCallback(async (
-    connection: LlmConnectionWithStatus,
-    behavior: MidStreamBehavior,
-  ) => {
-    if (!window.electronAPI) return
-    if (resolveMidStreamBehavior(connection) === behavior) return
-    try {
-      const updated = { ...connection, midStreamBehavior: behavior }
-      const { isAuthenticated: _a, authError: _b, isDefault: _c, ...connectionData } = updated
-      const result = await window.electronAPI.saveLlmConnection(connectionData as import('../../../shared/types').LlmConnection)
-      if (result.success) {
-        refreshLlmConnections?.()
-      } else {
-        console.error('Failed to update mid-stream behavior:', result.error)
-        toast.error(t('settings.ai.midStream.updateFailed'))
-      }
-    } catch (error) {
-      console.error('Failed to update mid-stream behavior:', error)
-      toast.error(t('settings.ai.midStream.updateFailed'))
-    }
-  }, [refreshLlmConnections, t])
-
   // Get the default connection for display
   const defaultConnection = useMemo(() => {
     return llmConnections.find(c => c.isDefault)
@@ -1031,6 +1021,54 @@ export default function AiSettingsPage() {
   const handleRtkToggle = useCallback(async (enabled: boolean) => {
     setRtkEnabled(enabled)
     await window.electronAPI?.setRtkEnabled(enabled)
+  }, [])
+
+  const handleWebSearchProviderChange = useCallback(async (value: string) => {
+    const preference = value as WebSearchProviderPreference
+    setWebSearchProvider(preference)
+    await window.electronAPI?.setWebSearchProvider(preference)
+  }, [])
+
+  const handleWebSearchToggle = useCallback(async (enabled: boolean) => {
+    setWebSearchEnabled(enabled)
+    await window.electronAPI?.setWebSearchEnabled(enabled)
+  }, [])
+
+  const handleWebFetchToggle = useCallback(async (enabled: boolean) => {
+    setWebFetchEnabled(enabled)
+    await window.electronAPI?.setWebFetchEnabled(enabled)
+  }, [])
+
+  const handleWebFetchModeChange = useCallback(async (value: string) => {
+    const mode = value as WebFetchMode
+    setWebFetchMode(mode)
+    await window.electronAPI?.setWebFetchMode(mode)
+  }, [])
+
+  const handleSaveDeepSeekSearchKey = useCallback(async () => {
+    const apiKey = deepSeekSearchKeyDraft.trim()
+    if (!apiKey) return
+    await window.electronAPI?.setDeepSeekSearchKey(apiKey)
+    setDeepSeekSearchKeyDraft('')
+    setDeepSeekSearchKeySet(true)
+  }, [deepSeekSearchKeyDraft])
+
+  const handleRemoveDeepSeekSearchKey = useCallback(async () => {
+    await window.electronAPI?.setDeepSeekSearchKey('')
+    setDeepSeekSearchKeySet(false)
+  }, [])
+
+  const handleSaveDeepSeekFetchKey = useCallback(async () => {
+    const apiKey = deepSeekFetchKeyDraft.trim()
+    if (!apiKey) return
+    await window.electronAPI?.setDeepSeekFetchKey(apiKey)
+    setDeepSeekFetchKeyDraft('')
+    setDeepSeekFetchKeySet(true)
+  }, [deepSeekFetchKeyDraft])
+
+  const handleRemoveDeepSeekFetchKey = useCallback(async () => {
+    await window.electronAPI?.setDeepSeekFetchKey('')
+    setDeepSeekFetchKeySet(false)
   }, [])
 
   const handleRecheckRtk = useCallback(async () => {
@@ -1373,7 +1411,6 @@ export default function AiSettingsPage() {
                         onValidate={() => handleValidateConnection(conn.slug)}
                         onReauthenticate={() => handleReauthenticateConnection(conn)}
                         onEdit={() => handleEditConnection(conn)}
-                        onSetMidStreamBehavior={(behavior) => handleSetMidStreamBehavior(conn, behavior)}
                         validationState={validationStates[conn.slug]?.state || 'idle'}
                         validationError={validationStates[conn.slug]?.error}
                         isDuplicateAccount={!!conn.oauthAccountUuid && duplicateAccountUuids.has(conn.oauthAccountUuid)}
@@ -1675,6 +1712,155 @@ export default function AiSettingsPage() {
                 </SettingsSection>
               )}
 
+              {/* Web search — provider and page fetching */}
+              <SettingsSection
+                title={t("settings.ai.webSearch.title")}
+                description={t("settings.ai.webSearch.description")}
+              >
+                <SettingsCard>
+                  <SettingsToggle
+                    label={t("settings.ai.webSearch.enabled")}
+                    description={t("settings.ai.webSearch.enabledDesc")}
+                    checked={webSearchEnabled}
+                    onCheckedChange={handleWebSearchToggle}
+                  />
+                  {webSearchEnabled && (
+                    <>
+                      <SettingsMenuSelectRow
+                        label={t("settings.ai.webSearch.source")}
+                        value={webSearchProvider}
+                        onValueChange={handleWebSearchProviderChange}
+                        options={[
+                          {
+                            value: 'auto',
+                            label: t("settings.ai.webSearch.auto"),
+                            description: t("settings.ai.webSearch.autoDesc"),
+                          },
+                          {
+                            value: 'duckduckgo',
+                            label: 'DuckDuckGo',
+                            description: t("settings.ai.webSearch.duckduckgoDesc"),
+                          },
+                          {
+                            value: 'deepseek',
+                            label: 'DeepSeek',
+                            description: t("settings.ai.webSearch.deepseekDesc"),
+                          },
+                        ]}
+                        menuWidth={320}
+                      />
+                    </>
+                  )}
+                  {webSearchEnabled && webSearchProvider === 'deepseek' && (
+                    deepSeekSearchKeySet ? (
+                      <SettingsRow
+                        label={t("settings.ai.webSearch.deepseekKey")}
+                        description={t("settings.ai.webSearch.deepseekKeySaved")}
+                      >
+                        <Button
+                          size="sm"
+                          onClick={handleRemoveDeepSeekSearchKey}
+                          className="bg-background shadow-minimal text-foreground hover:bg-foreground/5 rounded-lg"
+                        >
+                          {t("settings.ai.webSearch.removeKey")}
+                        </Button>
+                      </SettingsRow>
+                    ) : (
+                      <SettingsInput
+                        inCard
+                        type="password"
+                        label={t("settings.ai.webSearch.deepseekKey")}
+                        description={t("settings.ai.webSearch.deepseekKeyDesc")}
+                        value={deepSeekSearchKeyDraft}
+                        onChange={setDeepSeekSearchKeyDraft}
+                        placeholder="sk-..."
+                        action={(
+                          <Button
+                            size="sm"
+                            onClick={handleSaveDeepSeekSearchKey}
+                            disabled={!deepSeekSearchKeyDraft.trim()}
+                            className="bg-background shadow-minimal text-foreground hover:bg-foreground/5 rounded-lg"
+                          >
+                            {t("settings.ai.webSearch.saveKey")}
+                          </Button>
+                        )}
+                      />
+                    )
+                  )}
+                  <SettingsToggle
+                    label={t("settings.ai.webSearch.fetch")}
+                    description={t("settings.ai.webSearch.fetchDesc")}
+                    checked={webFetchEnabled}
+                    onCheckedChange={handleWebFetchToggle}
+                  />
+                  {webFetchEnabled && (
+                    <SettingsMenuSelectRow
+                      label={t("settings.ai.webSearch.fetchMode")}
+                      value={webFetchMode}
+                      onValueChange={handleWebFetchModeChange}
+                      options={[
+                        {
+                          value: 'direct',
+                          label: t("settings.ai.webSearch.fetchDirect"),
+                          description: t("settings.ai.webSearch.fetchDirectDesc"),
+                        },
+                        {
+                          value: 'deepseek',
+                          label: 'DeepSeek',
+                          description: t("settings.ai.webSearch.fetchDeepSeekDesc"),
+                        },
+                      ]}
+                      menuWidth={320}
+                    />
+                  )}
+                  {webFetchEnabled && webFetchMode === 'deepseek' && (
+                    deepSeekFetchKeySet ? (
+                      <SettingsRow
+                        label={t("settings.ai.webSearch.deepseekFetchKey")}
+                        description={t("settings.ai.webSearch.deepseekKeySaved")}
+                      >
+                        <Button
+                          size="sm"
+                          onClick={handleRemoveDeepSeekFetchKey}
+                          className="bg-background shadow-minimal text-foreground hover:bg-foreground/5 rounded-lg"
+                        >
+                          {t("settings.ai.webSearch.removeKey")}
+                        </Button>
+                      </SettingsRow>
+                    ) : (
+                      <SettingsInput
+                        inCard
+                        type="password"
+                        label={t("settings.ai.webSearch.deepseekFetchKey")}
+                        description={t("settings.ai.webSearch.deepseekFetchKeyDesc")}
+                        value={deepSeekFetchKeyDraft}
+                        onChange={setDeepSeekFetchKeyDraft}
+                        placeholder="sk-..."
+                        action={(
+                          <Button
+                            size="sm"
+                            onClick={handleSaveDeepSeekFetchKey}
+                            disabled={!deepSeekFetchKeyDraft.trim()}
+                            className="bg-background shadow-minimal text-foreground hover:bg-foreground/5 rounded-lg"
+                          >
+                            {t("settings.ai.webSearch.saveKey")}
+                          </Button>
+                        )}
+                      />
+                    )
+                  )}
+                </SettingsCard>
+              </SettingsSection>
+
+              {/* Speech to text — after the decision model, where the page's other doors end. */}
+              <AsrSection />
+
+              {/* Media generation — the accounts that draw pictures and films, then the bucket that
+                  hosts their reference files. Last, because they are the account doors. */}
+              <MediaChannelsSection />
+
+              <ObjectStorageSection />
+
               {/* API Setup Fullscreen Overlay */}
               <FullscreenOverlayBase
                 isOpen={showApiSetup}
@@ -1698,6 +1884,8 @@ export default function AiSettingsPage() {
                   editInitialValues={editInitialValues}
                   className="h-full"
                 />
+                {/* The window's own caption buttons are away for as long as this overlay is up (see
+                    `FullscreenOverlayBase`), so the close button takes the corner itself. */}
                 <div
                   className="fixed top-0 right-0 h-[50px] flex items-center pr-5 [-webkit-app-region:no-drag]"
                   style={{ zIndex: 'var(--z-fullscreen, 350)' }}

@@ -13,7 +13,8 @@
 import type { ValidationIssue, ValidationResult } from '../config/validators.ts';
 import { getModelById } from '../config/models.ts';
 import { extractRefs } from './refs.ts';
-import { parseTaskSpec, nodeDeps, type TaskSpec, type TaskNode } from './schema.ts';
+import { parseWhen } from './conditions.ts';
+import { parseTaskSpec, nodeDeps, APPROVAL_VERDICT_FIELD, type TaskSpec, type TaskNode } from './schema.ts';
 
 /** Generous structural backstops. Rarely bind; surface "too large — simplify", never silently truncate. */
 export const TASK_CAPS = {
@@ -85,13 +86,20 @@ export function validateTaskSpec(spec: TaskSpec): ValidationResult {
             continue;
           }
           if (ref.field) {
-            warnings.push(
-              warn(
-                `${path}.inputs`,
-                `Reference ${ref.raw} reads a structured output field, but node outputs carry only free-form text in v1 — the token will be left unresolved at runtime`,
-                `Use \${nodes.${ref.nodeId}.output} to consume the node's full text output`,
-              ),
-            );
+            // A structured reference resolves against the upstream node's `NodeOutput.params`,
+            // which is exactly the set of fields that node declares in `outputs`. An undeclared
+            // field can never be produced, so the token would reach the next prompt as a literal
+            // "${…}" — refuse it here instead of at dispatch.
+            const declared = new Set((byId.get(ref.nodeId)?.outputs ?? []).map((o) => o.name));
+            if (!declared.has(ref.field)) {
+              errors.push(
+                err(
+                  `${path}.inputs`,
+                  `Reference ${ref.raw} reads field "${ref.field}", which node "${ref.nodeId}" does not declare`,
+                  `Declare it under ${ref.nodeId}.outputs, or read the whole output with \${nodes.${ref.nodeId}.output}`,
+                ),
+              );
+            }
           }
           if (!nodeDeps(node).includes(ref.nodeId)) {
             warnings.push(
@@ -106,6 +114,70 @@ export function validateTaskSpec(spec: TaskSpec): ValidationResult {
           errors.push(err(`${path}.inputs`, `Reference ${ref.raw} uses undeclared task param "${ref.name}"`));
         }
       }
+    }
+
+    // `when:` — a branch test over declared upstream fields. Parsed here so a malformed
+    // condition is refused before any session spawns (a silently-false branch would run a node
+    // nobody asked for), and its references are checked like any other reference.
+    if (node.when) {
+      const parsed = parseWhen(node.when, `${path}.when`);
+      if (typeof parsed === 'string') {
+        errors.push(err(`${path}.when`, parsed));
+      } else {
+        for (const ref of parsed.refs) {
+          if (ref.nodeId === node.id) {
+            errors.push(err(`${path}.when`, `Node "${node.id}" tests its own output`));
+            continue;
+          }
+          const upstream = byId.get(ref.nodeId);
+          if (!upstream) {
+            errors.push(
+              err(`${path}.when`, `Condition reads ${ref.nodeId}.${ref.field}, but there is no node "${ref.nodeId}"`),
+            );
+            continue;
+          }
+          if (!(upstream.outputs ?? []).some((o) => o.name === ref.field)) {
+            errors.push(
+              err(
+                `${path}.when`,
+                `Condition reads ${ref.nodeId}.${ref.field}, but node "${ref.nodeId}" does not declare that output`,
+                `Declare it under ${ref.nodeId}.outputs`,
+              ),
+            );
+          }
+        }
+      }
+    }
+
+    // A gate node (`kind: 'approval'`): a person answers it, so it needs a question to ask,
+    // and its answer has a fixed shape — flagging the mismatches here beats discovering them
+    // when a run is already parked waiting for someone.
+    if (node.kind === 'approval') {
+      if (!node.prompt?.trim()) {
+        errors.push(
+          err(`${path}.prompt`, `Approval node "${node.id}" has no prompt — it is the question put to the person`),
+        );
+      }
+      for (const decl of node.outputs ?? []) {
+        if (decl.name !== APPROVAL_VERDICT_FIELD) {
+          errors.push(
+            err(
+              `${path}.outputs`,
+              `Approval node "${node.id}" declares output "${decl.name}", but a gate only ever produces "${APPROVAL_VERDICT_FIELD}"`,
+              `Read the decision downstream as \${nodes.${node.id}.output.${APPROVAL_VERDICT_FIELD}}`,
+            ),
+          );
+        }
+      }
+    }
+    if (node.approval !== undefined) {
+      errors.push(
+        err(
+          `${path}.approval`,
+          `\`approval:\` is not a way to declare a gate — nothing reads it`,
+          `Use kind: approval on node "${node.id}"`,
+        ),
+      );
     }
 
     // Unknown model — warning, not error: custom/Pi models are discovered at
@@ -137,13 +209,17 @@ export function validateTaskSpec(spec: TaskSpec): ValidationResult {
         errors.push(err(`outputs.${name}`, `Output "${name}" references unknown node "${ref.nodeId}"`));
       }
       if (ref.kind === 'node' && byId.has(ref.nodeId) && ref.field) {
-        warnings.push(
-          warn(
-            `outputs.${name}`,
-            `Output "${name}" reads a structured output field ${ref.raw}, but node outputs carry only free-form text in v1 — the token will be left unresolved at runtime`,
-            `Use \${nodes.${ref.nodeId}.output} to consume the node's full text output`,
-          ),
-        );
+        // Same rule as node-level refs: the field has to be declared by the node that produces it.
+        const declared = new Set((byId.get(ref.nodeId)?.outputs ?? []).map((o) => o.name));
+        if (!declared.has(ref.field)) {
+          errors.push(
+            err(
+              `outputs.${name}`,
+              `Output "${name}" reads field "${ref.field}", which node "${ref.nodeId}" does not declare`,
+              `Declare it under ${ref.nodeId}.outputs, or read the whole output with \${nodes.${ref.nodeId}.output}`,
+            ),
+          );
+        }
       }
       if (ref.kind === 'param' && !declaredParams.has(ref.name)) {
         errors.push(err(`outputs.${name}`, `Output "${name}" references undeclared param "${ref.name}"`));
@@ -197,9 +273,11 @@ export function validateTaskInput(raw: unknown): ValidationResult & { spec?: Tas
 /**
  * Build the materialized dependency edges for a spec: for each node, the set of
  * upstream node ids it depends on = explicit `depends_on` ∪ the node ids
- * referenced in its prompt/inputs. Unknown targets and self-edges are skipped
- * (validation reports those separately). Shared by the validator (cycle/metrics)
- * and the Conductor (scheduling), so an input reference always implies an edge.
+ * referenced in its prompt/inputs ∪ the ones its `when` reads. Unknown targets and
+ * self-edges are skipped (validation reports those separately). Shared by the validator
+ * (cycle/metrics) and the Conductor (scheduling), so an input reference always implies an
+ * edge — which for `when` is not a matter of taste: a branch test cannot be evaluated
+ * before the node it reads has run.
  */
 export function materializeDeps(spec: TaskSpec): Map<string, Set<string>> {
   const ids = new Set(spec.nodes.map((n) => n.id));
@@ -215,6 +293,10 @@ export function materializeDeps(spec: TaskSpec): Map<string, Set<string>> {
     for (const ref of Object.values(node.inputs ?? {})) refTexts.push(typeof ref === 'string' ? ref : ref.from);
     for (const text of refTexts) {
       for (const r of extractRefs(text)) if (r.kind === 'node') add(r.nodeId);
+    }
+    if (node.when) {
+      const parsed = parseWhen(node.when);
+      if (typeof parsed !== 'string') for (const ref of parsed.refs) add(ref.nodeId);
     }
     edges.set(node.id, set);
   }

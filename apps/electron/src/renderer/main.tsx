@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/react'
 import { captureConsoleIntegration } from '@sentry/react'
 import { Provider as JotaiProvider, useAtomValue } from 'jotai'
 import App from './App'
+import { MarkdownPosterRoot, decodePosterText } from './markdown-poster'
 import { ThemeProvider } from './context/ThemeContext'
 import { windowWorkspaceIdAtom } from './atoms/sessions'
 import { Toaster } from '@/components/ui/sonner'
@@ -16,6 +17,16 @@ import './index.css'
 
 // Initialize i18n before any React rendering
 setupI18n([LanguageDetector, initReactI18next])
+
+/**
+ * Is this window a **poster**? Asked before anything that assumes the app's preload.
+ *
+ * The poster window (`?mdPoster=1`) is this same bundle with only `craftPoster` exposed — no RPC
+ * client, no session, no `electronAPI`. Sentry's renderer side talks to the main process over
+ * `sentry-ipc://`, which such a window does not have: initializing it there costs a CSP violation
+ * and a retry loop for a picture that is about to be photographed and thrown away.
+ */
+const isPosterWindow = new URLSearchParams(window.location.search).get('mdPoster') === '1'
 
 // One-shot bootstrap: ensure the main process's i18n + preferences.json learn
 // the language we just restored from localStorage. The main-process IPC handler
@@ -54,7 +65,8 @@ const IGNORED_CONSOLE_PATTERNS = [
 // giving Sentry the same rich context visible in DevTools without needing sourcemaps.
 //
 // NOTE: Source map upload is intentionally disabled — see main/index.ts for details.
-sentryInit(
+if (!isPosterWindow)
+  sentryInit(
   {
     integrations: [captureConsoleIntegration({ levels: ['error'] })],
 
@@ -120,12 +132,36 @@ function Root() {
   )
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
+/**
+ * A poster window is this same bundle with one question: `?mdPoster=1&text=<base64>&width=800`.
+ *
+ * It mounts `<Markdown>` and nothing else — no App, no providers, no IPC — because the main process
+ * asks for a *picture of a document* and the document's own renderer lives here. The alternative
+ * (a parser in main) was a second dialect, and a poster that disagrees with the page is worse than
+ * no poster.
+ */
+const posterQuery = new URLSearchParams(window.location.search)
+const isPoster = isPosterWindow
+
+const root = ReactDOM.createRoot(document.getElementById('root')!)
+if (isPoster) {
+  const text = decodePosterText(posterQuery.get('text') ?? '')
+  const width = Number(posterQuery.get('width') ?? '800') || 800
+  // The document's own folder, so a picture or a table it names beside it resolves against that.
+  const base = decodePosterText(posterQuery.get('base') ?? '') || undefined
+  root.render(
     <Sentry.ErrorBoundary fallback={<CrashFallback />}>
-      <JotaiProvider>
-        <Root />
-      </JotaiProvider>
+      <MarkdownPosterRoot text={text} width={width} base={base} />
     </Sentry.ErrorBoundary>
-  </React.StrictMode>
-)
+  )
+} else {
+  root.render(
+    <React.StrictMode>
+      <Sentry.ErrorBoundary fallback={<CrashFallback />}>
+        <JotaiProvider>
+          <Root />
+        </JotaiProvider>
+      </Sentry.ErrorBoundary>
+    </React.StrictMode>
+  )
+}

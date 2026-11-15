@@ -121,6 +121,17 @@ export interface PreviewHeaderProps {
  * - Left: 70px spacer (for macOS traffic lights in Electron)
  * - Center: Badges row
  * - Right: Close button (if onClose provided) or 70px spacer
+ *
+ * The row is also the handle: every fullscreen overlay that carries one of these portal-renders to
+ * `document.body`, so nothing above the header is inside the window's drag region and without this
+ * the window could not be moved while the overlay was open. The two sides are the handle; the badge
+ * row and the actions opt out (`no-drag`) so they stay clickable.
+ *
+ * No room is kept at the right for the window's own caption buttons. This header only appears inside
+ * a fullscreen overlay, and an open overlay is exactly what puts those buttons away for as long as it
+ * is up (see `FullscreenOverlayBase`) — so the corner belongs to the close button. The overlay asks
+ * before it paints, so the header is laid out knowing the corner is free rather than being told
+ * afterwards and having to move.
  */
 export function PreviewHeader({
   children,
@@ -137,7 +148,12 @@ export function PreviewHeader({
         'shrink-0 flex items-center justify-between px-3',
         className
       )}
-      style={{ height, ...style }}
+      style={{
+        height,
+        ...style,
+        // Last, so a caller's own style cannot drop the handle: dragging is this row's job.
+        WebkitAppRegion: 'drag',
+      } as React.CSSProperties}
     >
       {/* Left side - space for traffic lights on macOS, flex-1 to balance with right side */}
       <div className="flex-1 min-w-[70px]" />
@@ -147,9 +163,14 @@ export function PreviewHeader({
         {children}
       </div>
 
-      {/* Right side - actions + close button. no-drag so actions are clickable in the window drag region. */}
-      <div className="flex-1 min-w-[70px] flex items-center gap-2 justify-end" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-        {rightActions}
+      {/* Right side - actions + close button. This side is a handle as well: only the controls opt
+          out (`no-drag`), and the stretch they are pushed away from stays draggable. Marking the whole
+          side `no-drag`, which is what this used to do, made half the bar dead to the cursor. */}
+      <div className="flex-1 min-w-[70px] flex items-center gap-2 justify-end">
+        {/* `empty:hidden` so a header with no right-hand controls spends no gap on this wrapper. */}
+        <div className="flex items-center gap-2 empty:hidden" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {rightActions}
+        </div>
         {onClose && (
           <button
             onClick={onClose}
@@ -159,6 +180,7 @@ export function PreviewHeader({
               'focus:outline-none focus-visible:ring-1 focus-visible:ring-ring'
             )}
             title={t('common.closeEsc')}
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
             <X className="w-4 h-4" />
           </button>

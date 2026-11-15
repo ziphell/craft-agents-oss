@@ -5,6 +5,7 @@
  *
  * Settings:
  * - Notifications
+ * - Links (where a clicked link opens)
  * - Network (proxy)
  * - About (version, updates)
  *
@@ -14,6 +15,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
@@ -21,13 +23,16 @@ import { HeaderMenu } from '@/components/ui/HeaderMenu'
 import { routes } from '@/lib/navigate'
 import { Spinner } from '@craft-agent/ui'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
-import type { NetworkProxySettings } from '../../../shared/types'
+import type { NetworkProxyMode, NetworkProxySettings } from '../../../shared/types'
+import type { UserPreferences } from '@craft-agent/shared/config'
+import { readOpenInAppBrowserFrom, writeOpenInAppBrowser } from '@/lib/open-in-app-browser'
 
 import {
   SettingsSection,
   SettingsCard,
   SettingsCardFooter,
   SettingsRow,
+  SettingsSegmentedControl,
   SettingsToggle,
   SettingsInput,
 } from '@/components/settings'
@@ -43,35 +48,41 @@ export const meta: DetailsPageMeta = {
 // ============================================
 
 interface ProxyFormState {
-  enabled: boolean
+  mode: NetworkProxyMode
   httpProxy: string
   httpsProxy: string
   noProxy: string
+  bypassLoopback: boolean
 }
 
+const DEFAULT_PROXY_MODE: NetworkProxyMode = 'direct'
+
 const EMPTY_PROXY_FORM: ProxyFormState = {
-  enabled: false,
+  mode: DEFAULT_PROXY_MODE,
   httpProxy: '',
   httpsProxy: '',
   noProxy: '',
+  bypassLoopback: true,
 }
 
 function toProxyFormState(settings?: NetworkProxySettings): ProxyFormState {
   if (!settings) return EMPTY_PROXY_FORM
   return {
-    enabled: settings.enabled,
+    mode: settings.mode,
     httpProxy: settings.httpProxy ?? '',
     httpsProxy: settings.httpsProxy ?? '',
     noProxy: settings.noProxy ?? '',
+    bypassLoopback: settings.bypassLoopback !== false,
   }
 }
 
 function toNetworkProxySettings(form: ProxyFormState): NetworkProxySettings {
   return {
-    enabled: form.enabled,
+    mode: form.mode,
     httpProxy: form.httpProxy.trim() || undefined,
     httpsProxy: form.httpsProxy.trim() || undefined,
     noProxy: form.noProxy.trim() || undefined,
+    bypassLoopback: form.bypassLoopback,
   }
 }
 
@@ -85,6 +96,37 @@ function validateProxyUrl(url: string): string | undefined {
     return undefined
   } catch {
     return 'proxyErrorFormat'
+  }
+}
+
+/**
+ * The "bring my tabs back" switch, in the same shape as the browser switch beside it: the
+ * answer lives in the preferences file, and the settings page reads a copy it already has.
+ */
+function readRestoreBrowserTabsFrom(content: string): boolean {
+  try {
+    return (JSON.parse(content) as UserPreferences).restoreBrowserTabs === true
+  } catch {
+    return false
+  }
+}
+
+/** Write it back, keeping whatever else the file holds. */
+async function writeRestoreBrowserTabs(enabled: boolean): Promise<void> {
+  const { content } = await window.electronAPI.readPreferences()
+
+  let prefs: UserPreferences
+  try {
+    prefs = JSON.parse(content) as UserPreferences
+  } catch {
+    prefs = {}
+  }
+
+  const result = await window.electronAPI.writePreferences(
+    JSON.stringify({ ...prefs, restoreBrowserTabs: enabled, updatedAt: Date.now() }, null, 2),
+  )
+  if (!result.success) {
+    throw new Error(result.error ?? 'Could not write preferences')
   }
 }
 
@@ -103,6 +145,11 @@ export default function AppSettingsPage() {
 
   // Tools state
   const [browserToolEnabled, setBrowserToolEnabled] = useState(true)
+  const [computerUseEnabled, setComputerUseEnabled] = useState(false)
+
+  // Links and pages state
+  const [openInAppBrowser, setOpenInAppBrowser] = useState(true)
+  const [restoreBrowserTabs, setRestoreBrowserTabs] = useState(false)
 
   // Proxy state
   const [proxyForm, setProxyForm] = useState<ProxyFormState>(EMPTY_PROXY_FORM)
@@ -128,15 +175,20 @@ export default function AppSettingsPage() {
   const loadSettings = useCallback(async () => {
     if (!window.electronAPI) return
     try {
-      const [notificationsOn, keepAwakeOn, browserToolOn, proxySettings] = await Promise.all([
+      const [notificationsOn, keepAwakeOn, browserToolOn, computerUseOn, proxySettings, preferencesFile] = await Promise.all([
         window.electronAPI.getNotificationsEnabled(),
         window.electronAPI.getKeepAwakeWhileRunning(),
         window.electronAPI.getBrowserToolEnabled(),
+        window.electronAPI.getComputerUseEnabled(),
         window.electronAPI.getNetworkProxySettings(),
+        window.electronAPI.readPreferences(),
       ])
       setNotificationsEnabled(notificationsOn)
       setKeepAwakeEnabled(keepAwakeOn)
       setBrowserToolEnabled(browserToolOn)
+      setComputerUseEnabled(computerUseOn)
+      setOpenInAppBrowser(readOpenInAppBrowserFrom(preferencesFile.content))
+      setRestoreBrowserTabs(readRestoreBrowserTabsFrom(preferencesFile.content))
       const form = toProxyFormState(proxySettings)
       setProxyForm(form)
       setSavedProxyForm(form)
@@ -164,18 +216,56 @@ export default function AppSettingsPage() {
     await window.electronAPI.setBrowserToolEnabled(enabled)
   }, [])
 
+  const handleComputerUseEnabledChange = useCallback(async (enabled: boolean) => {
+    // Main is told as part of this call: turning it off releases a held desktop now, and turning
+    // it on makes the driver probe while still withholding every OS permission prompt until the
+    // first real command.
+    setComputerUseEnabled(enabled)
+    await window.electronAPI.setComputerUseEnabled(enabled)
+  }, [])
+
+  const handleOpenInAppBrowserChange = useCallback(async (enabled: boolean) => {
+    setOpenInAppBrowser(enabled)
+    try {
+      await writeOpenInAppBrowser(enabled)
+    } catch (error) {
+      // Back where it was: this switch says where a page opens, so it must not show a change
+      // that never reached the disk.
+      setOpenInAppBrowser(!enabled)
+      toast.error(t('toast.failedToSaveSetting', { setting: t('settings.links.title') }), {
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
+  }, [t])
+
+  const handleRestoreBrowserTabsChange = useCallback(async (enabled: boolean) => {
+    setRestoreBrowserTabs(enabled)
+    try {
+      await writeRestoreBrowserTabs(enabled)
+    } catch (error) {
+      // Back where it was: the switch must not show a change that never reached the disk.
+      setRestoreBrowserTabs(!enabled)
+      toast.error(t('toast.failedToSaveSetting', { setting: t('settings.links.title') }), {
+        description: error instanceof Error ? error.message : undefined,
+      })
+    }
+  }, [t])
+
   // Proxy handlers
   const isProxyDirty = useMemo(() => {
     return JSON.stringify(proxyForm) !== JSON.stringify(savedProxyForm)
   }, [proxyForm, savedProxyForm])
 
   const handleSaveProxy = useCallback(async () => {
-    // Validate URLs
-    const httpErr = validateProxyUrl(proxyForm.httpProxy)
-    const httpsErr = validateProxyUrl(proxyForm.httpsProxy)
-    if (httpErr || httpsErr) {
-      setProxyError(httpErr || httpsErr)
-      return
+    // Validate URLs — only what is in use: the fields are hidden under the
+    // system proxy, and a stale one must not block switching away from it.
+    if (proxyForm.mode === 'custom') {
+      const httpErr = validateProxyUrl(proxyForm.httpProxy)
+      const httpsErr = validateProxyUrl(proxyForm.httpsProxy)
+      if (httpErr || httpsErr) {
+        setProxyError(httpErr || httpsErr)
+        return
+      }
     }
     setProxyError(undefined)
     setIsSavingProxy(true)
@@ -239,19 +329,57 @@ export default function AppSettingsPage() {
                     checked={browserToolEnabled}
                     onCheckedChange={handleBrowserToolEnabledChange}
                   />
+                  <SettingsToggle
+                    label={t("settings.tools.desktopControl")}
+                    description={t("settings.tools.desktopControlDesc")}
+                    checked={computerUseEnabled}
+                    onCheckedChange={handleComputerUseEnabledChange}
+                  />
                 </SettingsCard>
               </SettingsSection>
+
+              {/* Links — where a page the person clicks goes, a link or an `.html` file.
+                  Electron only: a browser client has no window of ours to open, so there the
+                  page is a tab of their own. */}
+              {isElectron && (
+                <SettingsSection title={t("settings.links.title")}>
+                  <SettingsCard>
+                    <SettingsToggle
+                      label={t("settings.links.openInAppBrowser")}
+                      description={t("settings.links.openInAppBrowserDesc")}
+                      checked={openInAppBrowser}
+                      onCheckedChange={handleOpenInAppBrowserChange}
+                    />
+                    <SettingsToggle
+                      label={t("settings.links.restoreBrowserTabs")}
+                      description={t("settings.links.restoreBrowserTabsDesc")}
+                      checked={restoreBrowserTabs}
+                      onCheckedChange={handleRestoreBrowserTabsChange}
+                    />
+                  </SettingsCard>
+                </SettingsSection>
+              )}
 
               {/* Network */}
               <SettingsSection title={t("settings.network.title")}>
                 <SettingsCard>
-                  <SettingsToggle
-                    label={t("settings.network.httpProxy")}
-                    description={t("settings.network.httpProxyDesc")}
-                    checked={proxyForm.enabled}
-                    onCheckedChange={(enabled) => setProxyForm(prev => ({ ...prev, enabled }))}
-                  />
-                  {proxyForm.enabled && (
+                  <SettingsRow label={t("settings.network.proxyMode")}>
+                    <SettingsSegmentedControl
+                      value={proxyForm.mode}
+                      onValueChange={(mode) => {
+                        // An error about a proxy we just stopped using is not
+                        // about anything on screen any more.
+                        setProxyError(undefined)
+                        setProxyForm(prev => ({ ...prev, mode }))
+                      }}
+                      options={[
+                        { value: 'direct', label: t("settings.network.proxyModeDirect") },
+                        { value: 'system', label: t("settings.network.proxyModeSystem") },
+                        { value: 'custom', label: t("settings.network.proxyModeCustom") },
+                      ]}
+                    />
+                  </SettingsRow>
+                  {proxyForm.mode === 'custom' && (
                     <>
                       <SettingsInput
                         label={t("settings.network.httpProxyLabel")}
@@ -273,6 +401,12 @@ export default function AppSettingsPage() {
                         onChange={(value) => setProxyForm(prev => ({ ...prev, noProxy: value }))}
                         placeholder={t("settings.network.bypassPlaceholder")}
                         inCard
+                      />
+                      <SettingsToggle
+                        label={t("settings.network.bypassLoopback")}
+                        description={t("settings.network.bypassLoopbackDesc")}
+                        checked={proxyForm.bypassLoopback}
+                        onCheckedChange={(checked) => setProxyForm(prev => ({ ...prev, bypassLoopback: checked }))}
                       />
                     </>
                   )}

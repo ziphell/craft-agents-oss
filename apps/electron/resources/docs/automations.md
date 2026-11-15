@@ -113,7 +113,8 @@ Send a prompt to Craft Agent (creates a new session for scheduled prompts).
 | `model` | string | Workspace default | Model ID for the created session |
 
 **Features:**
-- Use `@mentions` to reference sources or skills
+- Use `@mentions` to reference **sources** (a source slug). A skill is referenced with `[skill:slug]`
+  instead — the bracket form is what makes the agent read and apply it; `@skill` does not fire one.
 - Environment variables are expanded (e.g., `$CRAFT_LABEL`)
 
 **LLM Connection & Model:** Optionally specify which AI provider and model to use for the created session. If omitted, the workspace default connection and model are used.

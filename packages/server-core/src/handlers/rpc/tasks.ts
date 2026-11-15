@@ -6,13 +6,16 @@
  *   tasks:create   — write task.yaml + create the orchestrator parent session
  *   tasks:run      — start a run (returns the run snapshot)
  *   tasks:pause | resume | stop — run control
+ *   tasks:resolveApproval — answer a `kind: approval` gate node
  *   tasks:get      — spec + (optional) active run-state
+ *   tasks:getResults — storage-backed run outcome (verdict + per-node output/params)
  *   tasks:list     — task slugs with a task.yaml
  *
  * The legacy `tasks:getOutput` (background-task remnant) is handled in sessions.ts
  * and intentionally left untouched; retiring it is a separate cleanup.
  */
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
+import { readFile, stat } from 'fs/promises'
 import type {
   TaskCreateRequest,
   TaskCreateResult,
@@ -24,6 +27,7 @@ import type {
   TaskGetResult,
   TaskResultsDto,
   TaskResultNodeDto,
+  TaskRunSnapshotDto,
 } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import {
@@ -43,8 +47,9 @@ import {
 } from '@craft-agent/shared/tasks'
 import { createLogger } from '@craft-agent/shared/utils'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
+import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import type { HandlerDeps } from '../handler-deps'
-import { TaskRunner, createTaskFromSpec, finishTaskOrchestrator } from '../../tasks'
+import { TaskRunner, createTaskFromSpec, finishTaskOrchestrator, getTaskRunner } from '../../tasks'
 import { buildTaskVerdictDecider } from '../../decisions/task-verdict'
 import { buildNodeOutcomeClassifier } from '../../decisions/turn-outcome'
 import { buildRepairScopePicker } from '../../decisions/task-repairs'
@@ -62,6 +67,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.tasks.GET,
   RPC_CHANNELS.tasks.LIST,
   RPC_CHANNELS.tasks.GET_RESULTS,
+  RPC_CHANNELS.tasks.RESOLVE_APPROVAL,
 ] as const
 
 /** Map a shared ValidationResult (+ parsed spec) onto the wire DTO. */
@@ -93,36 +99,83 @@ function extractYaml(text: string): string {
   return (fenced ? fenced[1] : text).trim()
 }
 
-export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): void {
-  // One Conductor per workspace, created on demand. Holds active runs in memory.
-  const runners = new Map<string, TaskRunner>()
+/**
+ * How large a plan file `tasks:generate` will read.
+ *
+ * The same ceiling the browser tool puts on `evaluate --file` (256 KB): a plan this big is a
+ * mistake rather than a plan, and dragging it through the authoring turn serves no purpose — so it
+ * is refused with the size named, never silently truncated.
+ */
+const MAX_PLAN_FILE_BYTES = 256 * 1024
 
+/**
+ * Read the plan file a generate request names.
+ *
+ * It goes through the SAME boundary the app uses to read any file the user pointed at — the
+ * `file:read` channel's `validateFilePath(path, getWorkspaceAllowedDirs(workspaceId))` — rather
+ * than a second rule of its own. It is deliberately NOT gated on the suffix: whichever file the
+ * person named is the one read; whether the name ends in `.plan.md` is not this RPC's business.
+ * Each failure (missing / not a file / over the ceiling / unreadable) is refused with its own
+ * message, because these surface to the person in the UI.
+ */
+async function readPlanFile(
+  planPath: string,
+  workspaceId: string,
+  sessionManager: HandlerDeps['sessionManager'],
+): Promise<string> {
+  const safePath = await validateFilePath(planPath, getWorkspaceAllowedDirs(workspaceId, { sessionManager }))
+
+  let size: number
+  try {
+    const info = await stat(safePath)
+    if (!info.isFile()) throw new Error(`Plan path is not a file: ${planPath}`)
+    size = info.size
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`Plan file not found: ${planPath}`)
+    }
+    throw err
+  }
+
+  if (size > MAX_PLAN_FILE_BYTES) {
+    throw new Error(
+      `Plan file is ${Math.round(size / 1024)} KB, over the ${MAX_PLAN_FILE_BYTES / 1024} KB ceiling: ` +
+        `${planPath}. Split it, or point at the part that matters.`,
+    )
+  }
+
+  try {
+    return await readFile(safePath, 'utf-8')
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new Error(`Failed to read plan file ${planPath}: ${message}`)
+  }
+}
+
+export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): void {
   function workspaceOrThrow(workspaceId: string) {
     const ws = getWorkspaceByNameOrId(workspaceId)
     if (!ws) throw new Error(`Workspace ${workspaceId} not found`)
     return ws
   }
 
+  // One Conductor per workspace, shared with every other handler that needs a run (see
+  // runner-registry for why it must not be two).
   function runnerFor(workspaceId: string): TaskRunner {
-    let runner = runners.get(workspaceId)
-    if (!runner) {
-      const ws = workspaceOrThrow(workspaceId)
-      runner = new TaskRunner({
-        host: deps.sessionManager,
-        workspaceId: ws.id,
-        workspaceRoot: ws.rootPath,
-        // Decision model (Jev) reads verdicts out of replies without a VERDICT line; gated per call,
-        // `null` when the layer is off → the runner re-asks exactly as before.
-        decide: buildTaskVerdictDecider(),
-        // Decision model reads how a child's turn ended; a child that asked for input or gave up
-        // is failed (retry / needs-review) instead of marked done. `null` → marked done as before.
-        classifyNodeOutcome: buildNodeOutcomeClassifier(),
-        // Decision model narrows a FAIL without named subtasks to the ones its reason implicates.
-        pickRepairNodes: buildRepairScopePicker(),
-      })
-      runners.set(workspaceId, runner)
-    }
-    return runner
+    const ws = workspaceOrThrow(workspaceId)
+    return getTaskRunner({
+      workspaceId: ws.id,
+      workspaceRoot: ws.rootPath,
+      host: deps.sessionManager,
+      // Decision model (Jev) reads verdicts out of replies without a VERDICT line; gated per call,
+      // `null` when the layer is off → the runner re-asks exactly as before.
+      decide: buildTaskVerdictDecider(),
+      // Decision model reads how a child's turn ended; a child that asked for input or gave up
+      // is failed (retry / needs-review) instead of marked done. `null` → marked done as before.
+      classifyNodeOutcome: buildNodeOutcomeClassifier(),
+      // Decision model narrows a FAIL without named subtasks to the ones its reason implicates.
+      pickRepairNodes: buildRepairScopePicker(),
+    })
   }
 
   // tasks:validate — lint/dry-run; no side effects.
@@ -139,6 +192,9 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
       return { slug: '', orchestratorSessionId: '', validation }
     }
     const spec = parsed.spec
+    // Record the origin plan when the caller authored this task from one (mirrors the planPath the
+    // generate call was handed). Written verbatim — no validation, no default. Absent → no `from`.
+    if (req.planPath) spec.from = req.planPath
     saveTaskSpec(ws.rootPath, spec)
 
     // Single choke point for ALL orchestrator paths (attach / adopt / fresh): apply the reserved
@@ -209,6 +265,10 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
   // never leaves a visible orphan tile.
   server.handle(RPC_CHANNELS.tasks.GENERATE, async (_ctx, workspaceId: string, req: TaskGenerateRequest): Promise<TaskGenerateAck> => {
     workspaceOrThrow(workspaceId) // validate the workspace exists; generate no longer writes task.yaml
+    // A named plan is read BEFORE the draft session is created: a bad path (missing / over the
+    // ceiling / unreadable) must fail the call — the client shows the message as a toast — without
+    // leaving a hidden orphan draft behind. Absent → the generator behaves exactly as before.
+    const planText = req.planPath ? await readPlanFile(req.planPath, workspaceId, deps.sessionManager) : undefined
     const orchestrator = await deps.sessionManager.createSession(workspaceId, {
       name: req.title?.trim() || 'New task',
       sessionStatus: 'todo',
@@ -235,6 +295,7 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
       workspaceId,
       sessionId,
       hasCwd: Boolean(req.cwd),
+      hasPlan: Boolean(planText),
       model: req.model,
       projectId: req.projectId,
       hasConnection: Boolean(req.llmConnection),
@@ -275,7 +336,7 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
         // authored spec fails validation (commonly a ${nodes.X.output} ref to an undeclared
         // node) hand the concrete errors back and re-validate. Bounded so a model that can't
         // self-correct can't loop forever — the last attempt's validation is returned as-is.
-        let prompt = buildGeneratorPrompt(req.goal, req.title)
+        let prompt = buildGeneratorPrompt(req.goal, req.title, planText)
         let yaml = ''
         let parsed = parseTaskYaml(yaml)
         let attempts = 0
@@ -345,6 +406,23 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
     await runnerFor(workspaceId).stop(slug, runId)
   })
 
+  // tasks:resolveApproval — answer a `kind: approval` gate node. Returns the run's new state so
+  // the caller can re-render without a second round trip.
+  server.handle(
+    RPC_CHANNELS.tasks.RESOLVE_APPROVAL,
+    async (
+      _ctx,
+      workspaceId: string,
+      slug: string,
+      runId: string,
+      nodeId: string,
+      approved: boolean,
+      note?: string,
+    ): Promise<TaskRunSnapshotDto> => {
+      return runnerFor(workspaceId).resolveApproval(slug, runId, nodeId, approved, note)
+    },
+  )
+
   // tasks:get — spec + (optional) active run-state.
   server.handle(RPC_CHANNELS.tasks.GET, async (_ctx, workspaceId: string, slug: string, runId?: string): Promise<TaskGetResult> => {
     const ws = workspaceOrThrow(workspaceId)
@@ -397,6 +475,8 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
       if (entry.kind === 'node-scheduled' || entry.kind === 'node-spawned') {
         const e = ensure(entry.nodeId)
         if (entry.kind === 'node-spawned') e.sessionId = entry.sessionId
+      } else if (entry.kind === 'node-awaiting-approval') {
+        ensure(entry.nodeId).state = 'awaiting-approval'
       } else if (entry.kind === 'node-finished') {
         const e = ensure(entry.nodeId)
         e.state = entry.state
@@ -423,12 +503,20 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
 
     const nodes: TaskResultNodeDto[] = [...byId.values()].map((e) => {
       const out = readNodeOutput(root, slug, chosen, e.id)
+      const params = out?.params && Object.keys(out.params).length > 0 ? out.params : undefined
+      // A parked gate shows what is being approved, so the person can decide without hunting
+      // for the node in the task definition.
+      const gate = snapshot?.nodes.find((n) => n.id === e.id)
+      const approvalPrompt =
+        e.state === 'awaiting-approval' && gate?.kind === 'approval' ? gate.prompt : undefined
       return {
         id: e.id,
         title: titleById.get(e.id) ?? e.id,
         state: e.state,
         ...(e.sessionId ? { sessionId: e.sessionId } : {}),
         ...(out?.text ? { output: out.text } : {}),
+        ...(approvalPrompt ? { approvalPrompt } : {}),
+        ...(params ? { params } : {}),
       }
     })
 

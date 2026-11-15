@@ -1,0 +1,26 @@
+{
+  "name": "@craft-agent/render-host",
+  "version": "0.13.6",
+  "license": "Apache-2.0",
+  "description": "The renderer seam — page printing, document exports and drawio drawings — for a host with no editor window (the hub)",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:cli": "bun run scripts/build-cli.mjs",
+    "probe": "node --experimental-transform-types src/cli.ts --probe --json"
+  },
+  "dependencies": {
+    "@craft-agent/office-host": "*",
+    "@craft-agent/shared": "*",
+    "playwright-core": "^1.64.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}

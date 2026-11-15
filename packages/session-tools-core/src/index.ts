@@ -158,17 +158,14 @@ export type {
   ResolvedStatusResult,
   CreateTaskInput,
   CreateTaskResult,
-  // Pages types
-  PagesToolCallbacks,
-  PageToolRefreshSpec,
-  PageToolSummary,
-  PageToolDataSummary,
-  PageToolDetails,
-  CreatePageToolInput,
-  UpdatePageToolPatch,
-  PageDataToolPatch,
-  PageDataWriteSummary,
-  DeletePageToolResult,
+  // Tweaks types
+  TweakToolCallbacks,
+  TweakToolSummary,
+  TweakToolDetails,
+  TweakToolTarget,
+  CreateTweakToolInput,
+  UpdateTweakToolPatch,
+  DeleteTweakToolResult,
   // Decision tool types
   DecisionToolCallbacks,
   DecisionToolQuestionType,
@@ -184,6 +181,15 @@ export type {
 } from './context.ts';
 
 export { createNodeFileSystem } from './context.ts';
+
+export {
+  OFFICE_DOMAINS,
+  OFFICE_TOOL_NAMES,
+  officeDomainForCommand,
+  officeDomainOf,
+  type OfficeDomain,
+  type OfficeDomainDef,
+} from './office-domains.ts';
 
 // Handlers
 export {
@@ -214,13 +220,11 @@ export {
   handleRenderTemplate,
   // Send Developer Feedback
   handleSendDeveloperFeedback,
-  // Pages
-  handleListPages,
-  handleGetPage,
-  handleCreatePage,
-  handleUpdatePage,
-  handleWritePageData,
-  handleDeletePage,
+  handleListTweaks,
+  handleGetTweak,
+  handleCreateTweak,
+  handleUpdateTweak,
+  handleDeleteTweak,
   // Decision model
   handleDecide,
 } from './handlers/index.ts';
@@ -241,18 +245,17 @@ export type {
   ScriptSandboxArgs,
   RenderTemplateArgs,
   SendDeveloperFeedbackArgs,
-  ListPagesArgs,
-  GetPageArgs,
-  CreatePageArgs,
-  UpdatePageArgs,
-  WritePageDataArgs,
-  DeletePageArgs,
+  GetTweakArgs,
+  CreateTweakArgs,
+  UpdateTweakArgs,
+  DeleteTweakArgs,
   DecideArgs,
 } from './handlers/index.ts';
 
 // Tool definitions — single source of truth
 export {
   // Individual Zod schemas
+  ComputerToolSchema,
   SubmitPlanSchema,
   ConfigValidateSchema,
   SkillValidateSchema,
@@ -268,15 +271,15 @@ export {
   RenderTemplateSchema,
   // Browser tool schema
   BrowserToolSchema,
+  // Device meta-tool schema
+  DeviceToolSchema,
   // Developer feedback schema
   SendDeveloperFeedbackSchema,
-  // Pages schemas
-  ListPagesSchema,
-  GetPageSchema,
-  CreatePageSchema,
-  UpdatePageSchema,
-  WritePageDataSchema,
-  DeletePageSchema,
+  ListTweaksSchema,
+  GetTweakSchema,
+  CreateTweakSchema,
+  UpdateTweakSchema,
+  DeleteTweakSchema,
   // Descriptions
   TOOL_DESCRIPTIONS,
   // Registry

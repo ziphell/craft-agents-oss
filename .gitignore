@@ -9,7 +9,13 @@ dist
 apps/electron/release
 # Legacy build output of the removed session-mcp-server; never commit a stale local copy
 apps/electron/resources/session-mcp-server/
+# A packaged build used to smoke-check the installer; 166 MiB that is not source.
+apps/electron/release-check/
 apps/electron/resources/pi-agent-server/
+# Fetched and pruned by scripts/fetch-drawio-assets.ts — see that file for why.
+apps/electron/resources/drawio/
+# Built from a GenOffice checkout and copied in by scripts/build-office-assets.ts.
+apps/electron/resources/office/
 
 # code coverage
 coverage
@@ -73,3 +79,43 @@ credentials.enc
 # act (local GitHub Actions runner)
 .secrets
 .actrc
+
+# The genoffice CLI, copied in by scripts/build-office-assets.ts (docx_tool spawns it).
+apps/electron/resources/cli/
+
+# The GenOffice source the office engine is built from (scripts/fetch-genoffice-source.ts).
+vendor/genoffice/
+# Built from that source by scripts/build-office-engine.ts.
+apps/electron/resources/office-engine/
+
+# The xlsx sidecar the workbook host spawns (native, per platform).
+apps/electron/resources/office-native/
+
+# Built command-line tools (bun run build:cli-tools)
+apps/electron/resources/cli-tools/dist/
+
+# The OCR models `img-tool text` reads (bun run fetch:ocr-models). Fetched, not vendored: 6 MB of
+# ONNX pinned to a commit, like resources/drawio/.
+apps/electron/resources/cli-tools/models/
+
+# The Silero VAD model local speech recognition splits recordings with (bun run fetch:sherpa-vad).
+# Fetched, not vendored: ONNX pinned by checksum, like the OCR models above.
+apps/electron/resources/models/
+
+# Spike bundles: esbuild output of the .ts beside each file (they inline electron and the
+# app, so one of them is ~11 MB). Rebuild the one you need; the .ts is the artifact.
+apps/electron/spike/capture-probe.cjs
+apps/electron/spike/web-page-shot-probe.cjs
+apps/electron/spike/render-page-spike.cjs
+apps/electron/spike/capture-concurrency-spike.cjs
+apps/electron/spike/docx-print-spike.cjs
+apps/electron/spike/sheets-open-probe.cjs
+apps/electron/spike/html-preview-probe.cjs
+apps/electron/spike/csp-probe.cjs
+apps/electron/spike/html-theme-probe.cjs
+apps/electron/spike/file-frame-probe.cjs
+packages/render-host/.test/
+
+# Fixtures a test writes and deletes (`build-call-llm-request.test.ts`). Tracked by accident long
+# ago, which made every test run look like a change.
+packages/shared/src/agent/__tests__/__tmp_*/

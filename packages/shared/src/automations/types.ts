@@ -123,12 +123,6 @@ export interface ScriptAction {
   runtime?: ScriptActionRuntime;
   /** Per-run timeout in ms (default 60_000, clamped to [1_000, 900_000]) */
   timeoutMs?: number;
-  /**
-   * Page slug this script refreshes. When set, the executor injects
-   * CRAFT_PAGE_* env vars and records the outcome on the page's page.json
-   * (the completion marker the config watcher turns into `pages:changed`).
-   */
-  page?: string;
 }
 
 export type AutomationAction = PromptAction | WebhookAction | ScriptAction;
@@ -295,8 +289,6 @@ export interface ScriptActionResult {
   /** Captured stderr, or the block/spawn error (capped) */
   stderr: string;
   durationMs: number;
-  /** Page slug when this run refreshed a page */
-  page?: string;
 }
 
 export type ActionExecutionResult = PromptActionResult | WebhookActionResult | ScriptActionResult;

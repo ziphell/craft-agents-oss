@@ -23,6 +23,9 @@ describe('createCraftSettingsManager', () => {
       enabled: true,
       maxRetries: CRAFT_PI_RETRY_SETTINGS.maxRetries,
       baseDelayMs: CRAFT_PI_RETRY_SETTINGS.baseDelayMs,
+      // The SDK's own agent-delay cap; craft pins the three fields above and leaves this at the
+      // SDK default (60_000) rather than overriding it.
+      maxAgentDelayMs: 60_000,
     });
   });
 
@@ -43,6 +46,7 @@ describe('createCraftSettingsManager', () => {
       enabled: true,
       maxRetries: CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.maxRetries,
       baseDelayMs: CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.baseDelayMs,
+      maxAgentDelayMs: 60_000,
     });
     expect(settings.getProviderRetrySettings()).toMatchObject({
       maxRetries: CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.provider.maxRetries,

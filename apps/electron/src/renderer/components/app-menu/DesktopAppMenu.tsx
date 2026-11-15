@@ -2,6 +2,8 @@ import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import * as Icons from "lucide-react"
 import { isMac } from "@/lib/platform"
+import { isNativeShell, openServerList } from "@/lib/native-shell"
+import { logOutWebUI } from "@/lib/webui-logout"
 import { useActionLabel } from "@/actions"
 import {
   DropdownMenu,
@@ -140,6 +142,7 @@ function renderMenuSection(
 export function DesktopAppMenu({
   onNewChat,
   onNewWindow,
+  onConnectServer,
   onOpenSettings,
   onOpenSettingsSubpage,
   onOpenKeyboardShortcuts,
@@ -148,6 +151,8 @@ export function DesktopAppMenu({
 }: AppMenuProps) {
   const { t } = useTranslation()
   const [isDebugMode, setIsDebugMode] = useState(false)
+  // A browser client is inherently connected to a server; there is no mode to choose.
+  const isElectron = window.electronAPI.getRuntimeEnvironment() === 'electron'
 
   const newChatHotkey = useActionLabel('app.newChat').hotkey
   const newWindowHotkey = useActionLabel('app.newWindow').hotkey
@@ -182,6 +187,12 @@ export function DesktopAppMenu({
             <Icons.AppWindow className="h-3.5 w-3.5" />
             {t(ROOT_MENU.newWindow.labelKey)}
             {newWindowHotkey && <DropdownMenuShortcut className="pl-6">{newWindowHotkey}</DropdownMenuShortcut>}
+          </StyledDropdownMenuItem>
+        )}
+        {onConnectServer && (
+          <StyledDropdownMenuItem onClick={onConnectServer}>
+            <Icons.Server className="h-3.5 w-3.5" />
+            {t(ROOT_MENU.connectServer.labelKey)}
           </StyledDropdownMenuItem>
         )}
 
@@ -251,11 +262,34 @@ export function DesktopAppMenu({
 
         <StyledDropdownMenuSeparator />
 
-        <StyledDropdownMenuItem onClick={() => window.electronAPI.menuQuit()}>
-          <Icons.LogOut className="h-3.5 w-3.5" />
-          {t(ROOT_MENU.quit.labelKey)}
-          {quitHotkey && <DropdownMenuShortcut className="pl-6">{quitHotkey}</DropdownMenuShortcut>}
-        </StyledDropdownMenuItem>
+        {/* 安卓壳没有自己的标题栏，退回服务器列表放在菜单最后。 */}
+        {isNativeShell && (
+          <StyledDropdownMenuItem onClick={() => openServerList()}>
+            <Icons.LogOut className="h-3.5 w-3.5" />
+            {t('menu.serverList')}
+          </StyledDropdownMenuItem>
+        )}
+
+        {/* 浏览器里的 WebUI：退出登录（清除服务端会话），不是退出 App。 */}
+        {!isElectron && !isNativeShell && (
+          <StyledDropdownMenuItem
+            onClick={() => {
+              if (!window.confirm(t('dialog.logoutConfirmation'))) return
+              void logOutWebUI()
+            }}
+          >
+            <Icons.LogOut className="h-3.5 w-3.5" />
+            {t('webui.logOut')}
+          </StyledDropdownMenuItem>
+        )}
+
+        {isElectron && (
+          <StyledDropdownMenuItem onClick={() => window.electronAPI.menuQuit()}>
+            <Icons.LogOut className="h-3.5 w-3.5" />
+            {t(ROOT_MENU.quit.labelKey)}
+            {quitHotkey && <DropdownMenuShortcut className="pl-6">{quitHotkey}</DropdownMenuShortcut>}
+          </StyledDropdownMenuItem>
+        )}
       </StyledDropdownMenuContent>
     </DropdownMenu>
   )

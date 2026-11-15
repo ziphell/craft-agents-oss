@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync } from 'fs';
-import { join, dirname, basename } from 'path';
+import { randomUUID } from 'node:crypto';
+import { join, dirname, basename, isAbsolute, resolve } from 'path';
 import { getCredentialManager } from '../credentials/index.ts';
 import { getOrCreateLatestSession, type SessionConfig } from '../sessions/index.ts';
 import {
@@ -16,6 +17,8 @@ import { expandPath, toPortablePath, getBundledAssetsDir } from '../utils/paths.
 import { debug } from '../utils/debug.ts';
 import { readJsonFileSync } from '../utils/files.ts';
 import { CONFIG_DIR } from './paths.ts';
+import type { WebSearchProviderPreference, WebFetchMode } from './types.ts';
+import { isWebSearchProviderPreference, isWebFetchMode } from './types.ts';
 import type { StoredAttachment, StoredMessage } from '@craft-agent/core/types';
 import type { Plan } from '../agent/plan-types.ts';
 import type { PermissionMode } from '../agent/mode-manager.ts';
@@ -24,6 +27,11 @@ import { isValidThinkingLevel, normalizeThinkingLevel } from '../agent/thinking-
 import { parsePermissionMode, DEFAULT_PERMISSION_MODES } from '../agent/mode-types.ts';
 import { type ConfigDefaults } from './config-defaults-schema.ts';
 import { isValidThemeFile } from './validators.ts';
+import {
+  DEFAULT_BROWSER_PROFILE_ID,
+  normalizeBrowserProfiles,
+  type BrowserProfile,
+} from './browser-profiles.ts';
 import {
   mergeDecisionLayerSettings,
   normalizeDecisionLayerSettings,
@@ -47,7 +55,7 @@ export type {
 import type { Workspace, AuthType } from '@craft-agent/core/types';
 
 // Import LLM connection types and constants
-import type { LlmConnection } from './llm-connections.ts';
+import type { LlmConnection, LlmConnectionUpdate, ConnectionModelEntry } from './llm-connections.ts';
 import { isValidProviderAuthCombination, getDefaultModelsForConnection, getDefaultModelForConnection, isPiProvider, toBedrockNativeId, type LlmProviderType } from './llm-connections.ts';
 import {
   getModelProvider,
@@ -64,6 +72,14 @@ export interface StoredConfig {
   defaultLlmConnection?: string;  // Slug of default connection for new sessions
   defaultThinkingLevel?: ThinkingLevel;  // App-level default thinking level for new sessions
 
+  /**
+   * Browser profiles — the named Chromium sessions a workspace or a conversation can work in.
+   *
+   * `default` is always present (see `normalizeBrowserProfiles`) and owns the profile every login
+   * lived in before profiles existed, so an upgrade keeps its sessions.
+   */
+  browserProfiles?: BrowserProfile[];
+
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
   activeSessionId: string | null;  // Currently active session (primary scope)
@@ -74,7 +90,6 @@ export interface StoredConfig {
   // Auto-update
   dismissedUpdateVersion?: string;  // Version that user dismissed (skip notifications for this version)
   // Input settings
-  autoCapitalisation?: boolean;  // Auto-capitalize first letter when typing (default: true)
   sendMessageKey?: 'enter' | 'cmd-enter';  // Key to send messages (default: 'enter')
   spellCheck?: boolean;  // Enable spell check in input (default: false)
   // Power settings
@@ -83,6 +98,16 @@ export interface StoredConfig {
   richToolDescriptions?: boolean;  // Add intent/action metadata to all tool calls (default: true)
   // Tools
   browserToolEnabled?: boolean;  // Enable built-in browser tool (default: true). Disable for Playwright/Puppeteer.
+  computerUseEnabled?: boolean;
+  /** Which service `web_search` uses (default: 'auto' — follow the active connection). */
+  webSearchProvider?: WebSearchProviderPreference;
+  /** Whether `web_search` exists at all (default: true). */
+  webSearchEnabled?: boolean;
+  /** Whether `web_fetch` may read pages and download files (default: true). */
+  webFetchEnabled?: boolean;
+  /** How `web_fetch` reads a page (default: 'direct'). */
+  webFetchMode?: WebFetchMode;
+  /** Let a **connected server** drive this desktop (default: false; needs computerUseEnabled too) */
   allowRemoteEvaluate?: boolean;  // Allow remote agents to call `browser_tool evaluate` on local browser (default: true).
   // Prompt caching & context
   extendedPromptCache?: boolean;  // Use 1h prompt cache TTL instead of 5m (default: false)
@@ -100,6 +125,8 @@ export interface StoredConfig {
   setupDeferred?: boolean;
   // Server mode — embedded remote server settings
   serverConfig?: import('./server-config.ts').ServerConfig;
+  // Remote servers this app can open windows on, independent of serverConfig.
+  clientConfig?: import('./client-config.ts').ClientConfig;
   // One-shot migration markers. Used by migrations that should run at most
   // once per user (e.g. restoring a previously-removed model to connection
   // lists without re-adding it if the user later removes it deliberately).
@@ -126,13 +153,13 @@ const FALLBACK_CONFIG_DEFAULTS: ConfigDefaults = {
   defaults: {
     notificationsEnabled: true,
     colorTheme: 'default',
-    autoCapitalisation: true,
     sendMessageKey: 'enter',
     spellCheck: false,
     keepAwakeWhileRunning: false,
     richToolDescriptions: true,
     extendedPromptCache: false,
     browserToolEnabled: true,
+    computerUseEnabled: false,
     allowRemoteEvaluate: true,
   },
   workspaceDefaults: {
@@ -290,6 +317,11 @@ export function loadStoredConfig(): StoredConfig | null {
       workspace.rootPath = expandPath(workspace.rootPath);
     }
 
+    // The built-in browser profile is always there, whatever the file says: it owns the session
+    // every login lived in before profiles existed, so a config that predates them still answers
+    // with one profile rather than none.
+    config.browserProfiles = normalizeBrowserProfiles(config.browserProfiles);
+
     // Validate active workspace exists
     const activeWorkspace = config.workspaces.find(w => w.id === config.activeWorkspaceId);
     if (!activeWorkspace) {
@@ -335,6 +367,74 @@ export function saveConfig(config: StoredConfig): void {
   writeFileSync(CONFIG_FILE, JSON.stringify(storageConfig, null, 2), 'utf-8');
 }
 
+/**
+ * Every browser profile this app has — the built-in `default` always present and first.
+ *
+ * Never empty: a config with no registry at all answers with just `default`, which is also the
+ * answer for "no config yet". Callers therefore never have to handle "there is no profile".
+ *
+ * Cached briefly because routing asks for it on every command, and `loadStoredConfig` reads and
+ * parses the whole app config. A registry write clears the cache, so a create/rename/delete is
+ * visible immediately; the TTL only bounds staleness from a config edited outside the app.
+ */
+let browserProfilesCache: { readAt: number; profiles: BrowserProfile[] } | null = null;
+const BROWSER_PROFILES_TTL_MS = 1_000;
+
+export function getBrowserProfiles(): BrowserProfile[] {
+  const now = Date.now();
+  if (browserProfilesCache && now - browserProfilesCache.readAt < BROWSER_PROFILES_TTL_MS) {
+    return browserProfilesCache.profiles;
+  }
+  const profiles = normalizeBrowserProfiles(loadStoredConfig()?.browserProfiles);
+  browserProfilesCache = { readAt: now, profiles };
+  return profiles;
+}
+
+/**
+ * The effective browser profile for a conversation.
+ *
+ * The conversation's **own** pick is kept even when its profile was deleted: that is an explicit
+ * "invalid reference" the UI shows, and sending is blocked until the person picks a valid one. The
+ * project and workspace defaults, which the conversation only inherits, skip ids that no longer
+ * exist and fall through to the next level — so a deleted project/workspace default never strands
+ * a conversation that never chose it.
+ */
+export function resolveConversationBrowserProfileId(
+  sessionProfileId?: string | null,
+  projectProfileId?: string | null,
+  workspaceDefaultProfileId?: string | null,
+): string {
+  const sessionPick = sessionProfileId?.trim()
+  if (sessionPick) return sessionPick;
+
+  const profiles = getBrowserProfiles();
+  const existing = (id?: string | null): string | undefined => {
+    const trimmed = id?.trim();
+    return trimmed && profiles.some((profile) => profile.id === trimmed) ? trimmed : undefined;
+  };
+  return (
+    existing(projectProfileId)
+    ?? existing(workspaceDefaultProfileId)
+    ?? DEFAULT_BROWSER_PROFILE_ID
+  );
+}
+
+/**
+ * Replace the profile registry.
+ *
+ * `default` is kept whatever the caller passes — it is the profile the pre-profile session lives
+ * in, so removing it would strand that session rather than delete it.
+ */
+export function saveBrowserProfiles(profiles: BrowserProfile[]): boolean {
+  const config = loadStoredConfig();
+  if (!config) return false;
+  config.browserProfiles = normalizeBrowserProfiles(profiles);
+  saveConfig(config);
+  browserProfilesCache = null;
+  return true;
+}
+
+
 // Legacy updateApiKey() removed - use setupLlmConnection IPC handler instead.
 
 // Legacy getters/setters removed - use LLM connections instead:
@@ -363,29 +463,6 @@ export function setNotificationsEnabled(enabled: boolean): void {
   const config = loadStoredConfig();
   if (!config) return;
   config.notificationsEnabled = enabled;
-  saveConfig(config);
-}
-
-/**
- * Get whether auto-capitalisation is enabled.
- * Defaults to true if not set.
- */
-export function getAutoCapitalisation(): boolean {
-  const config = loadStoredConfig();
-  if (config?.autoCapitalisation !== undefined) {
-    return config.autoCapitalisation;
-  }
-  const defaults = loadConfigDefaults();
-  return defaults.defaults.autoCapitalisation;
-}
-
-/**
- * Set whether auto-capitalisation is enabled.
- */
-export function setAutoCapitalisation(enabled: boolean): void {
-  const config = loadStoredConfig();
-  if (!config) return;
-  config.autoCapitalisation = enabled;
   saveConfig(config);
 }
 
@@ -529,12 +606,142 @@ export function setBrowserToolEnabled(enabled: boolean): void {
 }
 
 /**
+ * Read one field straight from config.json.
+ *
+ * The web tools consult these settings on every call and must stay side-effect
+ * free, so they cannot go through `loadStoredConfig()`, which normalizes
+ * workspaces and can create folders. Missing or unreadable config means "not
+ * set" — the caller chooses the default.
+ */
+function readRawConfigField<T>(pick: (raw: Record<string, unknown>) => T | undefined): T | undefined {
+  try {
+    if (!existsSync(CONFIG_FILE)) return undefined;
+    const raw = readJsonFileSync<Record<string, unknown>>(CONFIG_FILE);
+    return raw ? pick(raw) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Which service `web_search` should use. Defaults to `auto` — the active
+ * connection's own search when it has one, DuckDuckGo otherwise.
+ */
+export function getWebSearchProvider(): WebSearchProviderPreference {
+  const value = readRawConfigField(raw => raw.webSearchProvider);
+  return isWebSearchProviderPreference(value) ? value : 'auto';
+}
+
+/**
+ * Choose the web search service. Read on every search call, so the change
+ * applies without restarting anything.
+ */
+export function setWebSearchProvider(preference: WebSearchProviderPreference): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.webSearchProvider = preference;
+  saveConfig(config);
+}
+
+/**
+ * Whether the agent may search the web at all. On by default; when off, the
+ * tool is not offered and a call in a running session is refused.
+ */
+export function getWebSearchEnabled(): boolean {
+  const enabled = readRawConfigField(raw => raw.webSearchEnabled);
+  if (typeof enabled === 'boolean') return enabled;
+  // Legacy: the switch used to be an 'off' value inside the provider dropdown.
+  return readRawConfigField(raw => raw.webSearchProvider) !== 'off';
+}
+
+/**
+ * Turn `web_search` on or off. Read on every call, so the change applies to a
+ * session that is already running.
+ */
+export function setWebSearchEnabled(enabled: boolean): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.webSearchEnabled = enabled;
+  saveConfig(config);
+}
+
+/**
+ * Whether `web_fetch` may read pages and download files. On by default; when
+ * off, the tool is not offered and a call in a running session is refused.
+ */
+export function getWebFetchEnabled(): boolean {
+  return readRawConfigField(raw => raw.webFetchEnabled) !== false;
+}
+
+/**
+ * Turn `web_fetch` on or off. Read on every call, so the change applies to a
+ * session that is already running.
+ */
+export function setWebFetchEnabled(enabled: boolean): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.webFetchEnabled = enabled;
+  saveConfig(config);
+}
+
+/**
+ * How `web_fetch` reads a page. Defaults to `direct` — fetched and extracted in
+ * the app, free and able to handle PDF/images/JSON.
+ */
+export function getWebFetchMode(): WebFetchMode {
+  const value = readRawConfigField(raw => raw.webFetchMode);
+  return isWebFetchMode(value) ? value : 'direct';
+}
+
+/** Choose how `web_fetch` reads a page. Read on every call. */
+export function setWebFetchMode(mode: WebFetchMode): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.webFetchMode = mode;
+  saveConfig(config);
+}
+
+/**
+ * Whether the agent may drive this computer's desktop (`computer_tool`).
+ *
+ * Off by default. Driving a desktop needs OS-level grants (Accessibility / Screen
+ * Recording on macOS), so nothing is requested and the tool is not advertised until
+ * the person turns this on in Settings → App → Tools. A host without a desktop
+ * driver still advertises the schema while enabled and refuses each call with a
+ * sentence — that is a different state from "the person turned it off".
+ */
+export function getComputerUseEnabled(): boolean {
+  const config = loadStoredConfig();
+  if (config?.computerUseEnabled !== undefined) {
+    return config.computerUseEnabled;
+  }
+  const defaults = loadConfigDefaults();
+  return defaults.defaults.computerUseEnabled === true;
+}
+
+/**
+ * Turn desktop control on or off.
+ *
+ * Session tool caches are invalidated so the tool appears/disappears without a
+ * restart; the Electron main process reacts to the same switch by releasing a held
+ * desktop and re-announcing the device capability (see `computer-use:set-enabled`).
+ */
+export function setComputerUseEnabled(enabled: boolean): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.computerUseEnabled = enabled;
+  saveConfig(config);
+
+  import('../agent/session-scoped-tools.ts').then(m => m.invalidateAllSessionToolsCaches()).catch(() => {});
+}
+
+/**
  * Whether remote agents may call `browser_tool evaluate <expression>` against this
  * desktop client's local browser. The check is enforced inside the local capability
  * dispatcher; the remote server cannot override it.
  *
  * Defaults to true. Users can flip it off in Settings → AI → Advanced if they don't
- * trust the remote workspaces they connect to.
+ * trust the hubs they connect to.
  */
 export function getAllowRemoteEvaluate(): boolean {
   const config = loadStoredConfig();
@@ -765,27 +972,21 @@ export function getActiveWorkspace(): Workspace | null {
 }
 
 /**
- * Find a workspace by name (case-insensitive) or ID.
+ * Find a workspace by ID, name, or slug (name and slug case-insensitive).
  * Useful for CLI -w flag to specify workspace.
+ *
+ * The slug is the workspace folder's name, which is the identity the disk uses: lots of callers
+ * hold a path and can only spell the folder, not the generated id. Accepting it here keeps that
+ * spelling working instead of silently resolving to nothing.
  */
 export function getWorkspaceByNameOrId(nameOrId: string): Workspace | null {
   const workspaces = getWorkspaces();
+  const query = nameOrId.toLowerCase();
   return workspaces.find(w =>
     w.id === nameOrId ||
-    w.name.toLowerCase() === nameOrId.toLowerCase()
+    w.name.toLowerCase() === query ||
+    w.slug.toLowerCase() === query
   ) || null;
-}
-
-export function updateWorkspaceRemoteServer(
-  workspaceId: string,
-  remoteServer: { url: string; token: string; remoteWorkspaceId: string },
-): void {
-  const config = loadStoredConfig();
-  if (!config) return;
-  const ws = config.workspaces.find(w => w.id === workspaceId);
-  if (!ws) throw new Error('Workspace not found');
-  ws.remoteServer = remoteServer;
-  saveConfig(config);
 }
 
 export function setActiveWorkspace(workspaceId: string): void {
@@ -1134,6 +1335,9 @@ export interface DraftAttachmentRef {
   /** Inline content for attachments without a real filesystem path (paste, web-drag).
    *  When present, hydrate reconstructs from these bytes and skips any disk read. */
   content?: DraftAttachmentContent;
+  /** `path` belongs to the hub's filesystem (picked from the server's disk in a remote
+   *  window), so hydrate must read it through the hub instead of this machine. */
+  fromServer?: boolean;
 }
 
 export interface SessionDraft {
@@ -1172,6 +1376,7 @@ function isDraftAttachmentRef(value: unknown): value is DraftAttachmentRef {
   const ref = value as DraftAttachmentRef;
   if (typeof ref.path !== 'string' || typeof ref.name !== 'string') return false;
   if (ref.content !== undefined && !isDraftAttachmentContent(ref.content)) return false;
+  if (ref.fromServer !== undefined && typeof ref.fromServer !== 'boolean') return false;
   // Post-migration guard: refs without content MUST have an absolute path. This rejects
   // the broken 0.8.11 shape (synthetic path === filename, no content) on first load —
   // user sees empty drafts once instead of attachments silently disappearing forever.
@@ -1863,6 +2068,23 @@ function backfillAllConnectionModels(config: StoredConfig): boolean {
         changed = true;
       }
     }
+
+    // A userDefined3Tier list is [best, balanced, fast] by definition, so the
+    // third entry is the model the user picked as Fast. Record it explicitly so
+    // the choice survives a reorder or a rename that the name-based guess would
+    // read differently.
+    if (
+      connection.modelSelectionMode === 'userDefined3Tier' &&
+      !connection.fastModel &&
+      Array.isArray(connection.models) &&
+      connection.models.length >= 3
+    ) {
+      const fastModelId = normalizeModelIds(connection.models)[2];
+      if (fastModelId) {
+        connection.fastModel = fastModelId;
+        changed = true;
+      }
+    }
   }
   return changed;
 }
@@ -1931,9 +2153,9 @@ function displayNameForMigratedModel(modelId: string): string {
 
 function withUpdatedModelEntry(
   connection: LlmConnection,
-  entry: ModelDefinition | string,
+  entry: ConnectionModelEntry,
   nextId: string,
-): ModelDefinition | string {
+): ConnectionModelEntry {
   if (typeof entry === 'string') {
     if (connection.providerType === 'anthropic' && nextId === OPUS_48_ID) {
       return { ...getModelById(OPUS_48_ID)! };
@@ -1941,7 +2163,7 @@ function withUpdatedModelEntry(
     return nextId;
   }
 
-  const nextEntry: ModelDefinition = { ...entry, id: nextId };
+  const nextEntry = { ...entry, id: nextId };
   if (connection.providerType === 'anthropic' && nextId === OPUS_48_ID) {
     return { ...getModelById(OPUS_48_ID)! };
   }
@@ -1986,7 +2208,7 @@ function migrateLegacyOpusToDefaultOpus(config: StoredConfig): boolean {
     }
 
     if (connection.models && Array.isArray(connection.models)) {
-      const nextModels: Array<ModelDefinition | string> = [];
+      const nextModels: ConnectionModelEntry[] = [];
       const seen = new Set<string>();
       let connectionModelsChanged = false;
 
@@ -2782,12 +3004,86 @@ export function addLlmConnection(connection: LlmConnection): boolean {
 }
 
 /**
+ * Merge a `models[]` update by id.
+ *
+ * A bare string id means the writer only edited the id list (that is what the
+ * connection form produces), so whatever per-model parameters are already on
+ * disk for that id are kept. An object entry is the writer's full intent for
+ * that model and replaces the stored entry. Incoming order wins — the array is
+ * ordered and load-bearing (first = default, last = small/summarization).
+ */
+function mergeModelEntries(
+  previous: LlmConnection['models'],
+  incoming: NonNullable<LlmConnection['models']>,
+): LlmConnection['models'] {
+  const previousById = new Map<string, ConnectionModelEntry>();
+  for (const entry of previous ?? []) {
+    previousById.set(typeof entry === 'string' ? entry : entry.id, entry);
+  }
+
+  const seen = new Set<string>();
+  const merged: NonNullable<LlmConnection['models']> = [];
+  for (const entry of incoming) {
+    const id = typeof entry === 'string' ? entry : entry?.id;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(typeof entry === 'string' ? (previousById.get(id) ?? entry) : entry);
+  }
+  return merged;
+}
+
+/**
+ * Apply an update to a stored connection without rebuilding it field by field.
+ *
+ * Any key the caller does not mention — including keys this codebase has never
+ * heard of, which the storage schema deliberately passes through — survives.
+ * See {@link LlmConnectionUpdate} for the full contract.
+ *
+ * Exported so callers that need a preview of the persisted shape (the setup
+ * handler validates a pending connection before saving it) get the exact same
+ * result instead of re-implementing the merge with a spread — a spread would
+ * turn `null` into a stored `null`, which the schema rejects.
+ */
+export function applyLlmConnectionUpdate(existing: LlmConnection, updates: LlmConnectionUpdate): LlmConnection {
+  const merged: Record<string, unknown> = { ...existing };
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) continue; // absent in intent → leave on disk as-is
+    if (value === null) {
+      delete merged[key]; // explicit null → remove the key
+      continue;
+    }
+    if (key === 'customEndpoint') {
+      merged.customEndpoint = {
+        ...(existing.customEndpoint ?? {}),
+        ...(value as unknown as Record<string, unknown>),
+      };
+      continue;
+    }
+    if (key === 'models' && Array.isArray(value)) {
+      merged.models = mergeModelEntries(existing.models, value);
+      continue;
+    }
+    merged[key] = value;
+  }
+
+  merged.slug = existing.slug; // slug is immutable
+  return merged as unknown as LlmConnection;
+}
+
+/**
  * Update an existing LLM connection.
+ *
+ * Merge semantics (see docs/custom-endpoint-plan.md D2): keys absent from
+ * `updates` are left untouched, an explicit `null` deletes a key, `models[]`
+ * merges by id and `customEndpoint` shallow-merges. A save therefore cannot
+ * erase parameters a user wrote by hand into config.json.
+ *
  * @param slug - Connection slug to update
  * @param updates - Partial updates to apply (slug is ignored)
  * @returns true if updated, false if not found
  */
-export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConnection, 'slug'>>): boolean {
+export function updateLlmConnection(slug: string, updates: LlmConnectionUpdate): boolean {
   const config = loadStoredConfig();
   if (!config) return false;
 
@@ -2804,34 +3100,7 @@ export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConne
   const toModelIds = (models?: Array<{ id: string } | string>): string[] =>
     (models ?? []).map(m => typeof m === 'string' ? m : m.id);
 
-  connections[index] = {
-    // Preserve required fields from existing
-    slug: existing.slug,
-    name: updates.name ?? existing.name,
-    providerType: updates.providerType ?? existing.providerType,
-    type: updates.type ?? existing.type, // Legacy field
-    authType: updates.authType ?? existing.authType,
-    createdAt: updates.createdAt ?? existing.createdAt,
-    // Optional fields from updates or existing
-    baseUrl: updates.baseUrl !== undefined ? updates.baseUrl : existing.baseUrl,
-    models: updates.models !== undefined ? updates.models : existing.models,
-    defaultModel: updates.defaultModel !== undefined ? updates.defaultModel : existing.defaultModel,
-    modelSelectionMode: updates.modelSelectionMode !== undefined ? updates.modelSelectionMode : existing.modelSelectionMode,
-    // Pi auth provider
-    piAuthProvider: updates.piAuthProvider !== undefined ? updates.piAuthProvider : existing.piAuthProvider,
-    // Custom endpoint protocol (Anthropic/OpenAI compatible)
-    customEndpoint: updates.customEndpoint !== undefined ? updates.customEndpoint : existing.customEndpoint,
-    // Mid-stream send behavior (steer vs queue) — read via resolveMidStreamBehavior()
-    midStreamBehavior: updates.midStreamBehavior !== undefined ? updates.midStreamBehavior : existing.midStreamBehavior,
-    // Resolved Anthropic OAuth identity (issue #838) — preserved across unrelated saves
-    oauthAccountUuid: updates.oauthAccountUuid !== undefined ? updates.oauthAccountUuid : existing.oauthAccountUuid,
-    oauthAccountEmail: updates.oauthAccountEmail !== undefined ? updates.oauthAccountEmail : existing.oauthAccountEmail,
-    oauthOrganizationUuid: updates.oauthOrganizationUuid !== undefined ? updates.oauthOrganizationUuid : existing.oauthOrganizationUuid,
-    oauthOrganizationName: updates.oauthOrganizationName !== undefined ? updates.oauthOrganizationName : existing.oauthOrganizationName,
-    oauthProfileVerifiedAt: updates.oauthProfileVerifiedAt !== undefined ? updates.oauthProfileVerifiedAt : existing.oauthProfileVerifiedAt,
-    // Timestamps
-    lastUsedAt: updates.lastUsedAt !== undefined ? updates.lastUsedAt : existing.lastUsedAt,
-  };
+  connections[index] = applyLlmConnectionUpdate(existing, updates);
 
   const updated = connections[index]!;
   if (updated.providerType === 'pi') {
@@ -3016,36 +3285,54 @@ export function touchLlmConnection(slug: string): void {
 // Network Proxy Settings
 // ============================================
 
-import type { NetworkProxySettings } from './types.ts';
+import type { NetworkProxyMode, NetworkProxySettings } from './types.ts';
 
 function normalizeProxyString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed || undefined;
 }
 
+/**
+ * Normalize stored settings.
+ *
+ * `enabled` is what configs written before `mode` existed carry, and
+ * `enabled: true` is the only thing that ever meant "custom" — so it is read as
+ * such rather than dropping a proxy somebody already configured. Everything
+ * else that predates `mode` was a direct connection.
+ */
 function normalizeNetworkProxySettings(
-  settings: NetworkProxySettings,
+  settings: NetworkProxySettings & { enabled?: boolean },
 ): NetworkProxySettings {
+  const mode: NetworkProxyMode = settings.mode === 'custom' || settings.enabled === true
+    ? 'custom'
+    : settings.mode === 'system'
+      ? 'system'
+      : 'direct';
+
   return {
-    enabled: Boolean(settings.enabled),
+    mode,
     httpProxy: normalizeProxyString(settings.httpProxy),
     httpsProxy: normalizeProxyString(settings.httpsProxy),
     noProxy: normalizeProxyString(settings.noProxy),
+    // Configs written before this flag existed meant "bypass loopback", which
+    // is also the default — only an explicit false turns it off.
+    bypassLoopback: settings.bypassLoopback !== false,
   };
 }
 
 /**
- * Get the current network proxy settings.
+ * Get the current network proxy settings, normalized.
  * Returns undefined if not configured.
  */
 export function getNetworkProxySettings(): NetworkProxySettings | undefined {
   const config = loadStoredConfig();
-  return config?.networkProxy;
+  const stored = config?.networkProxy;
+  return stored ? normalizeNetworkProxySettings(stored) : undefined;
 }
 
 /**
  * Persist network proxy settings.
- * Deletes the key when disabled and all proxy fields are empty.
+ * Deletes the key when connecting directly and all proxy fields are empty.
  */
 export function setNetworkProxySettings(settings: NetworkProxySettings): void {
   const config = loadStoredConfig();
@@ -3053,8 +3340,8 @@ export function setNetworkProxySettings(settings: NetworkProxySettings): void {
 
   const normalized = normalizeNetworkProxySettings(settings);
 
-  // Remove the key entirely when proxy is disabled and all fields are blank
-  if (!normalized.enabled && !normalized.httpProxy && !normalized.httpsProxy && !normalized.noProxy) {
+  // Remove the key entirely when connecting directly and all fields are blank
+  if (normalized.mode === 'direct' && !normalized.httpProxy && !normalized.httpsProxy && !normalized.noProxy) {
     delete config.networkProxy;
   } else {
     config.networkProxy = normalized;
@@ -3138,7 +3425,7 @@ export function ensureToolIcons(): void {
 // ============================================
 
 import { DEFAULT_SERVER_CONFIG, type ServerConfig } from './server-config.ts';
-import { randomUUID } from 'crypto';
+import { connectionNameFromUrl, findConnectionByUrl, type ClientConfig, type RemoteConnection } from './client-config.ts';
 
 /**
  * Get the current server configuration.
@@ -3146,22 +3433,274 @@ import { randomUUID } from 'crypto';
  */
 export function getServerConfig(): ServerConfig {
   const config = loadStoredConfig();
-  return config?.serverConfig ?? { ...DEFAULT_SERVER_CONFIG };
+  const stored = config?.serverConfig;
+  if (!stored) return { ...DEFAULT_SERVER_CONFIG };
+  // `allowExternal` was added after server mode shipped; a stored config without it
+  // predates the split and behaved as external (0.0.0.0), so default it to true.
+  return { ...DEFAULT_SERVER_CONFIG, ...stored, allowExternal: stored.allowExternal ?? true };
 }
 
 /**
  * Persist server configuration.
  * Auto-generates a stable auth token on first enable if none exists.
+ * Server Mode and remote windows are independent: this machine keeps serving while a window
+ * connects elsewhere, so saving server config leaves the remote connection untouched.
+ *
+ * The Web UI gets its own password the first time Server Mode is enabled. Session cookies are
+ * signed with a key derived from that password and the server token, so changing either one ends
+ * existing browser sessions — no separate secret is stored.
  */
 export function setServerConfig(serverConfig: ServerConfig): void {
   const config = loadStoredConfig();
   if (!config) return;
 
-  // Generate a stable token when first enabled (or if token is missing)
+  const previous = config.serverConfig;
+  // The server token is not part of the settings form any more, so an omitted value means "keep
+  // the stored token" — including while Server Mode is being turned off. Only a first enable with
+  // no token at all mints one.
+  if (!serverConfig.token) {
+    serverConfig.token = previous?.token;
+  }
   if (serverConfig.enabled && !serverConfig.token) {
     serverConfig.token = randomUUID();
   }
 
+  if (serverConfig.enabled && !serverConfig.webuiPassword) {
+    // The renderer offers "regenerate", never an empty field: an omitted value means "keep the
+    // stored password", not "clear it".
+    serverConfig.webuiPassword = previous?.webuiPassword || randomUUID();
+  }
+
   config.serverConfig = serverConfig;
+  saveConfig(config);
+}
+
+// ============================================
+// Remote connections — the servers windows can open on
+// ============================================
+
+/** Anything persisted for a connection is trusted only when it has an id and a URL. */
+function isRemoteConnection(value: unknown): value is RemoteConnection {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<RemoteConnection>;
+  return typeof candidate.id === 'string' && candidate.id.length > 0
+    && typeof candidate.url === 'string' && candidate.url.length > 0;
+}
+
+/**
+ * Folders one connection may reach through the device link.
+ *
+ * Only absolute paths survive: a relative one would mean something different on the machine that
+ * runs the command, and the hub cannot supply one anyway. Duplicates are dropped so the same
+ * folder added twice (or differing only by case on Windows) is listed once.
+ */
+function normalizeAllowedRoots(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const value = entry.trim();
+    if (!value || !isAbsolute(value)) continue;
+    const absolute = resolve(value);
+    const key = process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push(absolute);
+  }
+  return roots;
+}
+
+/**
+ * Read the saved connections, folding the old single-hub shape (`serverUrl`/`token`/`enabled`)
+ * into one entry so an install that predates the list keeps its server. The legacy id is derived
+ * from the URL so it stays stable until {@link migrateLegacyRemoteWorkspaces} persists a real one.
+ */
+function normalizeClientConfig(raw: unknown): ClientConfig {
+  const stored = (raw ?? {}) as {
+    connections?: unknown;
+    serverUrl?: unknown;
+    token?: unknown;
+    workspaceId?: unknown;
+  };
+
+  const connections: RemoteConnection[] = Array.isArray(stored.connections)
+    ? stored.connections.filter(isRemoteConnection).map(connection => {
+        const next = { ...connection } as RemoteConnection & { deviceAccess?: boolean };
+        // `deviceAccess` was the client-side switch before it was folded into the folder list. It
+        // is back as `deviceUseEnabled`: a saved "off" keeps the connection and its folders but
+        // stops offering this machine, so authorization can be turned back on later.
+        if (next.deviceAccess === false) next.deviceUseEnabled = false;
+        delete next.deviceAccess;
+        // Only the non-default is persisted; absent means "authorized".
+        if (next.deviceUseEnabled !== false) delete next.deviceUseEnabled;
+        const allowedRoots = normalizeAllowedRoots(next.allowedRoots);
+        if (allowedRoots && allowedRoots.length > 0) next.allowedRoots = allowedRoots;
+        else delete next.allowedRoots;
+        return next;
+      })
+    : [];
+
+  if (typeof stored.serverUrl === 'string' && stored.serverUrl.trim()) {
+    const url = stored.serverUrl.trim();
+    const known = findConnectionByUrl(connections, url);
+    if (!known) {
+      connections.push({
+        id: `legacy:${url}`,
+        name: connectionNameFromUrl(url),
+        url,
+        token: typeof stored.token === 'string' ? stored.token : '',
+        ...(typeof stored.workspaceId === 'string' ? { lastWorkspaceId: stored.workspaceId } : {}),
+      });
+    }
+  }
+
+  return { connections };
+}
+
+/** Every server this app can open a window on. */
+export function getRemoteConnections(): RemoteConnection[] {
+  return getClientConfig().connections;
+}
+
+export function getRemoteConnection(connectionId: string): RemoteConnection | null {
+  return getRemoteConnections().find(connection => connection.id === connectionId) ?? null;
+}
+
+/**
+ * Add or update a connection. The id decides which entry is written: a saved id updates it, a new
+ * one appends.
+ *
+ * A URL that belongs to a **different** saved connection is refused instead of merged. Two entries
+ * for one endpoint are meaningless, and silently reusing (and renaming) the existing entry when
+ * someone adds the address again is worse: it looks like one of the servers vanished. The UI turns
+ * this into "already saved as X — edit that one".
+ *
+ * An edit carries only what it changes, so the entry's last workspace is kept when the caller
+ * does not name one — renaming a server or rotating its token must not forget "where I was".
+ */
+export function saveRemoteConnection(connection: RemoteConnection): RemoteConnection {
+  const config = getClientConfig();
+  const sameUrl = config.connections.find(
+    existing => existing.id !== connection.id && existing.url === connection.url,
+  );
+  if (sameUrl) {
+    throw new Error(`That address is already saved as "${sameUrl.name}"`);
+  }
+  const previous = config.connections.find(existing => existing.id === connection.id);
+  const allowedRoots = normalizeAllowedRoots(connection.allowedRoots);
+  const saved: RemoteConnection = {
+    ...connection,
+    name: connection.name.trim() || connectionNameFromUrl(connection.url),
+    ...(!connection.lastWorkspaceId && previous?.lastWorkspaceId
+      ? { lastWorkspaceId: previous.lastWorkspaceId }
+      : {}),
+    // An edit that only renames or rotates a token must not silently revoke (or grant) device
+    // access. The field is written only when the caller actually sends a boolean.
+    // Same for the folders: omitting the field keeps the saved list, while an explicit `[]`
+    // (the form after removing every folder) clears it.
+    ...(allowedRoots !== undefined
+      ? { allowedRoots }
+      : previous?.allowedRoots !== undefined ? { allowedRoots: previous.allowedRoots } : {}),
+    // Omitted keeps the saved authorization; an explicit boolean is what the form sends.
+    ...(typeof connection.deviceUseEnabled === 'boolean'
+      ? { deviceUseEnabled: connection.deviceUseEnabled }
+      : previous?.deviceUseEnabled !== undefined ? { deviceUseEnabled: previous.deviceUseEnabled } : {}),
+  };
+  config.connections = [...config.connections.filter(existing => existing.id !== saved.id), saved];
+  setClientConfig(config);
+  return saved;
+}
+
+export function removeRemoteConnection(connectionId: string): void {
+  const config = getClientConfig();
+  config.connections = config.connections.filter(connection => connection.id !== connectionId);
+  setClientConfig(config);
+}
+
+/** Remember the workspace a server was last opened on, for the next window. */
+export function rememberRemoteWorkspace(connectionId: string, workspaceId: string | undefined): void {
+  const config = getClientConfig();
+  let changed = false;
+  config.connections = config.connections.map(connection => {
+    if (connection.id !== connectionId) return connection;
+    if (workspaceId) connection.lastWorkspaceId = workspaceId;
+    else delete connection.lastWorkspaceId;
+    changed = true;
+    return connection;
+  });
+  if (changed) setClientConfig(config);
+}
+
+/**
+ * Get the persisted remote connections.
+ * Returns defaults (none) if nothing has been configured yet.
+ */
+export function getClientConfig(): ClientConfig {
+  const config = loadStoredConfig();
+  return normalizeClientConfig(config?.clientConfig);
+}
+
+/** Persist the remote connections. */
+export function setClientConfig(clientConfig: ClientConfig): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+
+  config.clientConfig = clientConfig;
+  saveConfig(config);
+}
+
+const LEGACY_REMOTE_WORKSPACES_MARKER = 'workspace-level-remote-removed';
+
+/**
+ * Workspaces used to be able to record a server of their own (`remoteServer`). A workspace now
+ * lives on the server that owns it, and reaching another server is a saved connection opening a
+ * remote window. This folds those entries into the connection list (one per URL) and drops them
+ * from the local workspace list, so no workspace points at a filesystem on another machine.
+ */
+export function migrateLegacyRemoteWorkspaces(): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  if (config.migrationsApplied?.includes(LEGACY_REMOTE_WORKSPACES_MARKER)) return;
+
+  type LegacyRemoteServer = { url?: string; token?: string; remoteWorkspaceId?: string };
+  type LegacyWorkspace = { id: string } & { remoteServer?: LegacyRemoteServer };
+  const workspaces = config.workspaces as LegacyWorkspace[];
+  const legacy = workspaces.filter(workspace => !!workspace.remoteServer?.url?.trim());
+
+  const normalized = normalizeClientConfig(config.clientConfig);
+  // A legacy id is a placeholder; persist a real one now that the config is being written.
+  for (const connection of normalized.connections) {
+    if (connection.id.startsWith('legacy:')) connection.id = randomUUID();
+  }
+
+  for (const workspace of legacy) {
+    const remote = workspace.remoteServer!;
+    const url = remote.url!.trim();
+    const known = findConnectionByUrl(normalized.connections, url);
+    if (known) {
+      if (!known.token && remote.token) known.token = remote.token;
+      if (!known.lastWorkspaceId && remote.remoteWorkspaceId) known.lastWorkspaceId = remote.remoteWorkspaceId;
+    } else {
+      normalized.connections.push({
+        id: randomUUID(),
+        name: connectionNameFromUrl(url),
+        url,
+        token: remote.token ?? '',
+        ...(remote.remoteWorkspaceId ? { lastWorkspaceId: remote.remoteWorkspaceId } : {}),
+      });
+    }
+  }
+
+  if (legacy.length > 0) {
+    const removed = new Set(legacy.map(workspace => workspace.id));
+    config.workspaces = config.workspaces.filter(workspace => !removed.has(workspace.id));
+    if (config.activeWorkspaceId && removed.has(config.activeWorkspaceId)) {
+      config.activeWorkspaceId = config.workspaces[0]?.id ?? null;
+    }
+  }
+
+  config.clientConfig = normalized;
+  config.migrationsApplied = [...(config.migrationsApplied ?? []), LEGACY_REMOTE_WORKSPACES_MARKER];
   saveConfig(config);
 }

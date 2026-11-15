@@ -2,9 +2,12 @@
  * Shared browser component utilities
  */
 
+import type { BrowserTabSummary } from '../../../shared/types'
+import type { TabRef } from '@craft-agent/shared/mentions'
+
 export function getHostname(url: string): string {
   try {
-    if (url === 'about:blank' || !url) return 'New Tab'
+    if (url === 'about:blank' || url === 'about:newtab' || !url) return 'New Tab'
     const parsed = new URL(url)
 
     if (parsed.protocol === 'file:') {
@@ -23,6 +26,83 @@ export function getHostname(url: string): string {
   } catch {
     return url
   }
+}
+
+/**
+ * What a window's tab menu opens, when it offers "open the conversation/task".
+ *
+ * A conversation, or a task (whose target is the task's own session).
+ */
+export interface TabOpenTarget {
+  kind: 'session' | 'task'
+  sessionId: string
+}
+
+/** The part of a session's metadata the rule below reads. */
+type SessionWorkMeta = {
+  taskSlug?: string
+  parentSessionId?: string
+  taskDraft?: boolean
+}
+
+/** The part of a tab the rule below reads: what is on screen, and whose work it is. */
+type ActiveTab = Pick<BrowserTabSummary, 'active' | 'lockedBy' | 'cursorOf' | 'belongsTo'>
+
+/**
+ * Where the menu's "open …" item goes: the **tab on screen**'s answer, never the window's.
+ *
+ * One window is shared by the whole workspace, so "the conversation using this window" is not a
+ * fact that exists — what exists is that a tab is somebody's work, and the person is
+ * looking at one of them. Who is working on that tab right now, else one of the conversations that
+ * works from it, else whose work it is:
+ *
+ * - a conversation's tab opens that conversation;
+ * - a **Task's** tab opens the **task** — the session carrying that slug that nothing spawned —
+ *   and not the session that happened to open the tab: that one is provenance, and once its node
+ *   has been re-run it has usually stopped, so opening it would land on a dead conversation. A
+ *   generate-time draft carries the slug too and is off the board, so it does not count either.
+ *
+ * A tab several conversations work from opens the first of them (第二十四轮) — there is no
+ * "the" conversation for it, and the item is a convenience rather than a claim about the tab.
+ *
+ * `null` when there is nothing to open (no tab on screen, a person's tab, or a task whose
+ * session is gone) — the caller greys the item out rather than opening something arbitrary.
+ */
+export function openTargetOfActiveTab(
+  tabs: ActiveTab[] | undefined,
+  sessions: Iterable<[string, SessionWorkMeta]>,
+): TabOpenTarget | null {
+  const activeTab = tabs?.find((tab) => tab.active)
+  if (!activeTab) return null
+
+  const worker = activeTab.lockedBy ?? activeTab.cursorOf[0]
+  if (worker) return { kind: 'session', sessionId: worker }
+
+  const work = activeTab.belongsTo
+  if (!work) return null
+  if (work.kind === 'session') return { kind: 'session', sessionId: work.sessionId }
+
+  for (const [id, meta] of sessions) {
+    if (meta.taskSlug === work.taskSlug && !meta.parentSessionId && !meta.taskDraft) {
+      return { kind: 'task', sessionId: id }
+    }
+  }
+  return null
+}
+
+/**
+ * One tab of a window, as the reference a composer chip carries (see tab-mention).
+ *
+ * The title is the one a tab row shows (`title` before `getHostname`, for a tab that
+ * has none yet), so the chip reads like the tab the person picked. The id rides along
+ * because the browser tools address a tab by it and an address cannot: two tabs can be
+ * on the same page, and a command pointed at one of them needs the id to say which.
+ */
+export function tabRefOf(
+  tab: Pick<BrowserTabSummary, 'id' | 'url' | 'title'>,
+): TabRef {
+  const title = tab.title.trim() || getHostname(tab.url)
+  return { tabId: tab.id, url: tab.url, title }
 }
 
 /**

@@ -21,6 +21,7 @@
 import { protocol, nativeImage } from 'electron'
 import { stat } from 'fs/promises'
 import { isAbsolute } from 'path'
+import { LOCAL_ORIGIN_SCHEME } from '@craft-agent/shared/local-origin'
 import { mainLog } from './logger'
 
 /** Thumbnail output size in pixels (width and height) */
@@ -99,11 +100,20 @@ async function generateThumbnail(filePath: string, ext: string): Promise<Buffer 
 }
 
 /**
- * Register the thumbnail:// custom protocol scheme.
- * MUST be called before app.whenReady() — Electron requires scheme
- * registration during the earliest phase of app initialization.
+ * Register the app's privileged schemes.
+ *
+ * There is exactly **one** `registerSchemesAsPrivileged` call for the whole app — Electron
+ * allows no more — so every scheme the app serves from is named here, and it must happen
+ * before `app.whenReady()`.
+ *
+ * `thumbnail` serves sidebar previews. `LOCAL_ORIGIN_SCHEME` serves the app's own origins
+ * (the bundled drawio editor today): `standard` gives a real origin whose root-absolute
+ * paths resolve and whose storage APIs work, and `secure` keeps it from being treated as
+ * insecure content. That is what `http://<label>.localhost` used to buy — at the cost of
+ * handling `http` itself, which put a handler on every http request a session makes and
+ * broke real http pages.
  */
-export function registerThumbnailScheme(): void {
+export function registerPrivilegedSchemes(): void {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: 'thumbnail',
@@ -115,6 +125,20 @@ export function registerThumbnailScheme(): void {
         // Allow cross-origin access from the renderer
         corsEnabled: true,
         // Stream support for efficient response delivery
+        stream: true,
+      },
+    },
+    {
+      scheme: LOCAL_ORIGIN_SCHEME,
+      privileges: {
+        // A real origin: relative and root-absolute references resolve, and the storage
+        // APIs a served app expects are enabled.
+        standard: true,
+        // Not insecure content, so an embedding page may load it.
+        secure: true,
+        // `fetch`/XHR of the app's own files from a document on this scheme.
+        supportFetchAPI: true,
+        corsEnabled: true,
         stream: true,
       },
     },

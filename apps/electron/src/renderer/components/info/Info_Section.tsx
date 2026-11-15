@@ -15,6 +15,17 @@ export interface Info_SectionProps {
   description?: string
   /** Optional right-aligned header actions */
   actions?: React.ReactNode
+  /** Anchor for a link that jumps here (the gate points at the section it names). */
+  id?: string
+  /**
+   * Render the content without its card.
+   *
+   * For a section whose content is one line of "nothing here yet": the card is
+   * what a section costs, and a screen with five empty cards reads as five things
+   * to do. The title and its hint stay, so the reader still knows the section is
+   * there and what it would hold.
+   */
+  bare?: boolean
   /** Section content */
   children: React.ReactNode
   className?: string
@@ -24,11 +35,13 @@ export function Info_Section({
   title,
   description,
   actions,
+  id,
+  bare = false,
   children,
   className,
 }: Info_SectionProps) {
   return (
-    <section className={cn('space-y-3 pt-2', className)}>
+    <section id={id} className={cn('space-y-3 pt-2', className)}>
       <div className="flex items-start justify-between pl-1">
         <div className="space-y-0.5">
           <h3 className="text-base font-semibold">
@@ -40,9 +53,13 @@ export function Info_Section({
         </div>
         {actions}
       </div>
-      <div className="bg-background shadow-minimal rounded-[8px] overflow-hidden">
-        {children}
-      </div>
+      {bare ? (
+        children
+      ) : (
+        <div className="bg-background shadow-minimal rounded-[8px] overflow-hidden">
+          {children}
+        </div>
+      )}
     </section>
   )
 }

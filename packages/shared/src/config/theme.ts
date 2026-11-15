@@ -226,12 +226,18 @@ export function themeToCSS(theme: ThemeOverrides, isDark: boolean = false): stri
 
 /**
  * Hex equivalents of background colors for Electron BrowserWindow.
- * The main process cannot use CSS/oklch colors, so we provide hex values
- * that visually match the DEFAULT_THEME oklch colors.
+ *
+ * The main process cannot use CSS/oklch colors, so the background is stated here in hex as
+ * well — and it has to be the **same color the window's own documents paint**, or the parts of
+ * a window the main process fills (a browser window's background, its page's pre-load color,
+ * the surface around its page panel) read as grey bands along the edges of the parts the
+ * renderer paints. These are the renderer's `--background`
+ * (`apps/electron/src/renderer/index.css`, `:root` / `.dark`), which is `DEFAULT_THEME`'s
+ * background per mode.
  */
 export const BACKGROUND_HEX = {
-  light: '#faf9fb', // matches oklch(0.98 0.003 265)
-  dark: '#302f33', // matches oklch(0.2 0.005 270)
+  light: '#f7f8fa', // oklch(0.98 0.003 265)
+  dark: '#080a10', // oklch(0.145 0.015 270)
 } as const;
 
 /**

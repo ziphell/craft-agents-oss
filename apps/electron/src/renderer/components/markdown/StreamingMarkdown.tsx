@@ -5,6 +5,8 @@ interface StreamingMarkdownProps {
   content: string
   isStreaming: boolean
   mode?: RenderMode
+  /** The folder relative file links resolve against (the conversation's working directory). */
+  baseDir?: string
   onUrlClick?: (url: string) => void
   onFileClick?: (path: string) => void
 }
@@ -101,22 +103,24 @@ function splitIntoBlocks(content: string): Block[] {
 const MemoizedBlock = React.memo(function Block({
   content,
   mode,
+  baseDir,
   onUrlClick,
   onFileClick,
 }: {
   content: string
   mode: RenderMode
+  baseDir?: string
   onUrlClick?: (url: string) => void
   onFileClick?: (path: string) => void
 }) {
   return (
-    <Markdown mode={mode} onUrlClick={onUrlClick} onFileClick={onFileClick}>
+    <Markdown mode={mode} baseDir={baseDir} onUrlClick={onUrlClick} onFileClick={onFileClick}>
       {content}
     </Markdown>
   )
 }, (prev, next) => {
   // Only re-render if content actually changed
-  return prev.content === next.content && prev.mode === next.mode
+  return prev.content === next.content && prev.mode === next.mode && prev.baseDir === next.baseDir
 })
 MemoizedBlock.displayName = 'MemoizedBlock'
 
@@ -140,6 +144,7 @@ export function StreamingMarkdown({
   content,
   isStreaming,
   mode = 'minimal',
+  baseDir,
   onUrlClick,
   onFileClick,
 }: StreamingMarkdownProps) {
@@ -153,7 +158,7 @@ export function StreamingMarkdown({
   // Not streaming - use simple Markdown (no block splitting needed)
   if (!isStreaming) {
     return (
-      <Markdown mode={mode} onUrlClick={onUrlClick} onFileClick={onFileClick}>
+      <Markdown mode={mode} baseDir={baseDir} onUrlClick={onUrlClick} onFileClick={onFileClick}>
         {content}
       </Markdown>
     )
@@ -175,6 +180,7 @@ export function StreamingMarkdown({
             key={key}
             content={block.content}
             mode={mode}
+            baseDir={baseDir}
             onUrlClick={onUrlClick}
             onFileClick={onFileClick}
           />

@@ -170,6 +170,8 @@ export function SessionItem({
           sessionStatuses={ctx.sessionStatuses}
           labels={ctx.labels}
           hasTransferTargets={canSendToWorkspace}
+          projects={ctx.projects}
+          onSetProjectId={ctx.onSetProjectId ? (pid) => ctx.onSetProjectId!(item.id, pid) : undefined}
           onLabelsChange={ctx.onLabelsChange ? (ls) => ctx.onLabelsChange!(item.id, ls) : undefined}
           onRename={() => ctx.onRenameClick(item.id, title)}
           onFlag={() => ctx.onFlag?.(item.id)}

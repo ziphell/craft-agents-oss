@@ -62,12 +62,18 @@ export interface WorkingDirectorySelectorProps {
 }
 
 /**
- * WorkingDirectorySelector — trigger-agnostic working-directory picker.
+ * WorkingDirectorySelector — trigger-agnostic picker for **which folder a
+ * conversation works in**.
  *
- * Owns the folder state machine ({@link useWorkingDirectoryState}), the Radix
- * popover with its cmdk recent-folders list, and the ServerDirectoryBrowser.
- * The trigger itself is supplied by the consumer via `renderTrigger` so the same
- * picker backs both the chat input badge and the Tasks editor field.
+ * Whether the conversation is about the project's specs is not a second answer to that
+ * question and is not offered here: it is set from the composer's `+` menu
+ * (`ComposerPlusMenu`), it is shown on the draft's own layer chip, and setting it does
+ * not move the folder.
+ *
+ * Owns the state machine ({@link useWorkingDirectoryState}), the Radix popover with
+ * its cmdk list, and the ServerDirectoryBrowser. The trigger itself is supplied by the
+ * consumer via `renderTrigger` so the same picker backs both the chat input badge and
+ * the Tasks editor field.
  */
 export function WorkingDirectorySelector({
   workingDirectory,
@@ -93,11 +99,13 @@ export function WorkingDirectorySelector({
     hasFolder,
     folderName,
     showReset,
+    canOpenLocation,
     showFilter,
     handleSelectRecent,
     handleReset,
     handleRemoveRecent,
     handleChooseFolder,
+    handleOpenLocation,
     serverBrowser: {
       showServerBrowser,
       serverBrowserMode,
@@ -151,7 +159,7 @@ export function WorkingDirectorySelector({
             )}
 
             <CommandPrimitive.List className={MENU_LIST_STYLE}>
-              {/* Current Folder Display - shown at top with checkmark */}
+              {/* Where the conversation works now. */}
               {hasFolder && (
                 <CommandPrimitive.Item
                   value={`current-${workingDirectory}`}
@@ -167,7 +175,7 @@ export function WorkingDirectorySelector({
                 </CommandPrimitive.Item>
               )}
 
-              {/* Separator after current folder */}
+              {/* Separator before the folders */}
               {hasFolder && filteredRecent.length > 0 && (
                 <div className="h-px bg-border my-1 mx-1" />
               )}
@@ -202,13 +210,22 @@ export function WorkingDirectorySelector({
               {/* Empty state when filtering */}
               {showFilter && (
                 <CommandPrimitive.Empty className="py-3 text-center text-sm text-muted-foreground">
-                  {t('chat.noFoldersFound')}
+                  {t('chat.noWorkingDirMatch')}
                 </CommandPrimitive.Empty>
               )}
             </CommandPrimitive.List>
 
             {/* Bottom actions - always visible, outside scrollable area */}
             <div className="border-t border-border/50 p-1">
+              {canOpenLocation && (
+                <button
+                  type="button"
+                  onClick={handleOpenLocation}
+                  className={cn(MENU_ITEM_STYLE, 'w-full hover:bg-foreground/5')}
+                >
+                  {t('chat.openLocation')}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleChooseFolder}

@@ -1,13 +1,51 @@
 /**
  * Network proxy utility functions (pure — no Electron deps).
  *
- * Parses NO_PROXY rules and determines whether a given URL should bypass the proxy.
+ * Parses NO_PROXY rules, determines whether a given URL should bypass the proxy,
+ * and reads what Chromium's resolveProxy() answer means.
  */
 
 /** Split a comma-separated string into trimmed, non-empty entries. */
 export function splitCommaSeparated(str: string | undefined): string[] {
   if (!str) return [];
   return str.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+/** What an OS proxy answer means for one URL. */
+export type ResolvedProxyRule =
+  | { kind: 'proxy'; url: string }
+  | { kind: 'direct' }
+  | { kind: 'unsupported'; scheme: string };
+
+/**
+ * Parse a `session.resolveProxy()` answer: `DIRECT`, `PROXY host:port`,
+ * `SOCKS5 host:port`, or a `;`-separated list of those in preference order.
+ *
+ * `unsupported` is a distinct answer rather than a null: it says the OS does have
+ * a proxy, and that it is one the Node side cannot dial (undici's ProxyAgent
+ * speaks HTTP proxies only) — which the caller should say out loud.
+ */
+export function parseResolvedProxy(answer: string): ResolvedProxyRule | null {
+  for (const entry of answer.split(';')) {
+    const [rawScheme, host] = entry.trim().split(/\s+/);
+    const scheme = (rawScheme ?? '').toUpperCase();
+
+    switch (scheme) {
+      case 'PROXY':
+      case 'HTTP':
+      case 'HTTPS':
+        if (host) return { kind: 'proxy', url: `http://${host}` };
+        break;
+      case 'SOCKS':
+      case 'SOCKS4':
+      case 'SOCKS5':
+        if (host) return { kind: 'unsupported', scheme };
+        break;
+      case 'DIRECT':
+        return { kind: 'direct' };
+    }
+  }
+  return null;
 }
 
 export interface NoProxyRule {

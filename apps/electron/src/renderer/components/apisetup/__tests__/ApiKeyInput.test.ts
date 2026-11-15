@@ -62,15 +62,41 @@ describe('resolvePiAuthProviderForSubmit', () => {
 })
 
 describe('resolvePresetStateForBaseUrlChange', () => {
-  it('updates the remembered provider when the typed URL matches a known preset', () => {
+  it('keeps a picked Custom when the typed URL matches a listed provider', () => {
+    // DeepSeek's own endpoint, entered as a custom model — switching to the
+    // built-in DeepSeek provider would drop the custom endpoint config.
     expect(resolvePresetStateForBaseUrlChange({
-      matchedPreset: 'openrouter',
+      matchedPreset: 'deepseek',
       activePreset: 'custom',
       activePresetHasEmptyUrl: true,
       lastNonCustomPreset: 'anthropic',
     })).toEqual({
-      activePreset: 'openrouter',
-      lastNonCustomPreset: 'openrouter',
+      activePreset: 'custom',
+      lastNonCustomPreset: 'anthropic',
+    })
+  })
+
+  it('keeps Custom when the typed URL matches an endpoint preset too', () => {
+    expect(resolvePresetStateForBaseUrlChange({
+      matchedPreset: 'openrouter',
+      activePreset: 'custom',
+      activePresetHasEmptyUrl: true,
+      lastNonCustomPreset: null,
+    })).toEqual({
+      activePreset: 'custom',
+      lastNonCustomPreset: null,
+    })
+  })
+
+  it('still follows the URL between provider presets', () => {
+    expect(resolvePresetStateForBaseUrlChange({
+      matchedPreset: 'deepseek',
+      activePreset: 'openai',
+      activePresetHasEmptyUrl: false,
+      lastNonCustomPreset: 'openai',
+    })).toEqual({
+      activePreset: 'deepseek',
+      lastNonCustomPreset: 'deepseek',
     })
   })
 

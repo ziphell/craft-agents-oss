@@ -22,10 +22,13 @@ export interface CompactWorkingDirectorySelectorProps {
   sessionFolderPath?: string
   isEmptySession?: boolean
   workspaceId?: string
+  /** The selected folder was removed; the picker stays usable so it can be replaced. */
+  missing?: boolean
 }
 
 /**
- * CompactWorkingDirectorySelector — bottom-sheet working-directory picker.
+ * CompactWorkingDirectorySelector — bottom-sheet picker for which folder a
+ * conversation works in.
  *
  * Drop-in replacement for `WorkingDirectoryBadge` in compact / touch mode.
  * Matches the `CompactSourceSelector` pattern: trigger badge + drawer so
@@ -41,6 +44,7 @@ export function CompactWorkingDirectorySelector({
   sessionFolderPath,
   isEmptySession = false,
   workspaceId,
+  missing = false,
 }: CompactWorkingDirectorySelectorProps) {
   const { t } = useTranslation()
   const [open, setOpen] = React.useState(false)
@@ -55,11 +59,13 @@ export function CompactWorkingDirectorySelector({
     hasFolder,
     folderName,
     showReset,
+    canOpenLocation,
     showFilter,
     handleSelectRecent,
     handleReset,
     handleRemoveRecent,
     handleChooseFolder,
+    handleOpenLocation,
     serverBrowser: {
       showServerBrowser,
       serverBrowserMode,
@@ -86,20 +92,31 @@ export function CompactWorkingDirectorySelector({
     ))
   }, [sortedRecent, filter])
 
-  const displayFolderName = folderName ?? t('chat.chooseWorkingDirectory')
+  const showNothingMatches = !!filter.trim() && filteredRecent.length === 0
+
+  const displayFolderName = missing
+    ? t('composer.workingDirectoryMissing', 'Deleted folder')
+    : (folderName ?? t('chat.chooseWorkingDirectory'))
 
   return (
     <>
       <FreeFormInputContextBadge
-        icon={<Icon_Home className="h-4 w-4" />}
+        icon={<Icon_Home className={cn('h-4 w-4', missing && 'text-destructive')} />}
         label={displayFolderName}
         isExpanded={isEmptySession}
         hasSelection={hasFolder}
         showChevron={true}
         isOpen={open}
+        className={missing ? 'text-destructive' : undefined}
         onClick={() => setOpen((prev) => !prev)}
         tooltip={
-          hasFolder ? (
+          missing ? (
+            <span className="flex flex-col gap-0.5">
+              <span className="font-medium text-destructive">{t('composer.workingDirectoryMissing', 'Deleted folder')}</span>
+              <span className="text-xs opacity-70">{formatPath(workingDirectory, homeDir)}</span>
+              <span className="text-xs opacity-70">{t('composer.workingDirectoryMissingHint', 'This folder no longer exists. Choose an existing working directory before sending.')}</span>
+            </span>
+          ) : hasFolder ? (
             <span className="flex flex-col gap-0.5">
               <span className="font-medium">{t('chat.workingDirectory')}</span>
               <span className="text-xs opacity-70">{formatPath(workingDirectory, homeDir)}</span>
@@ -135,7 +152,7 @@ export function CompactWorkingDirectorySelector({
           )}
 
           <div className="px-2 pb-2 flex flex-col gap-0.5 max-h-[50vh] overflow-y-auto">
-            {/* Current folder — pinned at top, non-interactive */}
+            {/* Where the conversation works now — pinned, non-interactive */}
             {hasFolder && (
               <div className="flex items-center gap-3 px-3 py-3 rounded-[10px] bg-foreground/5">
                 <Icon_Folder className="h-5 w-5 shrink-0 text-foreground/60" />
@@ -155,9 +172,9 @@ export function CompactWorkingDirectorySelector({
             )}
 
             {/* Recent folders */}
-            {filteredRecent.length === 0 && filter.trim() ? (
+            {showNothingMatches ? (
               <div className="px-4 py-6 text-center text-sm text-foreground/50">
-                {t('chat.noFoldersFound')}
+                {t('chat.noWorkingDirMatch')}
               </div>
             ) : (
               filteredRecent.map((path) => {
@@ -195,6 +212,16 @@ export function CompactWorkingDirectorySelector({
 
           {/* Bottom actions — full-width tap targets */}
           <div className="px-2 pt-2 pb-4 border-t border-border/30 flex flex-col gap-1">
+            {canOpenLocation && (
+              <button
+                type="button"
+                onClick={handleOpenLocation}
+                className="w-full h-12 px-3 rounded-[10px] flex items-center gap-3 text-sm font-medium hover:bg-foreground/5 transition-colors"
+              >
+                <Icon_Folder className="h-5 w-5 shrink-0 text-foreground/60" />
+                <span>{t('chat.openLocation')}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleChooseFolder}

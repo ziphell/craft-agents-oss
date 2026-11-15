@@ -37,19 +37,24 @@ import {
   DocumentFormattedMarkdownOverlay,
   detectLanguage,
   type ActivityItem,
-  type FileChange,
   type DiffViewerSettings,
 } from "@craft-agent/ui"
 import { useFocusZone } from "@/hooks/keyboard"
 import { useTheme } from "@/hooks/useTheme"
 import type { Session, Message, FileAttachment, StoredAttachment, PermissionRequest, CredentialRequest, CredentialResponse, LoadedSource, LoadedSkill } from "../../../shared/types"
+import type { AnnotationV1 } from '@craft-agent/core/types'
+import type { MessageReply } from '@craft-agent/core/types'
 import type { PermissionMode } from "@craft-agent/shared/agent/modes"
 import type { ThinkingLevel } from "@craft-agent/shared/agent/thinking-levels"
 import {
-  TurnCard,
+  TurnRail,
+  buildTurnRailItems,
+  buildTurnRailItemsFromQuestions,
+  ScrollToBottomButton,
+  isScrolledToBottom,
   UserMessageBubble,
   groupMessagesByTurn,
-  formatTurnAsMarkdown,
+  groupMessagesByTurnCached,
   formatActivityAsMarkdown,
   getAssistantTurnUiKey,
   asRecord,
@@ -57,14 +62,16 @@ import {
   isAnnotationFollowUpSent,
   extractAnnotationSelectedText,
   normalizeFollowUpText,
+  type OpenAnnotationRequest,
   type Turn,
-  type AssistantTurn,
+  type TurnGrouping,
   type UserTurn,
   type SystemTurn,
   type AuthRequestTurn,
 } from "@craft-agent/ui"
 import { MemoizedAuthRequestCard } from "@/components/chat/AuthRequestCard"
 import { ChatInputZone, type StructuredInputState, type StructuredResponse, type PermissionResponse, type AdminApprovalResponse } from "./input"
+import { dispatchFocusInputEvent } from "./input/focus-input-events"
 import type { RichTextInputHandle } from "@/components/ui/rich-text-input"
 import { useBackgroundTasks } from "@/hooks/useBackgroundTasks"
 import { useTurnCardExpansion } from "@/hooks/useTurnCardExpansion"
@@ -72,7 +79,10 @@ import { useNavigation } from "@/contexts/NavigationContext"
 import { useAppShellContext } from "@/context/AppShellContext"
 import { navigate, routes } from "@/lib/navigate"
 import { CHAT_LAYOUT } from "@/config/layout"
-import { collectFileChangesFromActivities, getFirstFileChangeIdForActivity } from "@/lib/file-changes"
+import { agentAttribution, splitQueued, withoutAgentEnvelope } from "@/lib/agent-message"
+import { chooseFollowBehavior, isRelocation } from "./ChatDisplay.follow"
+import { AssistantTurnItem } from "./AssistantTurnItem"
+import type { ChatOverlayState } from "./chat-overlay-state"
 import { resolveBranchNewPanelOption } from "./branching"
 import { handleErrorMessageAction } from "./error-message-actions"
 
@@ -90,32 +100,11 @@ function getCSSHighlights(): Map<string, Highlight> | undefined {
 }
 
 // ============================================================================
-// Overlay State Types
+// Overlay State
 // ============================================================================
-
-/** State for multi-diff overlay (Edit/Write activities) */
-interface MultiDiffOverlayState {
-  type: 'multi-diff'
-  changes: FileChange[]
-  consolidated: boolean
-  focusedChangeId?: string
-}
-
-/** State for markdown overlay (pop-out, turn details, generic activities) */
-interface MarkdownOverlayState {
-  type: 'markdown'
-  content: string
-  title: string
-  /** When true, show raw markdown source in code viewer instead of rendered preview */
-  forceCodeView?: boolean
-}
-
-/** Union of all overlay states, or null for no overlay */
-type OverlayState =
-  | { type: 'activity'; activity: ActivityItem }
-  | MultiDiffOverlayState
-  | MarkdownOverlayState
-  | null
+//
+// The shape lives in `chat-overlay-state.ts`: a turn's card opens these too (its
+// own details, its own diff), so the type cannot belong to this file alone.
 
 function isStackedActivityTool(activity: ActivityItem): boolean {
   const toolName = activity.toolName?.toLowerCase() || ''
@@ -129,16 +118,56 @@ function getTurnKey(turn: Turn): string {
   return `turn-${turn.turnId}-${turn.timestamp}`
 }
 
+/**
+ * Gap above a located turn. A turn can be taller than the viewport, so jumping
+ * to it must show its opening line — centering would land in the middle of the
+ * turn and push the first line off-screen. The gap also clears the top fade
+ * mask so that first line isn't half-transparent.
+ */
+const LOCATED_TURN_TOP_GAP = 32
+
+/** No session, no turns — one shared array so the empty case keeps its identity. */
+const NO_TURNS: Turn[] = []
+
 interface ChatDisplayProps {
   session: Session | null
-  onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => void
+  /**
+   * Every question in the conversation (id + opening text), for the turn rail.
+   * Must cover the whole history, not just the loaded page.
+   */
+  onLoadQuestions?: () => Promise<{ id: string; text: string }[]>
+  /**
+   * Where `query` occurs in the whole conversation (not just what is loaded).
+   * Resolves with message ids and per-message counts.
+   */
+  onSearchMessages?: (query: string) => Promise<{
+    total: number
+    hits: { id: string; role: string; count: number; index: number }[]
+    limited: boolean
+  }>
+  /**
+   * Make one specific message available, resolving when it is in `session.messages`.
+   * Used to open a search hit that sits outside the loaded page.
+   */
+  onRevealMessage?: (messageId: string) => Promise<boolean>
+  /**
+   * Fetch one more page of older messages, resolving with how many arrived.
+   *
+   * Only called when the reader has reached the oldest message this client
+   * holds and `session.messagesTruncated` says there is more on disk. The chat
+   * does not know how the page is produced (IPC, remote, fixture) — it only
+   * knows the conversation can grow upwards.
+   */
+  onLoadOlderMessages?: () => Promise<number>
+  /** `replyTo` rides along with the send: what this message answers, if the person picked one. */
+  onSendMessage: (message: string, attachments?: FileAttachment[], skillSlugs?: string[], replyTo?: MessageReply) => void
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
   // Model selection
   currentModel: string
   onModelChange: (model: string, connection?: string) => void
-  // Connection selection (locked after first message)
-  /** Callback when LLM connection changes (only works when session is empty) */
+  // Connection selection (auto-pinned on first message, explicitly switchable afterwards)
+  /** Callback when the user explicitly picks a model/connection (works mid-session) */
   onConnectionChange?: (connectionSlug: string) => void
   /** Ref for the input, used for external focus control */
   textareaRef?: React.RefObject<RichTextInputHandle>
@@ -260,6 +289,26 @@ export interface ChatDisplayHandle {
   currentMatchIndex: number
   isHighlighting: boolean
 }
+
+/**
+ * One occurrence of the search query.
+ *
+ * Identified by the message it lives in and which occurrence of the query that
+ * is *within* that message, so it can be turned back into a DOM range once the
+ * message is rendered — including when it had to be loaded on the way there.
+ */
+interface SearchMatch {
+  matchId: string
+  messageId: string
+  role: string
+  occurrence: number
+}
+
+/**
+ * How many occurrences the client keeps as a flat list. Above this, navigation
+ * still works over the first N; the total shown comes from the server.
+ */
+const MAX_SEARCH_MATCHES = 2000
 
 /**
  * Processing status messages - cycles through these randomly
@@ -407,23 +456,58 @@ function ProcessingIndicator({ startTime, statusMessage }: ProcessingIndicatorPr
 }
 
 /**
- * Scrolls to target element on mount, before browser paint.
- * Uses useLayoutEffect to ensure scroll happens before content is visible.
+ * Puts the conversation on its newest turn when the content mounts, before
+ * paint.
+ *
+ * It scrolls the viewport itself rather than calling `scrollIntoView` on an end
+ * anchor: that form scrolls every scrollable ancestor too (drag-anywhere
+ * panels, the shell), so a chat embedded in a taller page can move the page
+ * instead of the conversation.
+ *
+ * The first layout is not the last one — highlighted code, images, preview
+ * blocks and diagrams get their height after this paint — so the pin is
+ * asserted again over the next frames. Without that, a conversation can open
+ * on its *first* message simply because everything below it arrived late.
  */
-function ScrollOnMount({
-  targetRef,
+function PinToBottomOnMount({
+  viewportRef,
+  resetKey,
   onScroll,
   skip = false
 }: {
-  targetRef: React.RefObject<HTMLDivElement | null>
+  viewportRef: React.RefObject<HTMLDivElement | null>
+  /**
+   * Re-pin when this changes, not only when the component mounts.
+   *
+   * Compact/mobile keeps one transcript element for every session (the session
+   * key would push the panel in and out on every switch), so a mount-only pin
+   * would never fire there and the next conversation would open wherever the
+   * last one was left.
+   */
+  resetKey?: string | null
   onScroll?: () => void
   skip?: boolean
 }) {
   React.useLayoutEffect(() => {
     if (skip) return
-    targetRef.current?.scrollIntoView({ behavior: 'instant' })
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    const pin = () => viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
+    pin()
     onScroll?.()
-  }, [skip])
+
+    let second = 0
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(pin)
+    })
+    return () => {
+      cancelAnimationFrame(first)
+      if (second !== 0) cancelAnimationFrame(second)
+    }
+    // `resetKey` is a dependency on purpose: it is the only thing that says a
+    // different conversation is now in this element.
+  }, [skip, resetKey])
   return null
 }
 
@@ -481,6 +565,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   onWorkingDirectoryChange,
   sessionFolderPath,
   // Lazy loading
+  onLoadOlderMessages,
+  onLoadQuestions,
+  onSearchMessages,
+  onRevealMessage,
   messagesLoading = false,
   messagesLoadError,
   messagesRetrying = false,
@@ -508,7 +596,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Input is only disabled when explicitly disabled (e.g., agent needs activation)
   // User can type during streaming - submitting will stop the stream and send
   const isInputDisabled = disabled
-  const messagesEndRef = React.useRef<HTMLDivElement>(null)
   const scrollViewportRef = React.useRef<HTMLDivElement>(null)
   const prevSessionIdRef = React.useRef<string | null>(null)
   // Reverse pagination: show last N turns initially, load more on scroll up
@@ -516,11 +603,41 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const [visibleTurnCount, setVisibleTurnCount] = React.useState(TURNS_PER_PAGE)
   // Sticky-bottom: When true, auto-scroll on content changes. Toggled by user scroll behavior.
   const isStickToBottomRef = React.useRef(true)
+  // Same fact, as state, for the return-to-bottom button: the ref alone cannot
+  // re-render anything when the reader scrolls away.
+  const [isAtBottom, setIsAtBottom] = React.useState(true)
   // Mirror isFocusedPanel into a ref so the ResizeObserver closure reads the latest value
   const isFocusedPanelRef = React.useRef(isFocusedPanel)
   isFocusedPanelRef.current = isFocusedPanel
+  // The live session and shell, for handlers that must keep their identity.
+  //
+  // A streamed token replaces the session object, so any callback that closes
+  // over it is a new function on every token — which switches off `React.memo`
+  // for every turn card it is passed to. Reading through a ref keeps those
+  // callbacks stable while still seeing the newest state when they run.
+  const liveSessionRef = React.useRef(session)
+  liveSessionRef.current = session
+  const liveShellRef = React.useRef(appShellContext)
+  liveShellRef.current = appShellContext
   // Skip smooth scroll briefly after session switch (instant scroll already happened)
   const skipSmoothScrollUntilRef = React.useRef(0)
+  // Older messages arrive from disk, not from memory: `visibleTurnCount` only
+  // decides how many of the *loaded* turns are shown, so the two refs below say
+  // whether asking for a page is even meaningful right now.
+  const visibleTurnCountRef = React.useRef(TURNS_PER_PAGE)
+  visibleTurnCountRef.current = visibleTurnCount
+  const messagesTruncatedRef = React.useRef(false)
+  messagesTruncatedRef.current = session?.messagesTruncated ?? false
+  const loadOlderMessagesRef = React.useRef(onLoadOlderMessages)
+  loadOlderMessagesRef.current = onLoadOlderMessages
+  const loadingOlderRef = React.useRef(false)
+  // A page is being inserted above the reader right now: the next commit is
+  // theirs to be held still for. (Streaming growth is not — that belongs at the
+  // bottom and must not move the scroll position.)
+  const prependPendingRef = React.useRef(false)
+  // Content height at the previous commit, so the shift a prepend causes can be
+  // measured exactly rather than guessed.
+  const lastContentHeightRef = React.useRef(0)
   // Track message commit boundaries so we can auto-scroll when a new user message
   // actually lands in state (important when attachments delay optimistic insertion).
   const prevLastMessageIdRef = React.useRef<string | null>(null)
@@ -529,14 +646,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const internalTextareaRef = React.useRef<RichTextInputHandle>(null)
   const textareaRef = externalTextareaRef || internalTextareaRef
   const [sendMessageKey, setSendMessageKey] = useState<'enter' | 'cmd-enter'>('enter')
-  const [openAnnotationRequest, setOpenAnnotationRequest] = React.useState<{
-    messageId: string
-    annotationId: string
-    mode: 'view' | 'edit'
-    anchorX?: number
-    anchorY?: number
-    nonce: number
-  } | null>(null)
+  const [openAnnotationRequest, setOpenAnnotationRequest] = React.useState<OpenAnnotationRequest | null>(null)
   const followUpOpenNonceRef = React.useRef(0)
 
   // Navigation for session branching
@@ -646,99 +756,190 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     }
 
     setCurrentMatchIndex(0)
+    setActiveMatch(null)
+    revealRequestedRef.current.clear()
   }, [session?.id, searchQuery, isSearchActive])
 
-  // Helper to count occurrences of a substring
-  const countOccurrences = useCallback((text: string, query: string): number => {
-    const lowerText = text.toLowerCase()
-    const lowerQuery = query.toLowerCase()
-    let count = 0
-    let pos = 0
-    while ((pos = lowerText.indexOf(lowerQuery, pos)) !== -1) {
-      count++
-      pos += lowerQuery.length
+  // ---------------------------------------------------------------------------
+  // Where the query occurs — asked of the conversation, not of this window
+  // ---------------------------------------------------------------------------
+  //
+  // A conversation opens with only its newest page, and search is the one
+  // feature that must reach what the reader cannot see. So the matches come from
+  // the server, over the whole history, as message ids; a hit that is not loaded
+  // is opened when the reader navigates to it (see the turn-blocking effect
+  // below, which runs once the turns are known).
+  //
+  // Counts therefore mean the same thing in a fully loaded conversation and in
+  // one with a single page — one definition, on the server.
+  const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([])
+  const [searchPending, setSearchPending] = useState(false)
+  // The occurrence currently in view, for the highlight split. Set when
+  // navigation lands on a hit; cleared when the query changes.
+  const [activeMatch, setActiveMatch] = useState<{ turnKey: string; occurrence: number } | null>(null)
+  // Hits whose page we already asked for, so a hit that cannot be opened (it was
+  // deleted, or compacted away) is not requested again on every render.
+  const revealRequestedRef = React.useRef<Set<string>>(new Set())
+
+  // The conversation's questions, for the turn rail. Refetched when a new
+  // question is asked, so the newest tick appears without a reload.
+  const [questions, setQuestions] = useState<{ id: string; text: string }[]>([])
+  const lastUserMessageId = React.useMemo(() => {
+    const messages = session?.messages
+    if (!messages) return null
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index]
+      if (message && message.role === 'user' && !message.isQueued) return message.id
     }
-    return count
+    return null
+  }, [session?.messages])
+
+  useEffect(() => {
+    if (!onLoadQuestions || !session?.id) {
+      setQuestions([])
+      return
+    }
+    let cancelled = false
+    onLoadQuestions()
+      .then(list => { if (!cancelled) setQuestions(list) })
+      .catch(error => { console.error("[rail] could not list the conversation's questions:", error) })
+    return () => { cancelled = true }
+  }, [onLoadQuestions, session?.id, lastUserMessageId])
+
+  // Turns are computed further down (they need the whole message list). Search
+  // needs them here — to know which hits are mounted, and which to open — so they
+  // are read through a ref that is filled in during the same render, right after
+  // they are computed.
+  const turnsRef = React.useRef<{ allTurns: Turn[]; byMessageId: Map<string, number> }>({
+    allTurns: NO_TURNS,
+    byMessageId: new Map(),
+  })
+
+  /** Which mounted turn a hit belongs to, or null while that part is unloaded. */
+  const turnKeyForMessage = React.useCallback((messageId: string, role: string): string | null => {
+    if (role === 'user') return `user-${messageId}`
+    if (role === 'error' || role === 'info' || role === 'warning') return `system-${messageId}`
+    const { allTurns, byMessageId } = turnsRef.current
+    const index = byMessageId.get(messageId)
+    if (index == null) return null
+    const turn = allTurns[index]
+    return turn ? getTurnKey(turn) : null
   }, [])
 
-  // Find ALL individual match occurrences (not just turns)
-  // Returns array with unique matchId for each occurrence
-  const matchingOccurrences = useMemo(() => {
-    if (!searchQuery.trim() || !session?.messages) return []
-    const startTime = performance.now()
-    const query = searchQuery.toLowerCase()
-    const turns = groupMessagesByTurn(session.messages, { isSessionProcessing: session.isProcessing })
-    const matches: { matchId: string; turnId: string; turnIndex: number; matchIndexInTurn: number }[] = []
-
-    for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
-      const turn = turns[turnIndex]
-      let textContent = ''
-      let turnId = ''
-
-      // Use getTurnKey() for consistent IDs between text scan and DOM refs
-      turnId = getTurnKey(turn)
-
-      if (turn.type === 'user') {
-        const content = turn.message.content as unknown
-        if (typeof content === 'string') {
-          textContent = content
-        } else if (Array.isArray(content)) {
-          textContent = content
-            .filter((block: { type?: string }) => block.type === 'text')
-            .map((block: { text?: string }) => block.text || '')
-            .join('\n')
-        }
-      } else if (turn.type === 'assistant') {
-        if (turn.response?.text) {
-          textContent = turn.response.text
-        }
-      } else if (turn.type === 'system') {
-        textContent = turn.message.content
-      }
-
-      // Count occurrences in this turn's text content
-      const occurrenceCount = countOccurrences(textContent, query)
-      for (let i = 0; i < occurrenceCount; i++) {
-        matches.push({
-          matchId: `${turnId}-match-${i}`,
-          turnId,
-          turnIndex,
-          matchIndexInTurn: i,
-        })
-      }
-    }
-    return matches
-  }, [searchQuery, session?.messages, session?.isProcessing, countOccurrences])
-
-  // Auto-expand pagination when search is active to show all matching turns
-  // This ensures match count is stable and all matches are highlightable from the start
   useEffect(() => {
-    if (!isSearchActive || matchingOccurrences.length === 0) return
-
-    // Find the earliest matching turn index (reduce to avoid RangeError on large arrays)
-    const earliestMatchTurnIndex = matchingOccurrences.reduce(
-      (min, m) => m.turnIndex < min ? m.turnIndex : min,
-      matchingOccurrences[0]!.turnIndex
-    )
-    const totalTurns = groupMessagesByTurn(session?.messages || [], { isSessionProcessing: session?.isProcessing }).length
-
-    // Calculate how many turns we need to show to include all matches
-    // totalTurns - visibleTurnCount = startIndex, so we need visibleTurnCount = totalTurns - earliestMatchTurnIndex + buffer
-    const requiredVisibleCount = totalTurns - earliestMatchTurnIndex + 5 // +5 buffer for context
-
-    if (requiredVisibleCount > visibleTurnCount) {
-      setVisibleTurnCount(requiredVisibleCount)
+    const query = searchQuery.trim()
+    if (!isSearchActive || query.length === 0 || !onSearchMessages) {
+      setSearchMatches([])
+      setSearchPending(false)
+      return
     }
-  }, [isSearchActive, matchingOccurrences, session?.messages, session?.isProcessing, visibleTurnCount])
 
-  // Extract unique turn IDs that have matches (for highlighting)
-  const matchingTurnIds = useMemo(() => {
-    const uniqueTurnIds = new Set(matchingOccurrences.map(m => m.turnId))
-    return Array.from(uniqueTurnIds)
-  }, [matchingOccurrences])
+    let cancelled = false
+    setSearchPending(true)
+    // Debounced: this runs on every keystroke of the search field.
+    const timer = setTimeout(() => {
+      onSearchMessages(query)
+        .then(result => {
+          if (cancelled) return
+          const flat: SearchMatch[] = []
+          for (const hit of result.hits) {
+            for (let occurrence = 0; occurrence < hit.count; occurrence++) {
+              if (flat.length >= MAX_SEARCH_MATCHES) break
+              flat.push({
+                matchId: `${hit.id}-${occurrence}`,
+                messageId: hit.id,
+                role: hit.role,
+                occurrence,
+              })
+            }
+            if (flat.length >= MAX_SEARCH_MATCHES) break
+          }
+          setSearchMatches(flat)
+        })
+        .catch(error => {
+          console.error('[search] whole-history search failed:', error)
+          if (!cancelled) setSearchMatches([])
+        })
+        .finally(() => {
+          if (!cancelled) setSearchPending(false)
+        })
+    }, 140)
 
-  // With CSS Custom Highlight API, navigation is driven by logical matches — no DOM verification needed.
-  const validMatches = matchingOccurrences
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [isSearchActive, searchQuery, onSearchMessages, session?.id])
+
+  // Search is driven by logical matches; there is no DOM verification step.
+  const validMatches = searchMatches
+
+  // Turns that contain a hit *and* are mounted. Computed per render rather than
+  // memoized: it depends on which turns are loaded, which changes as pages
+  // arrive, and the cost is a map lookup per hit.
+  const matchingTurnIds: Set<string> = new Set()
+  if (isSearchActive) {
+    for (const match of validMatches) {
+      const key = turnKeyForMessage(match.messageId, match.role)
+      if (key) matchingTurnIds.add(key)
+    }
+  }
+
+  const currentMatchTurnKey = (() => {
+    const match = validMatches[currentMatchIndex]
+    return match ? turnKeyForMessage(match.messageId, match.role) : null
+  })()
+
+  // Scroll to the current match — opening its part of the conversation first when
+  // the hit is older than the loaded page.
+  //
+  // Only runs when navigation asked for it (`shouldScrollToMatchRef`): a session
+  // switch with search active, the navigation buttons, or a single match.
+  useEffect(() => {
+    if (!shouldScrollToMatchRef.current) return
+
+    const match = validMatches[currentMatchIndex]
+    if (!match) return
+
+    // Not in the transcript yet: ask for the page that contains it, and let this
+    // effect run again when the messages land.
+    if (!currentMatchTurnKey) {
+      if (revealRequestedRef.current.has(match.messageId)) return
+      revealRequestedRef.current.add(match.messageId)
+      void onRevealMessage?.(match.messageId)
+      return
+    }
+
+    // Loaded but outside the rendered window: widen it.
+    const { allTurns } = turnsRef.current
+    const turnIndex = allTurns.findIndex(turn => getTurnKey(turn) === currentMatchTurnKey)
+    if (turnIndex >= 0) {
+      const startIndex = Math.max(0, allTurns.length - visibleTurnCount)
+      if (turnIndex < startIndex) {
+        setVisibleTurnCount(allTurns.length - turnIndex + 5)
+        return
+      }
+    }
+
+    const turnEl = turnRefs.current.get(currentMatchTurnKey)
+    if (turnEl) {
+      const rect = turnEl.getBoundingClientRect()
+      const buffer = 128
+      const isVisible = rect.top >= buffer && rect.bottom <= window.innerHeight - buffer
+      if (!isVisible) {
+        turnEl.scrollIntoView({ behavior: 'instant', block: 'center' })
+      }
+      setActiveMatch({ turnKey: currentMatchTurnKey, occurrence: match.occurrence })
+      shouldScrollToMatchRef.current = false
+    }
+  }, [
+    validMatches,
+    currentMatchIndex,
+    currentMatchTurnKey,
+    session?.messages,
+    visibleTurnCount,
+    onRevealMessage,
+  ])
 
   // Auto-scroll to match ONLY when there's exactly one match
   // Multiple matches: user navigates with chevrons to avoid jarring scroll
@@ -747,38 +948,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       shouldScrollToMatchRef.current = true
     }
   }, [validMatches.length, isSearchActive])
-
-  // Scroll to current match turn
-  // Only scrolls when shouldScrollToMatchRef is true (single match auto-scroll or nav button click)
-  useEffect(() => {
-    if (!shouldScrollToMatchRef.current) return
-
-    if (validMatches.length > 0 && currentMatchIndex < validMatches.length) {
-      const matchData = validMatches[currentMatchIndex]
-      const { turnId, turnIndex } = matchData
-      const totalTurns = totalTurnCountRef.current
-
-      // Check if the match is outside the visible range
-      const currentStartIndex = Math.max(0, totalTurns - visibleTurnCount)
-      if (turnIndex < currentStartIndex) {
-        const newVisibleCount = totalTurns - turnIndex + 5
-        setVisibleTurnCount(newVisibleCount)
-        return
-      }
-
-      // Scroll the turn into view
-      const turnEl = turnRefs.current.get(turnId)
-      if (turnEl) {
-        const rect = turnEl.getBoundingClientRect()
-        const buffer = 128
-        const isVisible = rect.top >= buffer && rect.bottom <= window.innerHeight - buffer
-        if (!isVisible) {
-          turnEl.scrollIntoView({ behavior: 'instant', block: 'center' })
-        }
-      }
-      shouldScrollToMatchRef.current = false
-    }
-  }, [validMatches, currentMatchIndex, session?.id, visibleTurnCount])
 
   // ---------------------------------------------------------------------------
   // CSS Custom Highlight API — non-destructive text highlighting
@@ -789,13 +958,15 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // ---------------------------------------------------------------------------
 
   const MAX_HIGHLIGHT_RANGES = 5000
-  // Store computed ranges so the active-match effect can restyle without re-walking the DOM
-  const highlightRangesRef = React.useRef<Range[]>([])
+  // Ranges per turn, so the active occurrence can be picked out by
+  // (turn, occurrence index) — the same pair a search hit carries — without
+  // re-walking the DOM when navigation moves.
+  const highlightRangesRef = React.useRef<Map<string, Range[]>>(new Map())
 
   // Effect 1: Walk DOM and collect highlight ranges when search/session/pagination changes
   useEffect(() => {
     const cssHighlights = getCSSHighlights()
-    highlightRangesRef.current = []
+    highlightRangesRef.current = new Map()
 
     // Clear previous highlights
     try {
@@ -806,11 +977,12 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     if (!searchQuery.trim() || !isSearchActive || !cssHighlights) return
 
     const query = searchQuery.toLowerCase()
-    const matchingTurnIdSet = new Set(matchingTurnIds)
+    const matchingTurnIdSet = matchingTurnIds
     if (matchingTurnIdSet.size === 0) return
 
     const rafId = requestAnimationFrame(() => {
       const allRanges: Range[] = []
+      const perTurn = new Map<string, Range[]>()
 
       turnRefs.current.forEach((container, turnKey) => {
         if (allRanges.length >= MAX_HIGHLIGHT_RANGES) return
@@ -842,6 +1014,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
           textNodes.push(currentNode as Text)
         }
         if (textNodes.length === 0) return
+        const turnRanges: Range[] = []
 
         const nodeOffsets: { node: Text; start: number; end: number }[] = []
         let totalLength = 0
@@ -878,6 +1051,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
             if (startSet) {
               allRanges.push(range)
+              turnRanges.push(range)
             }
           } catch {
             // Range creation can fail if node was removed during walk
@@ -885,10 +1059,14 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
           searchPos = matchEnd
         }
+
+        if (turnRanges.length > 0) perTurn.set(turnKey, turnRanges)
       })
 
       // Store ranges for the active-match effect to use
-      highlightRangesRef.current = allRanges
+      for (const [turnKey, ranges] of perTurn) {
+        if (ranges.length > 0) highlightRangesRef.current.set(turnKey, ranges)
+      }
 
       if (allRanges.length === 0 && matchingTurnIdSet.size > 0) {
         console.warn('[search-highlight] 0 ranges from', matchingTurnIdSet.size, 'matching turns — possible turn ID mismatch')
@@ -905,27 +1083,35 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     })
 
     return () => cancelAnimationFrame(rafId)
-  }, [searchQuery, isSearchActive, matchingTurnIds, session?.id, visibleTurnCount])
+    // Deps deliberately exclude `matchingTurnIds`: it is rebuilt every render, and
+    // depending on it would re-walk the DOM on every token. The inputs it derives
+    // from are here instead.
+  }, [searchQuery, isSearchActive, searchMatches, turnKeyForMessage, session?.id, visibleTurnCount])
 
-  // Effect 2: Update active/passive highlight split when navigation index changes
-  // Lightweight — just reshuffles existing Range objects between two Highlight instances
+  // Effect 2: Update active/passive highlight split when navigation moves.
+  // Lightweight — only reshuffles Range objects between the two Highlight instances.
   useEffect(() => {
     const cssHighlights = getCSSHighlights()
-    const allRanges = highlightRangesRef.current
-    if (!cssHighlights || allRanges.length === 0) return
+    const rangesByTurn = highlightRangesRef.current
+    if (!cssHighlights || rangesByTurn.size === 0) return
+
+    const allRanges: Range[] = []
+    for (const ranges of rangesByTurn.values()) allRanges.push(...ranges)
+
+    const activeRange = activeMatch
+      ? rangesByTurn.get(activeMatch.turnKey)?.[activeMatch.occurrence]
+      : undefined
 
     try {
-      const activeRange = allRanges[currentMatchIndex]
-      if (activeRange) {
-        const passiveRanges = allRanges.filter((_, i) => i !== currentMatchIndex)
-        cssHighlights.set('search-passive', new Highlight(...passiveRanges))
-        cssHighlights.set('search-active', new Highlight(activeRange))
-      } else {
-        cssHighlights.set('search-passive', new Highlight(...allRanges))
-        cssHighlights.delete('search-active')
-      }
+      const passiveRanges = activeRange
+        ? allRanges.filter(range => range !== activeRange)
+        : allRanges
+      if (passiveRanges.length > 0) cssHighlights.set('search-passive', new Highlight(...passiveRanges))
+      else cssHighlights.delete('search-passive')
+      if (activeRange) cssHighlights.set('search-active', new Highlight(activeRange))
+      else cssHighlights.delete('search-active')
     } catch { /* graceful degradation */ }
-  }, [currentMatchIndex])
+  }, [activeMatch, searchMatches, visibleTurnCount])
 
   // Navigate to next match (no looping - stops at last match)
   const goToNextMatch = useCallback(() => {
@@ -949,8 +1135,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     })
   }, [validMatches])
 
-  // With CSS Highlight API, highlighting is instant — no settling phase
-  const isHighlighting = false
+  // Highlighting itself is instant (CSS Highlight API); what can take a moment is
+  // the query, which the server answers over the whole history.
+  const isHighlighting = searchPending
 
   // Expose navigation via imperative handle (for session list navigation controls)
   React.useImperativeHandle(ref, () => ({
@@ -976,7 +1163,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // ============================================================================
 
   // Overlay state - controls which overlay is shown (if any)
-  const [overlayState, setOverlayState] = useState<OverlayState>(null)
+  const [overlayState, setOverlayState] = useState<ChatOverlayState>(null)
 
   // Diff viewer settings - loaded from user preferences on mount, persisted on change
   // These settings are stored in ~/.craft-agent/preferences.json (not localStorage)
@@ -1096,38 +1283,142 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     }))
   }, [pendingFollowUpAnnotations])
 
+  // Scroll the conversation to its newest turn. Resolving the viewport here
+  // (rather than scrolling an end anchor into view) keeps the movement inside
+  // the conversation.
+  //
+  // It does not touch the sticky-bottom flag: some callers follow content by
+  // policy (an unfocused panel), and forcing the flag there would drag a reader
+  // who had scrolled up the moment that panel regains focus.
+  const scrollToBottom = React.useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const viewport = scrollViewportRef.current
+    if (!viewport) return
+    setIsAtBottom(true)
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior })
+  }, [])
+
+  // Follow the newest content, choosing how to get there by how far away it is.
+  //
+  // Everything that resolves its height after the panel has painted arrives
+  // here: syntax highlighting for every code block at once, images, diagrams,
+  // preview blocks, and the reverse-pagination window mounting its turns. When
+  // that shift is thousands of pixels, animating it is the difference between
+  // "the conversation opened at its end" and "the conversation scrolled itself
+  // through its entire history" — so a jump longer than the viewport is
+  // instant, and only content close enough to watch is animated.
+  const followToBottom = React.useCallback(() => {
+    const viewport = scrollViewportRef.current
+    if (!viewport) return
+    const behavior = chooseFollowBehavior({
+      distance: viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight,
+      viewportHeight: viewport.clientHeight,
+      now: Date.now(),
+      quietUntil: skipSmoothScrollUntilRef.current,
+    })
+    scrollToBottom(behavior)
+  }, [scrollToBottom])
+
+  // The reader asking to be taken back to the newest message: that is a request
+  // to follow the conversation again, not just a one-off jump.
+  const handleJumpToLatest = React.useCallback(() => {
+    isStickToBottomRef.current = true
+    scrollToBottom('smooth')
+  }, [scrollToBottom])
+
+  /**
+   * Ask for the page of messages before the oldest one this client holds.
+   *
+   * The conversation grows *upwards*: the new messages land above what the
+   * reader is looking at. So this widens the turn window by the number that
+   * arrived — the window only ever slices from the end, and older turns are
+   * exactly what just became available — and flags the coming commit, which the
+   * layout effect below uses to hold the reader's place.
+   */
+  const loadOlderPage = React.useCallback(async () => {
+    const load = loadOlderMessagesRef.current
+    if (!load || loadingOlderRef.current || !messagesTruncatedRef.current) return
+
+    loadingOlderRef.current = true
+    try {
+      const added = await load()
+      if (added > 0) {
+        // The messages are already in the atom; this commit is the one that must
+        // not move the reader.
+        prependPendingRef.current = true
+        setVisibleTurnCount(previous => previous + added)
+      }
+    } finally {
+      loadingOlderRef.current = false
+    }
+  }, [])
+
+  // Hold the reader's place across a prepend, and only across a prepend: the
+  // height delta is measured from the previous commit, so content that grew at
+  // the bottom in the meantime is not counted.
+  React.useLayoutEffect(() => {
+    const viewport = scrollViewportRef.current
+    if (!viewport) return
+    const previousHeight = lastContentHeightRef.current
+    lastContentHeightRef.current = viewport.scrollHeight
+    if (!prependPendingRef.current) return
+    prependPendingRef.current = false
+    // No baseline yet (first commit of a session) — there is nothing to hold.
+    if (previousHeight <= 0) return
+    viewport.scrollTop += viewport.scrollHeight - previousHeight
+  }, [session?.messages])
+
+  // A page can be shorter than the screen (a few huge turns, a tall viewport).
+  // Without this the reader would have nothing to scroll, so no scroll event,
+  // and the older half of the conversation would be unreachable.
+  React.useLayoutEffect(() => {
+    if (!session?.messagesTruncated) return
+    const viewport = scrollViewportRef.current
+    if (!viewport) return
+    if (viewport.scrollHeight > viewport.clientHeight + 24) return
+    void loadOlderPage()
+  }, [session?.id, session?.messagesTruncated, session?.messages.length, loadOlderPage])
+
   // Track scroll position to toggle sticky-bottom behavior
   // - User scrolls up → unstick (stop auto-scrolling)
   // - User scrolls back to bottom → re-stick (resume auto-scrolling)
-  // Also handles loading more turns when scrolling near top
+  // Also handles loading more when scrolling near top
   const handleScroll = React.useCallback(() => {
     const viewport = scrollViewportRef.current
     if (!viewport) return
     const { scrollTop, scrollHeight, clientHeight } = viewport
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-    // 20px threshold for "at bottom" detection
-    isStickToBottomRef.current = distanceFromBottom < 20
+    // One judgement drives both behaviours: while the reader is at the bottom
+    // new content follows them; the moment they leave it, following stops and
+    // the way back down appears.
+    const atBottom = isScrolledToBottom({ scrollTop, scrollHeight, clientHeight })
+    isStickToBottomRef.current = atBottom
+    setIsAtBottom((previous) => (previous === atBottom ? previous : atBottom))
 
-    // Load more turns when scrolling near top (within 100px)
+    // Load more when scrolling near the top (within 100px). Two kinds of "more
+    // above": turns this client already holds, and — once those are all
+    // showing — a page of messages it has never carried.
     if (scrollTop < 100) {
-      setVisibleTurnCount(prev => {
-        // Check if there are more turns to load
-        const currentStartIndex = Math.max(0, totalTurnCountRef.current - prev)
-        if (currentStartIndex <= 0) return prev // Already showing all
+      if (totalTurnCountRef.current - visibleTurnCountRef.current > 0) {
+        setVisibleTurnCount(prev => {
+          // Already showing everything loaded.
+          const currentStartIndex = Math.max(0, totalTurnCountRef.current - prev)
+          if (currentStartIndex <= 0) return prev
 
-        // Remember scroll height before adding more items
-        const prevScrollHeight = viewport.scrollHeight
+          // Remember scroll height before adding more items
+          const prevScrollHeight = viewport.scrollHeight
 
-        // Schedule scroll position adjustment after render
-        requestAnimationFrame(() => {
-          const newScrollHeight = viewport.scrollHeight
-          viewport.scrollTop = newScrollHeight - prevScrollHeight + scrollTop
+          // Schedule scroll position adjustment after render
+          requestAnimationFrame(() => {
+            const newScrollHeight = viewport.scrollHeight
+            viewport.scrollTop = newScrollHeight - prevScrollHeight + scrollTop
+          })
+
+          return prev + TURNS_PER_PAGE
         })
-
-        return prev + TURNS_PER_PAGE
-      })
+        return
+      }
+      void loadOlderPage()
     }
-  }, [])
+  }, [loadOlderPage])
 
   // Set up scroll event listener
   React.useEffect(() => {
@@ -1138,7 +1429,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   }, [handleScroll])
 
   // Auto-scroll using ResizeObserver for streaming content
-  // Initial scroll is handled by ScrollOnMount (useLayoutEffect, before paint)
+  // Initial scroll is handled by PinToBottomOnMount (useLayoutEffect, before paint)
   React.useEffect(() => {
     const viewport = scrollViewportRef.current
     if (!viewport) return
@@ -1146,9 +1437,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     const isSessionSwitch = prevSessionIdRef.current !== session?.id
     prevSessionIdRef.current = session?.id ?? null
 
-    // On session switch: reset UI state (scroll handled by ScrollOnMount)
+    // On session switch: reset UI state (scroll handled by PinToBottomOnMount)
     if (isSessionSwitch) {
       isStickToBottomRef.current = true
+      setIsAtBottom(true)
       setVisibleTurnCount(TURNS_PER_PAGE)
     }
 
@@ -1158,19 +1450,34 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     const resizeObserver = new ResizeObserver(() => {
       // Unfocused panels: always scroll to bottom instantly (user isn't reading them)
       if (!isFocusedPanelRef.current) {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
+        scrollToBottom('instant')
         return
       }
 
       // Focused panel: respect sticky-bottom preference
       if (!isStickToBottomRef.current) return
 
+      // A shift longer than a screen is the transcript arriving (turns mounting,
+      // a wall of highlighting, images resolving), not the last message growing
+      // a line. Settling that through the debounce below would leave the reader
+      // looking at the top of a conversation that is about to jump somewhere a
+      // screen away — so go now; only small increments are worth settling.
+      const distance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+      if (isRelocation(distance, viewport.clientHeight)) {
+        followToBottom()
+        return
+      }
+
       // Clear pending scroll and wait for layout to settle
       if (debounceTimer) clearTimeout(debounceTimer)
       debounceTimer = setTimeout(() => {
-        // Skip smooth scroll if we just did an instant scroll (session switch/lazy load)
-        if (Date.now() < skipSmoothScrollUntilRef.current) return
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+        // The quiet window after an instant pin is about the *animation*, never
+        // about the scroll: content that resolves its height in that window
+        // (code highlighting, images, preview and diagram blocks) still has to
+        // be followed, and an instant re-pin is exactly what it needs. Skipping
+        // the scroll here is what used to leave a freshly opened conversation
+        // parked near its first message.
+        followToBottom()
       }, 200)
     })
 
@@ -1184,7 +1491,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       resizeObserver.disconnect()
       if (debounceTimer) clearTimeout(debounceTimer)
     }
-  }, [session?.id])
+  }, [session?.id, scrollToBottom, followToBottom])
 
   // Commit-time auto-scroll for new user messages.
   // This complements submit-time scrolling and covers cases where attachments delay
@@ -1192,7 +1499,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   React.useEffect(() => {
     const currentSessionId = session?.id ?? null
 
-    // Reset baseline on session switch; defer to ScrollOnMount/session-switch logic.
+    // Reset baseline on session switch; defer to PinToBottomOnMount/session-switch logic.
     if (prevSessionIdForCommitScrollRef.current !== currentSessionId) {
       prevSessionIdForCommitScrollRef.current = currentSessionId
       prevLastMessageIdRef.current = lastMessageId ?? null
@@ -1216,11 +1523,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     isStickToBottomRef.current = true
 
     requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({
-        behavior: isFocusedPanelRef.current ? 'smooth' : 'instant',
-      })
+      scrollToBottom(isFocusedPanelRef.current ? 'smooth' : 'instant')
     })
-  }, [session?.id, messageCount, lastMessageId, lastMessageRole])
+  }, [session?.id, messageCount, lastMessageId, lastMessageRole, scrollToBottom])
 
   // Handle message submission from InputContainer
   // Backend handles interruption and queueing if currently processing
@@ -1236,7 +1541,8 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
 
     // Force stick-to-bottom when user sends a message
     isStickToBottomRef.current = true
-    onSendMessage(normalizedMessage, attachments, skillSlugs)
+    onSendMessage(normalizedMessage, attachments, skillSlugs, replyTo ?? undefined)
+    setReplyTo(null)
 
     // Persist sent marker on follow-up annotations so TurnCard can distinguish
     // sent vs pending follow-ups. If user edits a follow-up later, TurnCard
@@ -1271,7 +1577,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     // Immediately scroll to bottom after sending - use requestAnimationFrame
     // to ensure the DOM has updated with the new message
     requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+      scrollToBottom('smooth')
     })
   }
 
@@ -1281,7 +1587,8 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     note: string
     selectedText: string
   }) => {
-    if (!session) return
+    const live = liveSessionRef.current
+    if (!live) return
 
     if (isInputDisabled || disableSend || connectionUnavailable) {
       toast.error(t('toast.cannotSendRightNow'), {
@@ -1293,10 +1600,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     // Mimic pressing Send in the input after Save completes.
     window.setTimeout(() => {
       window.dispatchEvent(new CustomEvent('craft:submit-input', {
-        detail: { sessionId: session.id },
+        detail: { sessionId: live.id },
       }))
     }, 0)
-  }, [session, isInputDisabled, disableSend, connectionUnavailable])
+  }, [t, isInputDisabled, disableSend, connectionUnavailable])
 
   // Handle stop request from InputContainer
   // silent=true when redirecting (sending new message), silent=false when user clicks Stop button
@@ -1319,6 +1626,249 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       console.error('[ChatDisplay] Failed to cancel processing:', error)
     })
   }
+
+  // What the person is answering, if they picked a message. The strip above the composer is the
+  // whole of the state: clear it and the message sends as an ordinary one.
+  const [replyTo, setReplyTo] = React.useState<MessageReply | null>(null)
+
+  const startReply = React.useCallback((message: Pick<Message, 'id' | 'role' | 'content'>) => {
+    const excerpt = message.content.trim().replace(/\s+/g, ' ')
+    setReplyTo({
+      messageId: message.id,
+      role: message.role,
+      excerpt: excerpt.length > 180 ? `${excerpt.slice(0, 180)}…` : excerpt,
+    })
+  }, [])
+
+  /**
+   * Bring a quoted message back into view.
+   *
+   * It may be outside what this panel carries at all (a conversation opens on
+   * its newest page), or outside the rendered window — so a miss is not the end
+   * of the story: open the page that holds it, widen the window to everything
+   * now loaded, and try again over the next frames. Silent when the message
+   * genuinely no longer exists.
+   */
+  const jumpToMessage = React.useCallback(async (messageId: string) => {
+    const find = () => document.querySelector<HTMLElement>(`[data-message-id="${messageId}"]`)
+    const scrollTo = (): boolean => {
+      const element = find()
+      if (!element) return false
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return true
+    }
+
+    if (scrollTo()) return
+    if (!onRevealMessage) return
+
+    const revealed = await onRevealMessage(messageId)
+    if (!revealed) return
+
+    // Show everything that is loaded: the revealed turn is older than the
+    // window's start, so widening is what makes it renderable at all.
+    setVisibleTurnCount(Number.MAX_SAFE_INTEGER)
+    // The commit that mounts the revealed turn comes after this promise, and
+    // measured heights settle a beat later — so try over a short window.
+    const startedAt = performance.now()
+    const attempt = () => {
+      if (scrollTo()) return
+      if (performance.now() - startedAt > 1200) return
+      requestAnimationFrame(attempt)
+    }
+    requestAnimationFrame(attempt)
+  }, [onRevealMessage])
+
+  // ---------------------------------------------------------------------------
+  // Handlers a turn card receives
+  // ---------------------------------------------------------------------------
+  //
+  // Every one of these has to keep its identity across renders: the transcript
+  // streams tens of tokens a second and each turn card is memoized, so a handler
+  // that is rebuilt per render silently turns the memo off for the whole
+  // conversation. They therefore read the live session through a ref rather than
+  // closing over it — the session object is replaced on every token, so a
+  // closure over it would be a new function every time.
+  /** Branch a conversation from one of its own messages, into a new panel. */
+  const handleBranch = React.useCallback(async (messageId: string, options?: { newPanel?: boolean }) => {
+    const live = liveSessionRef.current
+    const onCreateSession = liveShellRef.current?.onCreateSession
+    if (!live || !onCreateSession) return
+    try {
+      const child = await onCreateSession(live.workspaceId, {
+        branchFromMessageId: messageId,
+        branchFromSessionId: live.id,
+        name: `Branch of ${live.name || 'Untitled'}`,
+        // Keep branch on the same backend/provider by inheriting parent session settings.
+        llmConnection: live.llmConnection,
+        model: live.model,
+        permissionMode: live.permissionMode,
+        workingDirectory: live.workingDirectory,
+        enabledSourceSlugs: live.enabledSourceSlugs,
+      })
+      navigate(routes.view.allSessions(child.id), { newPanel: resolveBranchNewPanelOption(options) })
+    } catch (error) {
+      const rawMessage = error instanceof Error ? error.message : 'Failed to create branch'
+      const message = rawMessage.includes('source and target providers must match')
+        || rawMessage.includes('same provider/backend')
+        ? 'Branching is only supported within the same provider/backend. Switch this panel connection and try again.'
+        : rawMessage
+      toast.error(t('toast.couldNotCreateBranch'), { description: message })
+    }
+  }, [t, navigate])
+
+  const handleAddAnnotation = React.useCallback(async (messageId: string, annotation: AnnotationV1) => {
+    const live = liveSessionRef.current
+    if (!live) return
+    try {
+      await window.electronAPI.sessionCommand(live.id, { type: 'addAnnotation', messageId, annotation })
+    } catch (error) {
+      toast.error(t('toast.couldNotSaveHighlight'), {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+      throw error
+    }
+  }, [t])
+
+  const handleRemoveAnnotation = React.useCallback(async (messageId: string, annotationId: string) => {
+    const live = liveSessionRef.current
+    if (!live) return
+    try {
+      await window.electronAPI.sessionCommand(live.id, { type: 'removeAnnotation', messageId, annotationId })
+    } catch (error) {
+      toast.error(t('toast.couldNotRemoveHighlight'), {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+      throw error
+    }
+  }, [t])
+
+  const handleUpdateAnnotation = React.useCallback(async (
+    messageId: string,
+    annotationId: string,
+    patch: Partial<AnnotationV1>,
+  ) => {
+    const live = liveSessionRef.current
+    if (!live) return
+    try {
+      await window.electronAPI.sessionCommand(live.id, { type: 'updateAnnotation', messageId, annotationId, patch })
+    } catch (error) {
+      toast.error(t('toast.couldNotUpdateHighlight'), {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      })
+      throw error
+    }
+  }, [t])
+
+  /** Approve the conversation's latest plan (optionally compacting first). */
+  const approvePlan = React.useCallback((eventName: 'craft:approve-plan' | 'craft:approve-plan-with-compact') => {
+    const live = liveSessionRef.current
+    if (!live) return
+    const planMessage = live.messages.findLast(m => m.role === 'plan')
+    window.dispatchEvent(new CustomEvent(eventName, {
+      detail: {
+        sessionId: live.id,
+        planPath: planMessage?.planPath,
+        includeDraftInput: true,
+        source: 'plan-card',
+      },
+    }))
+  }, [])
+
+  const handleAcceptPlan = React.useCallback(() => approvePlan('craft:approve-plan'), [approvePlan])
+  const handleAcceptPlanWithCompact = React.useCallback(
+    () => approvePlan('craft:approve-plan-with-compact'),
+    [approvePlan],
+  )
+
+  /** Turn details / a response preview: raw markdown, read-only. */
+  const openMarkdownOverlay = React.useCallback((text: string) => {
+    setOverlayState({ type: 'markdown', content: text, title: 'Response Preview', forceCodeView: true })
+  }, [])
+
+  // Queued messages are not transcript turns — they wait in the composer tray.
+  //
+  // Split by who wrote them (see `splitQueued`), because the tray is the person's own unsent text:
+  // hidden nudges never render, and a message from another conversation is readable but not
+  // editable into the person's words.
+  const queued = React.useMemo(
+    () => splitQueued(session?.messages ?? []),
+    [session?.messages]
+  )
+  const queuedMessages = queued.mine
+
+  // Queued messages live in the composer tray until their turn starts. Removing an incoming one
+  // uses the same path: the point is that it must leave the queue without ever becoming the
+  // person's draft.
+  const handleRemoveQueuedMessage = React.useCallback((message: Message) => {
+    const sessionId = session?.id
+    if (!sessionId) return
+
+    window.electronAPI.cancelQueuedMessage(sessionId, message.id, message.content).then(result => {
+      if (!result?.cancelled) toast.error(t('chat.queuedRemoveFailed'))
+    }).catch(error => {
+      console.error('[ChatDisplay] Failed to cancel queued message:', error)
+      toast.error(t('chat.queuedRemoveFailed'))
+    })
+  }, [session?.id, t])
+
+  // Take the message out of the queue and put its text in the composer so it
+  // can be rewritten before sending. Attachments stay with the removed entry.
+  const handleEditQueuedMessage = React.useCallback((message: Message) => {
+    const sessionId = session?.id
+    if (!sessionId) return
+
+    window.electronAPI.cancelQueuedMessage(sessionId, message.id, message.content).then(result => {
+      if (!result?.cancelled) {
+        toast.error(t('chat.queuedRemoveFailed'))
+        return
+      }
+      onInputChange?.(coerceInputText(message.content))
+      dispatchFocusInputEvent({ sessionId })
+    }).catch(error => {
+      console.error('[ChatDisplay] Failed to edit queued message:', error)
+    })
+  }, [session?.id, onInputChange, t])
+
+  // "Send now" is Stop + Send: the running turn is interrupted and this message
+  // starts the next one. It stays in the tray until the replay clears its flag.
+  const handleSendQueuedMessageNow = React.useCallback((message: Message) => {
+    const sessionId = session?.id
+    if (!sessionId) return
+
+    window.electronAPI.sendQueuedMessageNow(sessionId, message.id).then(result => {
+      if (!result?.sent) {
+        toast.error(t('chat.queuedSendNowFailed'))
+      }
+    }).catch(error => {
+      console.error('[ChatDisplay] Failed to send queued message now:', error)
+      toast.error(t('chat.queuedSendNowFailed'))
+    })
+  }, [session?.id, t])
+
+  // Drag-to-reorder identifies the entry by id: the queue keeps draining while
+  // the pointer is down, so indices can shift (or the entry can start sending).
+  const handleReorderQueuedMessage = React.useCallback((messageId: string, toIndex: number) => {
+    const sessionId = session?.id
+    if (!sessionId) return
+
+    window.electronAPI.sessionCommand(sessionId, {
+      type: 'reorderQueuedMessage',
+      messageId,
+      toIndex,
+    }).then(result => {
+      // The entry can be replayed between the drop and the backend call.
+      if (result && 'reordered' in result && !result.reordered) {
+        toast.info(t('chat.queuedReorderExpired'))
+      }
+    }).catch(error => {
+      console.error('[ChatDisplay] Failed to reorder queued messages:', error)
+      toast.error(t('chat.queuedReorderFailed'))
+    })
+  }, [session?.id, t])
+
+  const handleReorderQueuedExpired = React.useCallback(() => {
+    toast.info(t('chat.queuedReorderExpired'))
+  }, [t])
 
   // Per-frame scroll compensation during input height animation
   // Only compensate when user is "stuck to bottom" - otherwise let them control their scroll position
@@ -1386,11 +1936,26 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     return undefined
   }, [pendingPermission, pendingCredential])
 
-  // Memoize turn grouping - avoids O(n) iteration on every render/keystroke
+  // Turn grouping, with its previous result kept.
+  //
+  // Grouping itself is cheap; the reason it is cached is *identity*. A streamed
+  // token replaces the messages array, and rebuilding every turn object would
+  // hand every turn card in the transcript a new prop — which is how one delta
+  // used to re-render the whole visible conversation. With the cache, only the
+  // turn whose messages actually changed is a new object.
+  const groupingRef = React.useRef<{ sessionId: string | null; grouping: TurnGrouping | null }>({
+    sessionId: null,
+    grouping: null,
+  })
   const allTurns = React.useMemo(() => {
-    if (!session) return []
-    return groupMessagesByTurn(session.messages, { isSessionProcessing: session.isProcessing })
-  }, [session?.messages, session?.isProcessing])
+    if (!session) return NO_TURNS
+    const previous = groupingRef.current.sessionId === session.id ? groupingRef.current.grouping : null
+    const grouping = groupMessagesByTurnCached(session.messages, previous, {
+      isSessionProcessing: session.isProcessing,
+    })
+    groupingRef.current = { sessionId: session.id, grouping }
+    return grouping.turns
+  }, [session?.id, session?.messages, session?.isProcessing])
 
   // Keep ref in sync for scroll handler
   totalTurnCountRef.current = allTurns.length
@@ -1398,7 +1963,12 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Reverse pagination: only render last N turns for fast initial render
   const startIndex = Math.max(0, allTurns.length - visibleTurnCount)
   const turns = allTurns.slice(startIndex)
-  const hasMoreAbove = startIndex > 0
+  // "More above" is two facts now: turns held but not shown, and messages never
+  // carried at all (`messagesTruncated`). The hint counts whichever applies.
+  const unloadedMessageCount = session?.messagesTruncated
+    ? Math.max(0, (session.messageCount ?? 0) - session.messages.length)
+    : 0
+  const hasMoreAbove = startIndex > 0 || unloadedMessageCount > 0
 
   const assistantTurnIndexByMessageId = useMemo(() => {
     const map = new Map<string, number>()
@@ -1410,24 +1980,37 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     return map
   }, [allTurns])
 
-  const scrollToFollowUpTurn = useCallback((item: {
-    messageId: string
-    annotationId: string
-  }) => {
-    const targetTurnIndex = assistantTurnIndexByMessageId.get(item.messageId)
-    if (targetTurnIndex == null) return
+  // Search reads the turns through this ref (see `turnKeyForMessage`): the search
+  // section sits above these computations, and the turns change as pages arrive.
+  turnsRef.current = { allTurns, byMessageId: assistantTurnIndexByMessageId }
 
+  // Bring a turn into view, widening the reverse-pagination window first when the
+  // target is older than what is currently mounted.
+  // `align: 'start'` reveals the turn's opening (used by the turn rail, whose turns
+  // are usually taller than the viewport); 'center' keeps the existing annotation
+  // and search behavior.
+  const scrollToTurnByIndex = useCallback((targetTurnIndex: number, align: 'center' | 'start' = 'center') => {
+    const targetTurn = allTurns[targetTurnIndex]
+    if (!targetTurn) return
+
+    const turnKey = getTurnKey(targetTurn)
     const ensureVisibleCount = allTurns.length - targetTurnIndex
 
     const scrollToTurn = () => {
-      const targetTurn = allTurns[targetTurnIndex]
-      if (!targetTurn) return false
-
-      const turnKey = getTurnKey(targetTurn)
       const turnContainer = turnRefs.current.get(turnKey)
       if (!turnContainer) return false
 
-      turnContainer.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      if (align === 'center') {
+        turnContainer.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return true
+      }
+
+      const viewport = scrollViewportRef.current
+      if (!viewport) return false
+      const delta = turnContainer.getBoundingClientRect().top
+        - viewport.getBoundingClientRect().top
+        - LOCATED_TURN_TOP_GAP
+      viewport.scrollTo({ top: viewport.scrollTop + delta, behavior: 'smooth' })
       return true
     }
 
@@ -1450,7 +2033,16 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
         void scrollToTurn()
       })
     }
-  }, [assistantTurnIndexByMessageId, allTurns, visibleTurnCount])
+  }, [allTurns, visibleTurnCount])
+
+  const scrollToFollowUpTurn = useCallback((item: {
+    messageId: string
+    annotationId: string
+  }) => {
+    const targetTurnIndex = assistantTurnIndexByMessageId.get(item.messageId)
+    if (targetTurnIndex == null) return
+    scrollToTurnByIndex(targetTurnIndex)
+  }, [assistantTurnIndexByMessageId, scrollToTurnByIndex])
 
   const handleFollowUpChipClick = useCallback((item: {
     messageId: string
@@ -1482,6 +2074,89 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     scrollToFollowUpTurn(item)
   }, [scrollToFollowUpTurn])
 
+  // --- Turn rail -----------------------------------------------------------
+  // Ticks every question in the conversation — including the ones this panel has
+  // never loaded. Paging made that the whole point: a rail built from the mounted
+  // turns would tick only the questions inside the current page and silently
+  // claim the conversation began there (and its older ticks would jump nowhere).
+  //
+  // The list therefore comes from the conversation itself (`onLoadQuestions`);
+  // the mounted turns remain the fallback for callers that have no such source.
+  const railItems = useMemo(
+    () => (questions.length > 0
+      ? buildTurnRailItemsFromQuestions(questions)
+      : buildTurnRailItems(allTurns, getTurnKey)),
+    [questions, allTurns],
+  )
+  const railKeys = useMemo(() => new Set(railItems.map((item) => item.key)), [railItems])
+
+  const [activeTurnKey, setActiveTurnKey] = React.useState<string | null>(null)
+
+  // Reading position: the last turn whose top has passed the viewport's anchor
+  // line. Recomputed on scroll and whenever the mounted window changes.
+  React.useEffect(() => {
+    const viewport = scrollViewportRef.current
+    if (!viewport) return
+
+    let frame = 0
+    const measure = () => {
+      frame = 0
+      const anchorY = viewport.getBoundingClientRect().top + 80
+      let bestKey: string | null = null
+      let bestTop = -Infinity
+      turnRefs.current.forEach((element, key) => {
+        // Only ticks are candidates — anchoring on an assistant turn would leave
+        // the rail with nothing highlighted while its question is what you read.
+        if (!railKeys.has(key)) return
+        const top = element.getBoundingClientRect().top
+        if (top <= anchorY && top > bestTop) {
+          bestTop = top
+          bestKey = key
+        }
+      })
+      setActiveTurnKey((previous) => (previous === bestKey ? previous : bestKey))
+    }
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(measure)
+    }
+
+    measure()
+    viewport.addEventListener('scroll', schedule, { passive: true })
+    return () => {
+      viewport.removeEventListener('scroll', schedule)
+      if (frame !== 0) cancelAnimationFrame(frame)
+    }
+  }, [session?.id, turns.length, visibleTurnCount, railKeys])
+
+  // A tick whose question is not loaded asks for its page first, then jumps:
+  // `pendingRailKeyRef` is read by the effect below once the turns include it.
+  const pendingRailKeyRef = React.useRef<string | null>(null)
+
+  const handleRailSelect = useCallback((key: string) => {
+    const index = allTurns.findIndex((turn) => getTurnKey(turn) === key)
+    if (index >= 0) {
+      scrollToTurnByIndex(index, 'start')
+      return
+    }
+    if (!key.startsWith('user-') || !onRevealMessage) return
+    pendingRailKeyRef.current = key
+    void onRevealMessage(key.slice('user-'.length))
+  }, [allTurns, scrollToTurnByIndex, onRevealMessage])
+
+  React.useEffect(() => {
+    const key = pendingRailKeyRef.current
+    if (!key) return
+    const index = allTurns.findIndex((turn) => getTurnKey(turn) === key)
+    if (index < 0) return
+    pendingRailKeyRef.current = null
+    scrollToTurnByIndex(index, 'start')
+  }, [allTurns, scrollToTurnByIndex])
+
+  // The rail is the desktop navigation column; the return-to-bottom button
+  // lives at its foot. A conversation with under two ticks has no rail, and the
+  // button then floats over the messages like it does on mobile.
+  const showTurnRail = !compactMode && railItems.length >= 2
+
   // Compute if we should skip scroll-to-bottom (when search is active on session switch)
   // At render time, prevSessionIdForScrollRef still has the OLD session ID, so we can detect the switch
   const isSessionSwitchForScroll = prevSessionIdForScrollRef.current !== null && prevSessionIdForScrollRef.current !== session?.id
@@ -1497,7 +2172,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
           {/* Content layer */}
           <div className="flex flex-1 flex-col min-h-0 min-w-0 relative z-10">
           {/* === MESSAGES AREA: Scrollable list of message bubbles === */}
-          <div className="relative flex-1 min-h-0">
+          {/* The turn rail is a sibling column, not an overlay: it reserves its own
+              width instead of sitting on top of the conversation. */}
+          <div className="flex flex-1 min-h-0 min-w-0">
+          <div className="relative flex-1 min-h-0 min-w-0">
             {/* Mask wrapper - fades content at top and bottom over transparent/image backgrounds */}
             <div
               className="h-full"
@@ -1576,10 +2254,11 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                       exit={{ opacity: 0 }}
                       transition={compactMode ? { duration: 0 } : { duration: 0.1, ease: 'easeOut' }}
                     >
-                  {/* Scroll to bottom before paint - fires via useLayoutEffect */}
+                  {/* Pin to the newest turn before paint - fires via useLayoutEffect */}
                   {/* Skip when search is active on session switch - scroll to first match instead */}
-                  <ScrollOnMount
-                    targetRef={messagesEndRef}
+                  <PinToBottomOnMount
+                    viewportRef={scrollViewportRef}
+                    resetKey={session?.id}
                     skip={skipScrollToBottom}
                     onScroll={() => {
                       skipSmoothScrollUntilRef.current = Date.now() + 500
@@ -1604,14 +2283,14 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                   {/* Load more indicator - shown when there are older messages */}
                   {hasMoreAbove && (
                     <div className="text-center text-muted-foreground/60 text-xs py-3 select-none">
-                      ↑ {t('chat.scrollUpForEarlier', { count: startIndex })}
+                      ↑ {t('chat.scrollUpForEarlier', { count: startIndex > 0 ? startIndex : unloadedMessageCount })}
                     </div>
                   )}
                   {turns.map((turn, index) => {
                     // Compute turn key and check if it's a search match
                     const turnKey = getTurnKey(turn)
-                    const isCurrentMatch = isSearchActive && matchingTurnIds[currentMatchIndex] === turnKey
-                    const isAnyMatch = isSearchActive && matchingTurnIds.includes(turnKey)
+                    const isCurrentMatch = isSearchActive && currentMatchTurnKey === turnKey
+                    const isAnyMatch = isSearchActive && matchingTurnIds.has(turnKey)
 
                     // User turns - render with MemoizedMessageBubble
                     // Extra padding creates visual separation from AI responses
@@ -1620,6 +2299,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                         <div
                           key={turnKey}
                           ref={el => { if (el) turnRefs.current.set(turnKey, el); else turnRefs.current.delete(turnKey) }}
+                          data-message-id={turn.message.id}
                           className={cn(
                             compactMode ? "pt-2 pb-1" : CHAT_LAYOUT.userMessagePadding,
                             "rounded-lg transition-all duration-200",
@@ -1632,7 +2312,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             onOpenFile={onOpenFile}
                             onOpenUrl={onOpenUrl}
                             sessionId={session?.id}
+                            baseDir={workingDirectory}
                             compactMode={compactMode}
+                            onJumpToMessage={jumpToMessage}
                           />
                         </div>
                       )
@@ -1655,6 +2337,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             onOpenFile={onOpenFile}
                             onOpenUrl={onOpenUrl}
                             sessionId={session?.id}
+                            baseDir={workingDirectory}
                             onRetry={turn.message.role === 'error' ? () => {
                               const msgs = session?.messages
                               if (!msgs) return
@@ -1698,6 +2381,8 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                     const isLastResponse = index === turns.length - 1 || !turns.slice(index + 1).some(t => t.type === 'user')
 
                     // Assistant turns - render with TurnCard (buffered streaming)
+                    // through a memoized item: it owns the handlers bound to this
+                    // turn, so a token elsewhere does not rebuild its props.
                     const assistantUiKey = getAssistantTurnUiKey(turn, index)
                     return (
                       <div
@@ -1710,185 +2395,35 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                           isAnyMatch && !isCurrentMatch && "ring-1 ring-info/30"
                         )}
                       >
-                      <TurnCard
-                        sessionId={session.id}
-                        sessionFolderPath={session.sessionFolderPath}
-                        hasActiveFollowUpAnnotations={pendingFollowUpAnnotations.length > 0}
-                        turnId={turn.turnId}
-                        activities={turn.activities}
-                        response={turn.response}
-                        intent={turn.intent}
-                        isStreaming={turn.isStreaming}
-                        isComplete={turn.isComplete}
-                        isExpanded={expandedTurns.has(assistantUiKey)}
-                        onExpandedChange={(expanded) => toggleTurn(assistantUiKey, expanded)}
-                        expandedActivityGroups={expandedActivityGroups}
-                        onExpandedActivityGroupsChange={setExpandedActivityGroups}
-                        todos={turn.todos}
-                        onOpenFile={onOpenFile}
-                        onOpenUrl={onOpenUrl}
-                        isLastResponse={isLastResponse}
-                        compactMode={compactMode}
-                        sendMessageKey={sendMessageKey}
-                        openAnnotationRequest={openAnnotationRequest}
-                        onBranch={session?.supportsBranching ? async (messageId: string, options?: { newPanel?: boolean }) => {
-                          if (!session) return
-                          try {
-                            const child = await appShellContext.onCreateSession(
-                              session.workspaceId,
-                              {
-                                branchFromMessageId: messageId,
-                                branchFromSessionId: session.id,
-                                name: `Branch of ${session.name || 'Untitled'}`,
-                                // Keep branch on the same backend/provider by inheriting parent session settings.
-                                llmConnection: session.llmConnection,
-                                model: session.model,
-                                permissionMode: session.permissionMode,
-                                workingDirectory: session.workingDirectory,
-                                enabledSourceSlugs: session.enabledSourceSlugs,
-                              }
-                            )
-                            navigate(routes.view.allSessions(child.id), { newPanel: resolveBranchNewPanelOption(options) })
-                          } catch (error) {
-                            const rawMessage = error instanceof Error ? error.message : 'Failed to create branch'
-                            const message = rawMessage.includes('source and target providers must match')
-                              || rawMessage.includes('same provider/backend')
-                              ? 'Branching is only supported within the same provider/backend. Switch this panel connection and try again.'
-                              : rawMessage
-                            toast.error(t('toast.couldNotCreateBranch'), { description: message })
-                          }
-                        } : undefined}
-                        onAddAnnotation={async (messageId, annotation) => {
-                          if (!session) return
-                          try {
-                            await window.electronAPI.sessionCommand(session.id, {
-                              type: 'addAnnotation',
-                              messageId,
-                              annotation,
-                            })
-                          } catch (error) {
-                            toast.error(t('toast.couldNotSaveHighlight'), {
-                              description: error instanceof Error ? error.message : 'Unknown error',
-                            })
-                            throw error
-                          }
-                        }}
-                        onRemoveAnnotation={async (messageId, annotationId) => {
-                          if (!session) return
-                          try {
-                            await window.electronAPI.sessionCommand(session.id, {
-                              type: 'removeAnnotation',
-                              messageId,
-                              annotationId,
-                            })
-                          } catch (error) {
-                            toast.error(t('toast.couldNotRemoveHighlight'), {
-                              description: error instanceof Error ? error.message : 'Unknown error',
-                            })
-                          }
-                        }}
-                        onUpdateAnnotation={async (messageId, annotationId, patch) => {
-                          if (!session) return
-                          try {
-                            await window.electronAPI.sessionCommand(session.id, {
-                              type: 'updateAnnotation',
-                              messageId,
-                              annotationId,
-                              patch,
-                            })
-                          } catch (error) {
-                            toast.error(t('toast.couldNotUpdateHighlight'), {
-                              description: error instanceof Error ? error.message : 'Unknown error',
-                            })
-                            throw error
-                          }
-                        }}
-                        onSaveAndSendFollowUp={handleSaveAndSendFollowUp}
-                        onAcceptPlan={() => {
-                          const planMessage = session?.messages.findLast(m => m.role === 'plan')
-                          const planPath = planMessage?.planPath
-
-                          window.dispatchEvent(new CustomEvent('craft:approve-plan', {
-                            detail: {
-                              sessionId: session?.id,
-                              planPath,
-                              includeDraftInput: true,
-                              source: 'plan-card',
-                            },
-                          }))
-                        }}
-                        onAcceptPlanWithCompact={() => {
-                          const planMessage = session?.messages.findLast(m => m.role === 'plan')
-                          const planPath = planMessage?.planPath
-
-                          window.dispatchEvent(new CustomEvent('craft:approve-plan-with-compact', {
-                            detail: {
-                              sessionId: session?.id,
-                              planPath,
-                              includeDraftInput: true,
-                              source: 'plan-card',
-                            },
-                          }))
-                        }}
-                        onPopOut={(text) => {
-                          // Open raw markdown source in code viewer
-                          setOverlayState({
-                            type: 'markdown',
-                            content: text,
-                            title: 'Response Preview',
-                            forceCodeView: true,
-                          })
-                        }}
-                        onOpenDetails={() => {
-                          // Open turn details in markdown overlay
-                          const markdown = formatTurnAsMarkdown(turn)
-                          setOverlayState({
-                            type: 'markdown',
-                            content: markdown,
-                            title: 'Turn Details',
-                          })
-                        }}
-                        onOpenActivityDetails={(activity) => {
-                          // Write tool for .md/.txt → Document overlay (rendered markdown)
-                          // rather than multi-diff, since these are better viewed as formatted documents
-                          const isDocumentWrite = activity.toolName === 'Write' && (() => {
-                            const actInput = activity.toolInput as Record<string, unknown> | undefined
-                            const fp = (actInput?.file_path as string) || ''
-                            const ext = fp.split('.').pop()?.toLowerCase()
-                            return ext === 'md' || ext === 'txt'
-                          })()
-
-                          // Edit/Write tool → Multi-file diff overlay (ungrouped, focused on this change)
-                          // Exception: Write to .md/.txt files goes to document overlay instead
-                          if ((activity.toolName === 'Edit' || activity.toolName === 'Write') && !isDocumentWrite) {
-                            const changes = collectFileChangesFromActivities(turn.activities)
-                            if (changes.length > 0) {
-                              setOverlayState({
-                                type: 'multi-diff',
-                                changes,
-                                consolidated: false, // Ungrouped mode - show individual changes
-                                focusedChangeId: getFirstFileChangeIdForActivity(activity.id, changes),
-                              })
-                            }
-                          } else {
-                            // All other tools → open generic activity cards overlay (Input/Output)
-                            setOverlayState({ type: 'activity', activity })
-                          }
-                        }}
-                        hasEditOrWriteActivities={turn.activities.some(a =>
-                          a.toolName === 'Edit' || a.toolName === 'Write'
-                        )}
-                        onOpenMultiFileDiff={() => {
-                          const changes = collectFileChangesFromActivities(turn.activities)
-                          if (changes.length > 0) {
-                            setOverlayState({
-                              type: 'multi-diff',
-                              changes,
-                              consolidated: true, // Consolidated mode - group by file
-                            })
-                          }
-                        }}
-                      />
+                        <AssistantTurnItem
+                          turn={turn}
+                          uiKey={assistantUiKey}
+                          sessionId={session.id}
+                          sessionFolderPath={session.sessionFolderPath}
+                          workingDirectory={workingDirectory}
+                          isExpanded={expandedTurns.has(assistantUiKey)}
+                          onToggleTurn={toggleTurn}
+                          expandedActivityGroups={expandedActivityGroups}
+                          onExpandedActivityGroupsChange={setExpandedActivityGroups}
+                          isLastResponse={isLastResponse}
+                          compactMode={compactMode}
+                          sendMessageKey={sendMessageKey}
+                          openAnnotationRequest={openAnnotationRequest}
+                          hasActiveFollowUpAnnotations={pendingFollowUpAnnotations.length > 0}
+                          supportsBranching={!!session.supportsBranching}
+                          onOpenFile={onOpenFile}
+                          onOpenUrl={onOpenUrl}
+                          onReply={startReply}
+                          onSaveAndSendFollowUp={handleSaveAndSendFollowUp}
+                          onBranch={handleBranch}
+                          onAddAnnotation={handleAddAnnotation}
+                          onRemoveAnnotation={handleRemoveAnnotation}
+                          onUpdateAnnotation={handleUpdateAnnotation}
+                          onAcceptPlan={handleAcceptPlan}
+                          onAcceptPlanWithCompact={handleAcceptPlanWithCompact}
+                          onPopOut={openMarkdownOverlay}
+                          onOpenOverlay={setOverlayState}
+                        />
                       </div>
                     )
                   })}
@@ -1899,8 +2434,16 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                 </AnimatePresence>
                 {/* Processing Indicator - always visible while processing */}
                 {session.isProcessing && (() => {
-                  // Find the last user message timestamp for accurate elapsed time
-                  const lastUserMsg = [...session.messages].reverse().find(m => m.role === 'user')
+                  // Walk backwards instead of copying + reversing: this runs on
+                  // every rendered token, and the transcript is unbounded.
+                  let lastUserMsg: Message | undefined
+                  for (let i = session.messages.length - 1; i >= 0; i--) {
+                    const candidate = session.messages[i]
+                    if (candidate && candidate.role === 'user' && !candidate.isQueued) {
+                      lastUserMsg = candidate
+                      break
+                    }
+                  }
                   return (
                     <ProcessingIndicator
                       startTime={lastUserMsg?.timestamp}
@@ -1908,11 +2451,38 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                     />
                   )
                 })()}
-                {/* Scroll Anchor: For auto-scroll to bottom */}
-                <div ref={messagesEndRef} />
               </div>
               </ScrollArea>
             </div>
+            {/* No rail to sit under (compact/mobile, or a conversation with a
+                single turn): the way back down floats over the messages,
+                clear of the fade at the bottom edge. */}
+            {!showTurnRail && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex justify-end pr-2">
+                <ScrollToBottomButton
+                  variant="floating"
+                  visible={!isAtBottom}
+                  onClick={handleJumpToLatest}
+                  className="pointer-events-auto"
+                />
+              </div>
+            )}
+          </div>
+          {showTurnRail && (
+            <TurnRail
+              items={railItems}
+              activeKey={activeTurnKey}
+              onSelect={handleRailSelect}
+              // Directly under the ticks: same column, same job — going back to
+              // where the conversation is.
+              trailing={
+                <ScrollToBottomButton
+                  visible={!isAtBottom}
+                  onClick={handleJumpToLatest}
+                />
+              }
+            />
+          )}
           </div>
 
           {/* === INPUT CONTAINER: FreeForm or Structured Input === */}
@@ -1931,6 +2501,16 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
             sessionStatuses={sessionStatuses}
             currentSessionStatus={session.sessionStatus || 'todo'}
             onSessionStatusChange={onSessionStatusChange}
+            queuedMessages={queuedMessages}
+            queuedFromAgents={queued.fromAgents}
+            onDiscardQueuedFromAgent={handleRemoveQueuedMessage}
+            onEditQueued={handleEditQueuedMessage}
+            onRemoveQueued={handleRemoveQueuedMessage}
+            onSendQueuedNow={handleSendQueuedMessageNow}
+            onReorderQueued={handleReorderQueuedMessage}
+            onReorderQueuedExpired={handleReorderQueuedExpired}
+            replyTo={replyTo}
+            onClearReply={() => setReplyTo(null)}
             inputProps={{
               placeholder,
               previousPermissionMode,
@@ -2132,6 +2712,8 @@ interface MessageBubbleProps {
   onOpenFile: (path: string) => void
   onOpenUrl: (url: string) => void
   sessionId?: string
+  /** The conversation's working directory — the folder a relative file link in the message resolves against. */
+  baseDir?: string
   /**
    * Markdown render mode for assistant messages
    * @default 'minimal'
@@ -2145,6 +2727,8 @@ interface MessageBubbleProps {
   compactMode?: boolean
   /** Callback to resend the user message that preceded an error */
   onRetry?: () => void
+  /** Click a quote to go back to the message it quotes. */
+  onJumpToMessage?: (messageId: string) => void
 }
 
 /**
@@ -2228,10 +2812,12 @@ function MessageBubble({
   onOpenFile,
   onOpenUrl,
   sessionId,
+  baseDir,
   renderMode = 'minimal',
   onPopOut,
   compactMode,
   onRetry,
+  onJumpToMessage,
 }: MessageBubbleProps) {
   const { t } = useTranslation()
 
@@ -2239,11 +2825,15 @@ function MessageBubble({
   if (message.role === 'user') {
     return (
       <UserMessageBubble
-        content={message.content}
+        // An agent's message keeps its envelope in storage (that is what the model reads) but not
+        // on screen: what a person needs is the message, and who it came from — not the addressing.
+        content={withoutAgentEnvelope(message.content, message)}
+        fromAgent={agentAttribution(message)}
         attachments={message.attachments}
         badges={message.badges}
         isPending={message.isPending}
-        isQueued={message.isQueued}
+        replyTo={message.replyTo}
+        onJumpToMessage={onJumpToMessage}
         onUrlClick={onOpenUrl}
         onFileClick={onOpenFile}
         compactMode={compactMode}
@@ -2273,6 +2863,7 @@ function MessageBubble({
               content={message.content}
               isStreaming={true}
               mode={renderMode}
+              baseDir={baseDir}
               onUrlClick={onOpenUrl}
               onFileClick={onOpenFile}
             />
@@ -2280,6 +2871,7 @@ function MessageBubble({
             <CollapsibleMarkdownProvider>
               <Markdown
                 mode={renderMode}
+                baseDir={baseDir}
                 onUrlClick={onOpenUrl}
                 onFileClick={onOpenFile}
                 id={message.id}
@@ -2382,7 +2974,12 @@ const MemoizedMessageBubble = React.memo(MessageBubble, (prev, next) => {
     prev.message.id === next.message.id &&
     prev.message.content === next.message.content &&
     prev.message.role === next.message.role &&
+    // Queued/pending flags drive the queued chip (and its cancel button), so a
+    // flip must re-render even though the bubble content is unchanged.
+    prev.message.isQueued === next.message.isQueued &&
+    prev.message.isPending === next.message.isPending &&
     prev.sessionId === next.sessionId &&
+    prev.baseDir === next.baseDir &&
     prev.compactMode === next.compactMode
   )
 })

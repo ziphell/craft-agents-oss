@@ -6,6 +6,7 @@
  * by Electron's macOS sandbox — see issue #697).
  */
 
+import { existsSync } from 'node:fs';
 import { CraftMcpClient } from './client.js';
 import { debug } from '../utils/debug.ts';
 import { normalizeMcpUrl } from '../sources/server-builder.ts';
@@ -387,6 +388,15 @@ export async function validateStdioMcpConnection(
   };
 
   try {
+    // Fail fast with a clear message when the command is a path that does not
+    // exist. Windows shells report this only through localized stderr, which the
+    // SDK then wraps into an opaque "Connection closed" error, so the ENOENT
+    // check in the catch below never sees it. A command given as a bare name
+    // (resolved via PATH) is left to the spawn.
+    if ((command.includes('/') || command.includes('\\')) && !existsSync(command)) {
+      throw new Error(`ENOENT: no such file or directory, spawn '${command}'`);
+    }
+
     transport = new StdioClientTransport({
       command,
       args,

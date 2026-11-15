@@ -36,6 +36,8 @@ export const SESSION_PERSISTENT_FIELDS = [
   'enabledSourceSlugs', 'permissionMode', 'previousPermissionMode', 'workingDirectory',
   // Model/Connection
   'model', 'llmConnection', 'connectionLocked', 'thinkingLevel',
+  // Browser profile this conversation's browser work runs in (one window per profile)
+  'browserProfile',
   // Sharing
   'sharedUrl', 'sharedId',
   // Plan execution
@@ -55,6 +57,10 @@ export const SESSION_PERSISTENT_FIELDS = [
   'triggeredBy',
   // Project binding (workspace-scoped grouping)
   'projectId',
+  // What this conversation is (absent = ordinary; `bot` = the assistant)
+  'role',
+  // Mode: the layer this conversation is working in (goal / spec / plan)
+  'mode',
   // Kanban: task/subtask hierarchy + board column
   'parentSessionId',
   'kanbanColumn',
@@ -63,10 +69,25 @@ export const SESSION_PERSISTENT_FIELDS = [
   'taskRunId',
   'taskNodeId',
   'taskNodeCount',
+  'taskAwaitingApproval',
   'taskDraft',
 ] as const;
 
 export type SessionPersistentField = typeof SESSION_PERSISTENT_FIELDS[number];
+
+/**
+ * The layer a conversation is working in — one at a time, or none (undefined).
+ *
+ * A conversation has one mode (a stage), never several at once:
+ * - `goal` — the project's goal: one `goal.md` at the project folder's root;
+ * - `spec` — a specification: one `*.spec.md` per piece of work;
+ * - `plan` — how one piece gets built: one `*.plan.md` sharing a spec's stem.
+ *
+ * The mode is the session's own declaration; its home is the folder of the
+ * workspace project the session belongs to, so a mode on a session outside a
+ * project means nothing.
+ */
+export type SessionMode = 'goal' | 'spec' | 'plan';
 
 /**
  * Session status (user-controlled, never automatic)
@@ -122,6 +143,13 @@ export interface SessionConfig {
   /** Timestamp of last meaningful message (user or final assistant). Used for date grouping in session list.
    *  Separate from lastUsedAt which tracks any session access (auto-save, open to read, etc.). */
   lastMessageAt?: number;
+  /**
+   * What this conversation is, when it is not an ordinary one: `bot` is the assistant, which
+   * can hand work to another workspace. Everything else about it — model, connection, sources,
+   * memory, permission mode — is the workspace's own, which is why this is a role rather than
+   * a workspace of its own.
+   */
+  role?: 'bot';
   /** Whether this session is flagged */
   isFlagged?: boolean;
   /** Permission mode for this session ('safe', 'ask', 'guarded', 'allow-all') */
@@ -152,9 +180,17 @@ export interface SessionConfig {
   sharedId?: string;
   /** Model to use for this session (overrides global config if set) */
   model?: string;
-  /** LLM connection slug for this session (locked after first message) */
+  /** LLM connection slug for this session (auto-pinned on first agent creation) */
   llmConnection?: string;
-  /** Whether the connection is locked (cannot be changed after first agent creation) */
+  /**
+   * Browser profile this conversation picked (see `browser-profiles.ts`).
+   *
+   * Unset means "the project's default, then the workspace's, then the built-in `default`". A
+   * profile is a window: the conversation's unnamed commands use that profile's window, while the
+   * tabs it already had stay where they are — a Chromium session cannot be swapped under a live page.
+   */
+  browserProfile?: string;
+  /** Whether the connection is pinned against *implicit* rewrites; explicit user switches are still allowed */
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
@@ -220,6 +256,16 @@ export interface SessionConfig {
   };
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
+  /**
+   * The layer this conversation is working in (`goal` / `spec` / `plan`), or
+   * undefined for an ordinary conversation. Its home is the folder of the
+   * workspace project this session belongs to (`projects/<slug>/`), so a mode on
+   * a session that is not in a project means nothing.
+   *
+   * It only affects the prompt block added for this conversation, and changes no
+   * tool behavior. One mode at a time — a stage, not a set of switches.
+   */
+  mode?: SessionMode;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -232,6 +278,8 @@ export interface SessionConfig {
   taskNodeId?: string;
   /** Tasks Conductor: total DAG node count (orchestrator only) — board progress denominator that stays stable while children spawn lazily. */
   taskNodeCount?: number;
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
+  taskAwaitingApproval?: number;
   /** Tasks Conductor: generate-time draft orchestrator. Hidden from the board until adopted (promoted) by createTask. */
   taskDraft?: boolean;
 }
@@ -284,6 +332,8 @@ export interface SessionHeader {
   enabledSourceSlugs?: string[];
   /** Working directory for this session (used by agent for bash commands and context) */
   workingDirectory?: string;
+  /** Browser profile this conversation picked (see `Session.browserProfile`). */
+  browserProfile?: string;
   /** SDK cwd for session storage - set once at creation, never changes */
   sdkCwd?: string;
   /** Shared viewer URL (if shared via viewer) */
@@ -292,9 +342,9 @@ export interface SessionHeader {
   sharedId?: string;
   /** Model to use for this session (overrides global config if set) */
   model?: string;
-  /** LLM connection slug for this session (locked after first message) */
+  /** LLM connection slug for this session (auto-pinned on first agent creation) */
   llmConnection?: string;
-  /** Whether the connection is locked (cannot be changed after first agent creation) */
+  /** Whether the connection is pinned against *implicit* rewrites; explicit user switches are still allowed */
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
@@ -335,6 +385,16 @@ export interface SessionHeader {
   };
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
+  /**
+   * The layer this conversation is working in (`goal` / `spec` / `plan`), or
+   * undefined for an ordinary conversation. Its home is the folder of the
+   * workspace project this session belongs to (`projects/<slug>/`), so a mode on
+   * a session that is not in a project means nothing.
+   *
+   * It only affects the prompt block added for this conversation, and changes no
+   * tool behavior. One mode at a time — a stage, not a set of switches.
+   */
+  mode?: SessionMode;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -347,6 +407,8 @@ export interface SessionHeader {
   taskNodeId?: string;
   /** Tasks Conductor: total DAG node count (orchestrator only) — board progress denominator that stays stable while children spawn lazily. */
   taskNodeCount?: number;
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
+  taskAwaitingApproval?: number;
   /** Tasks Conductor: generate-time draft orchestrator. Hidden from the board until adopted (promoted) by createTask. */
   taskDraft?: boolean;
   // Pre-computed fields for fast list loading
@@ -379,6 +441,8 @@ export interface SessionMetadata {
   sdkSessionId?: string;
   /** Whether this session is flagged */
   isFlagged?: boolean;
+  /** `bot` for the assistant's own conversation (absent for ordinary ones). */
+  role?: 'bot';
   /** User-controlled session status */
   sessionStatus?: SessionStatus;
   /** Labels applied to this session (bare IDs or "id::value" entries) */
@@ -397,15 +461,17 @@ export interface SessionMetadata {
   sharedId?: string;
   /** Working directory for this session */
   workingDirectory?: string;
+  /** Browser profile this conversation picked (see `Session.browserProfile`). */
+  browserProfile?: string;
   /** SDK cwd for session storage - set once at creation, never changes */
   sdkCwd?: string;
   /** Role/type of the last message (for badge display without loading messages) */
   lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error';
   /** Model to use for this session (overrides global config if set) */
   model?: string;
-  /** LLM connection slug for this session (locked after first message) */
+  /** LLM connection slug for this session (auto-pinned on first agent creation) */
   llmConnection?: string;
-  /** Whether the connection is locked (cannot be changed after first agent creation) */
+  /** Whether the connection is pinned against *implicit* rewrites; explicit user switches are still allowed */
   connectionLocked?: boolean;
   /** Thinking level for this session ('off', 'think', 'max') */
   thinkingLevel?: ThinkingLevel;
@@ -431,6 +497,16 @@ export interface SessionMetadata {
   branchFromMessageId?: string;
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
+  /**
+   * The layer this conversation is working in (`goal` / `spec` / `plan`), or
+   * undefined for an ordinary conversation. Its home is the folder of the
+   * workspace project this session belongs to (`projects/<slug>/`), so a mode on
+   * a session that is not in a project means nothing.
+   *
+   * It only affects the prompt block added for this conversation, and changes no
+   * tool behavior. One mode at a time — a stage, not a set of switches.
+   */
+  mode?: SessionMode;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
   parentSessionId?: string;
   /** Kanban board column id ('todo' | 'in-progress' | 'done'). Drag-to-move target; independent of sessionStatus. */
@@ -443,6 +519,8 @@ export interface SessionMetadata {
   taskNodeId?: string;
   /** Tasks Conductor: total DAG node count (orchestrator only) — board progress denominator that stays stable while children spawn lazily. */
   taskNodeCount?: number;
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
+  taskAwaitingApproval?: number;
   /** Tasks Conductor: generate-time draft orchestrator. Hidden from the board until adopted (promoted) by createTask. */
   taskDraft?: boolean;
 }

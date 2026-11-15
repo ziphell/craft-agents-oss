@@ -57,7 +57,7 @@ export interface MessagingBootstrapHandle {
   setPublisher(push: PublishEventFn): void
   /** Compose the session-event fan-out on top of the base RPC push sink. */
   wrapSink(baseSink: EventSinkFn): EventSinkFn
-  /** Initialize the given workspace IDs. Callers filter (e.g. skip `remoteServer`). */
+  /** Initialize the given workspace IDs. */
   initializeWorkspaces(workspaceIds: string[]): Promise<void>
   /** Stop all gateways and release resources. Call from the host's shutdown path. */
   dispose(): Promise<void>

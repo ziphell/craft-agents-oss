@@ -8,8 +8,8 @@ import { ensureConfigDir, loadStoredConfig, saveConfig } from '@craft-agent/shar
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { setBundledAssetsRoot } from '@craft-agent/shared/utils'
 import { WsRpcServer, type WsRpcTlsOptions } from '../transport/server'
+import { ServerTokenRegistry, type PersistedToken } from '../transport/tokens'
 import type { EventSink, RpcServer } from '../transport/types'
-import { createHeadlessPlatform } from '../runtime/platform-headless'
 import type { PlatformServices } from '../runtime/platform'
 
 interface ModelRefreshServiceLike {
@@ -19,6 +19,11 @@ interface ModelRefreshServiceLike {
 
 export interface ServerBootstrapOptions<TSessionManager, THandlerDeps> {
   serverToken?: string
+  /**
+   * Registry to fill with this hub's credentials. Callers that wire HTTP endpoints before the
+   * server starts (the Web UI's export downloads) pass their own; otherwise one is created.
+   */
+  tokenRegistry?: ServerTokenRegistry
   rpcHost?: string
   rpcPort?: number
   bundledAssetsRoot?: string
@@ -42,7 +47,14 @@ export interface ServerBootstrapOptions<TSessionManager, THandlerDeps> {
   initModelRefreshService: () => ModelRefreshServiceLike
   cleanupSessionManager?: (sessionManager: TSessionManager) => Promise<void> | void
   cleanupClientResources?: (clientId: string) => void
-  onClientConnected?: (info: { clientId: string; webContentsId: number | null; workspaceId: string | null; capabilities: string[] }) => void
+  onClientConnected?: (info: {
+    clientId: string
+    webContentsId: number | null
+    workspaceId: string | null
+    capabilities: string[]
+    mode: 'local' | 'remote'
+    name: string
+  }) => void
   serverId?: string
   /** App version string, included in handshake_ack for client compatibility checks. */
   serverVersion?: string
@@ -59,8 +71,27 @@ export interface ServerBootstrapOptions<TSessionManager, THandlerDeps> {
 
 export interface ServerHandlerContext {
   getConnectedClientCount: () => number
+  getConnectedClients: () => import('@craft-agent/shared/protocol').ConnectedClientInfo[]
   serverId: string
   startedAt: number
+  /** Slots and the server token; device handlers create and delete records here. */
+  tokens: ServerTokenRegistry
+  /** Drop every live connection authenticated with one credential. */
+  disconnectTokenClients: (tokenId: string, reason?: string) => number
+  /** Apply a changed credential scope to the connections already holding it. */
+  applyTokenScope: (tokenId: string, scope: import('../transport/tokens').TokenScope) => number
+  /**
+   * Re-check the connections holding one credential and drop only those its scope no longer
+   * permits — what a scope change does, as opposed to a revocation.
+   */
+  revalidateTokenClients: (
+    tokenId: string,
+    stillPermitted: (client: {
+      capabilities: ReadonlySet<string>
+      role: 'window' | 'device' | null
+    }) => boolean,
+    reason?: string,
+  ) => number
 }
 
 export interface ServerInstance<TSessionManager> {
@@ -71,7 +102,10 @@ export interface ServerInstance<TSessionManager> {
   host: string
   port: number
   protocol: 'ws' | 'wss'
+  /** The credential other machines are handed (scope `both`). */
   token: string
+  /** Every credential this hub accepts, with its scope and revocation state. */
+  tokens: ServerTokenRegistry
   /** Context for server-level RPC handlers (status, health, active sessions). */
   serverHandlerContext: ServerHandlerContext
   stop: () => Promise<void>
@@ -122,6 +156,36 @@ export function generateServerToken(): string {
 // ---------------------------------------------------------------------------
 
 const LOCK_FILE = join(CONFIG_DIR, '.server.lock')
+
+/**
+ * Where device tokens are kept. Separate from `devices.json` on purpose: that file records what a
+ * device *is* (name, platform, last seen), while this one holds credential hashes and the binding
+ * that decides who may connect. A pending slot also carries its plaintext token so the device list
+ * can keep offering a copy button; claiming it clears the plaintext. A pending slot has no device
+ * record at all.
+ */
+const DEVICE_TOKENS_FILE = join(CONFIG_DIR, 'device-tokens.json')
+
+function loadDeviceTokens(): PersistedToken[] {
+  try {
+    const parsed = JSON.parse(readFileSync(DEVICE_TOKENS_FILE, 'utf-8')) as { tokens?: unknown }
+    return Array.isArray(parsed?.tokens) ? parsed.tokens as PersistedToken[] : []
+  } catch {
+    return []
+  }
+}
+
+function saveDeviceTokens(tokens: PersistedToken[]): void {
+  try {
+    ensureConfigDir()
+    writeFileSync(DEVICE_TOKENS_FILE, JSON.stringify({ version: 1, tokens }, null, 2), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    })
+  } catch {
+    // A read-only config dir costs persistence, not this run: the tokens stay in memory.
+  }
+}
 
 type LockPayload = LockIdentity
 
@@ -341,7 +405,13 @@ export async function bootstrapServer<TSessionManager, THandlerDeps>(
     throw new Error(`Weak server token: ${entropy.error}`)
   }
 
-  const platform = options.platformFactory?.() ?? createHeadlessPlatform({ appVersion: options.serverVersion })
+  // Loaded here, not at the top of the file: `platform-headless` imports `sharp`, and this module
+  // is reached from the desktop app too (`bootstrapServer` lives here). A static import pulled
+  // sharp's 129 KB of JS into `main.cjs`, where the native half does not exist in a packaged
+  // build. The hub, which is the only caller, pays a module load it was going to pay anyway.
+  const platform =
+    options.platformFactory?.()
+    ?? (await import('../runtime/platform-headless')).createHeadlessPlatform({ appVersion: options.serverVersion })
 
   const bundledAssetsRoot = options.bundledAssetsRoot
     ?? process.env.CRAFT_BUNDLED_ASSETS_ROOT
@@ -368,17 +438,37 @@ export async function bootstrapServer<TSessionManager, THandlerDeps>(
   }
   const rpcPort = Math.trunc(rpcPortRaw)
 
+  // The hub's credentials: the server token from the config, plus device slots restored from disk.
+  // A device slot starts unbound and is claimed by the first machine that connects with it.
+  const tokens = options.tokenRegistry ?? new ServerTokenRegistry()
+  tokens.restore(loadDeviceTokens())
+  tokens.setPersist(saveDeviceTokens)
+  tokens.register({ token: serverToken, label: 'Server token', scope: 'both', kind: 'server' })
+
   const wsServer = new WsRpcServer({
     host: rpcHost,
     port: rpcPort,
     requireAuth: true,
-    validateToken: async (t) => t === serverToken,
+    validateToken: async (t, context) => tokens.authorize(t, context),
     validateSessionCookie: options.validateSessionCookie,
     serverId: options.serverId ?? 'headless',
     serverVersion: options.serverVersion,
     tls: options.tls,
     httpHandler: options.httpHandler,
-    onClientConnected: options.onClientConnected,
+    onClientConnected: (info) => {
+      options.onClientConnected?.(info)
+      // Best-effort: let SM write the device record for a link that offers device tools. This is
+      // the only place a record is created — listing devices never writes one, so deleting a
+      // device is final. Duck-typed because TSessionManager is generic at the bootstrap layer.
+      const smWithConnect = sessionManager as unknown as { onClientConnected?: (id: string) => void }
+      if (typeof smWithConnect.onClientConnected === 'function') {
+        try {
+          smWithConnect.onClientConnected(info.clientId)
+        } catch {
+          // Hook failures must not break the transport.
+        }
+      }
+    },
     onClientDisconnected: (clientId) => {
       options.cleanupClientResources?.(clientId)
       // Best-effort: notify SM so it can drop browser-host pins for this client.
@@ -409,8 +499,14 @@ export async function bootstrapServer<TSessionManager, THandlerDeps>(
   const startedAt = Date.now()
   const serverHandlerContext: ServerHandlerContext = {
     getConnectedClientCount: () => wsServer.getConnectedClientCount(),
+    getConnectedClients: () => wsServer.getConnectedClients(),
     serverId: options.serverId ?? 'headless',
     startedAt,
+    tokens,
+    disconnectTokenClients: (tokenId, reason) => wsServer.disconnectTokenClients(tokenId, reason),
+    applyTokenScope: (tokenId, scope) => wsServer.applyTokenScope(tokenId, scope),
+    revalidateTokenClients: (tokenId, stillPermitted, reason) =>
+      wsServer.revalidateTokenClients(tokenId, stillPermitted, reason),
   }
 
   options.registerAllRpcHandlers(wsServer, deps, serverHandlerContext)
@@ -479,6 +575,7 @@ export async function bootstrapServer<TSessionManager, THandlerDeps>(
     port: wsServer.port,
     protocol: wsServer.protocol,
     token: serverToken,
+    tokens,
     serverHandlerContext,
     stop,
   }

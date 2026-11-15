@@ -83,6 +83,12 @@ export interface LinkItem {
   sortable?: SortableConfig
   // Optional element rendered after the title (e.g., label type icon), revealed on hover
   afterTitle?: React.ReactNode
+  /**
+   * Something happened here and nobody has looked. Always visible, unlike `label`/`afterTitle`,
+   * which are revealed on hover — an unread mark that only appears when you are already looking at
+   * the row is not a mark.
+   */
+  unread?: boolean
 }
 
 export interface SeparatorItem {
@@ -534,6 +540,9 @@ const SidebarButton = React.forwardRef<HTMLButtonElement, SidebarButtonProps & R
         {/* One line: long names (e.g. page titles) end in "…", the full name shows on hover */}
         <span className="min-w-0 truncate text-left" title={link.title}>{link.title}</span>
         {/* After-title element: type indicator icon, right-aligned before count badge, revealed on hover */}
+        {link.unread && (
+          <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-label="unread" />
+        )}
         {link.afterTitle && (
           <span data-touch-reveal="true" className="ml-auto opacity-0 group-hover/section:opacity-100 group-data-[state=open]:opacity-100 group-data-[edit-active=true]:opacity-100 transition-opacity">
             {link.afterTitle}

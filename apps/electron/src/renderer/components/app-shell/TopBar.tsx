@@ -1,19 +1,20 @@
 /**
  * TopBar - Persistent top bar above all panels (Slack-style)
  *
- * Layout: [Sidebar] [Menu] [Back] [Forward] [Workspace selector] ... [Browser strip] [+] [Help]
+ * Layout: [Sidebar] [Menu] [Back] [Forward] [Workspace selector] ... [Browser] [+] [Help]
  *
  * Fixed at top of window, 48px tall.
  * macOS: offset left to avoid stoplight controls.
  */
 
 import { useTranslation } from "react-i18next"
+import { useAtomValue } from "jotai"
 import * as Icons from "lucide-react"
 import { Tooltip, TooltipTrigger, TooltipContent } from "@craft-agent/ui"
 import { PanelLeftRounded } from "../icons/PanelLeftRounded"
 import { TopBarButton } from "../ui/TopBarButton"
 import { cn } from "@/lib/utils"
-import { isMac, isWebUI } from "@/lib/platform"
+import { isMac, isWebUI, titleBarCaptionInset } from "@/lib/platform"
 import { useActionLabel } from "@/actions"
 import {
   DropdownMenu,
@@ -23,17 +24,15 @@ import {
   StyledDropdownMenuSeparator,
 } from "@/components/ui/styled-dropdown"
 import type { SettingsMenuItem } from "../../../shared/menu-schema"
-import { SquarePenRounded } from "../icons/SquarePenRounded"
-import { useEffect, useRef, useState } from "react"
 import { BrowserTabStrip } from "../browser/BrowserTabStrip"
+import { windowIsRemoteAtom } from "@/atoms/window-mode"
 import type { Workspace } from "../../../shared/types"
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher"
 import { CompactWorkspaceSwitcher } from "./CompactWorkspaceSwitcher"
+import { RemoteHostBadge } from "./RemoteHostBadge"
 import { getDocUrl } from "@craft-agent/shared/docs/doc-links"
 import { AppMenu } from "../AppMenu"
-
-const RIGHT_SLOT_FULL_BADGES_THRESHOLD = 420
-const RIGHT_SLOT_TWO_BADGES_THRESHOLD = 300
+import type { TabRef } from "@craft-agent/shared/mentions"
 
 interface TopBarProps {
   workspaces: Workspace[]
@@ -45,6 +44,8 @@ interface TopBarProps {
   activeSessionId?: string | null
   onNewChat: () => void
   onNewWindow?: () => void
+  /** Open the "Connect to Server…" dialog in the menu — a hub window is an action. */
+  onConnectServer?: () => void
   onOpenSettings: () => void
   onOpenSettingsSubpage: (subpage: SettingsMenuItem['id']) => void
   onOpenKeyboardShortcuts: () => void
@@ -56,7 +57,15 @@ interface TopBarProps {
   onToggleSidebar: () => void
   onToggleFocusMode: () => void
   onAddSessionPanel: () => void
-  onAddBrowserPanel: () => void
+  /**
+   * Open the workspace's browser, or the window of the profile named.
+   *
+   * A window is a profile (one per workspace and profile), so choosing an account here is
+   * choosing which window to bring up — and opening it when it does not exist yet.
+   */
+  onAddBrowserPanel: (profileId?: string) => void
+  /** Hand one of a browser window's tabs to a conversation, as a composer chip. */
+  onAddTabToConversation?: (tab: TabRef) => void
   /** When true, hides controls that don't apply in compact/mobile layout */
   isCompact?: boolean
 }
@@ -71,6 +80,7 @@ export function TopBar({
   activeSessionId,
   onNewChat,
   onNewWindow,
+  onConnectServer,
   onOpenSettings,
   onOpenSettingsSubpage,
   onOpenKeyboardShortcuts,
@@ -83,46 +93,16 @@ export function TopBar({
   onToggleFocusMode,
   onAddSessionPanel,
   onAddBrowserPanel,
+  onAddTabToConversation,
   isCompact,
 }: TopBarProps) {
   const { t } = useTranslation()
-  const [maxVisibleBrowserBadges, setMaxVisibleBrowserBadges] = useState(3)
-  const rightSlotRef = useRef<HTMLDivElement | null>(null)
+  /** No local browser window to raise: a remote window's browser and the webui's are the server's. */
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
+  const usesServerBrowser = isRemoteWindow || isWebUI
 
   const goBackHotkey = useActionLabel('nav.goBackAlt').hotkey
   const goForwardHotkey = useActionLabel('nav.goForwardAlt').hotkey
-
-  useEffect(() => {
-    const slotEl = rightSlotRef.current
-    if (!slotEl) return
-
-    let frame = 0
-
-    const updateBadgeDensity = () => {
-      const slotWidth = slotEl.getBoundingClientRect().width
-      const nextMaxVisibleBadges = slotWidth >= RIGHT_SLOT_FULL_BADGES_THRESHOLD
-        ? 3
-        : slotWidth >= RIGHT_SLOT_TWO_BADGES_THRESHOLD
-          ? 2
-          : 1
-
-      setMaxVisibleBrowserBadges((prev) => (prev === nextMaxVisibleBadges ? prev : nextMaxVisibleBadges))
-    }
-
-    const schedule = () => {
-      if (frame) cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(updateBadgeDensity)
-    }
-
-    const observer = new ResizeObserver(schedule)
-    observer.observe(slotEl)
-    updateBadgeDensity()
-
-    return () => {
-      if (frame) cancelAnimationFrame(frame)
-      observer.disconnect()
-    }
-  }, [workspaces.length, activeWorkspaceId])
 
   // Stoplight padding clears macOS traffic-light controls, which only exist
   // in the Electron desktop window. The webui runs in a regular browser tab
@@ -135,16 +115,21 @@ export function TopBar({
       className="fixed top-0 left-0 right-0 z-panel titlebar-drag-region"
       style={{ height: 'var(--topbar-height)' }}
     >
-      <div className="flex h-full w-full items-center justify-between gap-2">
+      {/* On Windows the OS paints the caption buttons over this bar's right end, so
+          the whole row steps left of that strip (see titleBarCaptionInset). */}
+      <div
+        className="flex h-full w-full items-center justify-between gap-2"
+        style={{ paddingRight: titleBarCaptionInset || undefined }}
+      >
       {/* === LEFT: Sidebar + Menu + Navigation + Workspace === */}
       {/* Keep this container draggable. Only individual interactive controls should use titlebar-no-drag. */}
-      {/* In compact mode the right slot is hidden, so we add right padding here
-          so the workspace pill doesn't run flush against the viewport edge. */}
+      {/* In compact mode the right slot collapses to just the browser globe, so the
+          pill only needs edge padding when that globe isn't there at all. */}
       <div
-        className="pointer-events-auto flex min-w-0 flex-1 items-center gap-0.5"
-        style={{ paddingLeft: menuLeftPadding, paddingRight: isCompact ? 12 : 0 }}
+        className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1"
+        style={{ paddingLeft: menuLeftPadding, paddingRight: isCompact && !usesServerBrowser ? 12 : 0 }}
       >
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
         {!isCompact && (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -159,6 +144,7 @@ export function TopBar({
         <AppMenu
           onNewChat={onNewChat}
           onNewWindow={onNewWindow}
+          onConnectServer={onConnectServer}
           onOpenSettings={onOpenSettings}
           onOpenSettingsSubpage={onOpenSettingsSubpage}
           onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
@@ -173,7 +159,7 @@ export function TopBar({
             drill-in chevron in PanelHeader plus the browser's native back gesture
             cover that affordance, and the freed width lets the workspace pill
             actually fit on phone-width viewports. */}
-        <div className={cn("ml-1 flex min-w-0 items-center gap-1", isCompact ? "flex-1" : "w-[clamp(220px,42vw,640px)]")}>
+        <div className={cn("flex min-w-0 items-center gap-1.5", isCompact ? "flex-1" : "w-[clamp(220px,42vw,640px)]")}>
           {!isCompact && (
             <>
               <Tooltip>
@@ -218,38 +204,75 @@ export function TopBar({
               />
             )}
           </div>
+
+          {/* Which server this window is on — nothing in a local window. */}
+          <RemoteHostBadge
+            compact={isCompact}
+            onOpenSettings={() => onOpenSettingsSubpage('server')}
+          />
         </div>
       </div>
 
-      {/* === RIGHT: Browser strip + add + help === */}
-      {!isCompact && (
-      <div ref={rightSlotRef} className="flex min-w-0 shrink-0 items-center justify-end gap-1" style={{ paddingRight: 12 }}>
-        <div className="min-w-0">
-          <BrowserTabStrip activeSessionId={activeSessionId} maxVisibleBadges={maxVisibleBrowserBadges} />
+      {/* === COMPACT RIGHT: the browser stays on the right edge, same as desktop === */}
+      {isCompact && usesServerBrowser && (
+        <div
+          className="pointer-events-auto flex shrink-0 items-center justify-end"
+          style={{ paddingRight: 12 }}
+        >
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <TopBarButton
+                aria-label={t('browser.openBrowser')}
+                className="h-7 w-7 rounded-lg"
+                onClick={() => onAddBrowserPanel()}
+              >
+                <Icons.Globe className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
+              </TopBarButton>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{t('browser.openBrowser')}</TooltipContent>
+          </Tooltip>
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <TopBarButton aria-label={t("menu.addPanelMenu")} className="ml-1 h-[26px] w-[26px] rounded-lg">
-              <Icons.Plus className="h-4 w-4 text-foreground/50" strokeWidth={1.5} />
+      )}
+
+      {/* === RIGHT: browser + new conversation + help === */}
+      {!isCompact && (
+      <div className="flex min-w-0 shrink-0 items-center justify-end gap-1.5" style={{ paddingRight: 12 }}>
+        {/*
+          The browser, as one control: the window in use on the trigger, and every window, every
+          profile and the settings page inside its menu. It used to be a row of badges plus a
+          globe — the same jobs in two places, and a "+N" menu for the windows that did not fit.
+          `onAddBrowserPanel` keeps the open-in-a-profile call (and its failure toast) in AppShell.
+
+          The same control serves a window the person only watches (a remote window, the webui):
+          the management is the server's either way — profiles, tabs, terminate — and `viewerOnly`
+          changes just what "show" means, since there is no window on this machine to raise.
+        */}
+        {/* One gap for the whole group: the browser control, the conversation button and help
+            are evenly spaced. 4px read as flush and 8px as a seam; 6px is the middle. */}
+        <div className="min-w-0">
+          <BrowserTabStrip
+            activeSessionId={activeSessionId}
+            onAddTabToConversation={onAddTabToConversation}
+            onOpenBrowser={onAddBrowserPanel}
+            viewerOnly={usesServerBrowser}
+          />
+        </div>
+
+        {/* New conversation in the panel. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <TopBarButton onClick={onAddSessionPanel} aria-label={t("session.newSessionInPanel")} className="h-7 w-7 rounded-lg">
+              <Icons.MessageSquarePlus className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
             </TopBarButton>
-          </DropdownMenuTrigger>
-          <StyledDropdownMenuContent align="end" minWidth="min-w-56">
-            <StyledDropdownMenuItem onClick={onAddSessionPanel}>
-              <SquarePenRounded className="h-3.5 w-3.5" />
-              {t("session.newSessionInPanel")}
-            </StyledDropdownMenuItem>
-            <StyledDropdownMenuItem onClick={onAddBrowserPanel}>
-              <Icons.Globe className="h-3.5 w-3.5" />
-              {t("browser.newWindow")}
-            </StyledDropdownMenuItem>
-          </StyledDropdownMenuContent>
-        </DropdownMenu>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t("session.newSessionInPanel")}</TooltipContent>
+        </Tooltip>
 
         {/* Help button */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <TopBarButton aria-label={t("menu.helpAndDocs")} className="h-[26px] w-[26px] rounded-lg">
-              <Icons.HelpCircle className="h-4 w-4 text-foreground/50" strokeWidth={1.5} />
+            <TopBarButton aria-label={t("menu.helpAndDocs")} className="h-7 w-7 rounded-lg">
+              <Icons.HelpCircle className="h-4 w-4 text-foreground/70" strokeWidth={1.5} />
             </TopBarButton>
           </DropdownMenuTrigger>
           <StyledDropdownMenuContent align="end" minWidth="min-w-48">

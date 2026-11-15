@@ -5,7 +5,11 @@ import type { SessionMeta } from "../atoms/sessions"
 import type { SessionStatusId } from "../config/session-status-config"
 
 /** Common session fields used by getSessionTitle */
-type SessionLike = Pick<Session, 'name' | 'preview'> & { messages?: Session['messages'] }
+type SessionLike = Pick<Session, 'name' | 'preview'> & {
+  messages?: Session['messages']
+  /** Set when `messages` is only part of the conversation (see message paging). */
+  messagesTruncated?: boolean
+}
 
 /**
  * Sanitize content for display as session title.
@@ -38,8 +42,12 @@ export function getSessionTitle(session: SessionLike | SessionMeta): string {
     return normalizeTitleCasing(session.name)
   }
 
-  // Check loaded messages first (only available on full Session)
-  if ('messages' in session && session.messages) {
+  // Check loaded messages first (only available on full Session) — but only when
+  // they are the *whole* conversation. A panel carries the newest page, whose
+  // first question is not the conversation's first, and it changes as older
+  // pages load: the title would wander while the reader scrolls. In that case the
+  // stored preview — taken from the header's first user message — is the truth.
+  if ('messages' in session && session.messages && !session.messagesTruncated) {
     const firstUserMessage = session.messages.find(m => m.role === 'user')
     if (firstUserMessage?.content) {
       const sanitized = sanitizePreview(firstUserMessage.content)

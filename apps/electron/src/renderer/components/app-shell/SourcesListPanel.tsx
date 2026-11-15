@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAtomValue } from 'jotai'
 import { DatabaseZap } from 'lucide-react'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import { deriveConnectionStatus } from '@/components/ui/source-status-indicator'
@@ -10,13 +11,19 @@ import { sourceSelection } from '@/hooks/useEntitySelection'
 import { SourceMenu } from './SourceMenu'
 import { SendResourceToWorkspaceDialog } from './SendResourceToWorkspaceDialog'
 import { useAppShellContext } from '@/context/AppShellContext'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import { EditPopover, getEditConfig, type EditContextKey } from '@/components/ui/EditPopover'
 import type { LoadedSource, SourceConnectionStatus, SourceFilter } from '../../../shared/types'
 
 const SOURCE_TYPE_CONFIG: Record<string, { labelKey: string; colorClass: string }> = {
   mcp: { labelKey: 'sourcesList.typeMcp', colorClass: 'bg-accent/10 text-accent' },
   api: { labelKey: 'sourcesList.typeApi', colorClass: 'bg-success/10 text-success' },
+  // A mailbox is a live connection like an API, but its own kind: mail is read and sent, not queried.
+  email: { labelKey: 'sourcesList.typeEmail', colorClass: 'bg-info/10 text-info' },
   local: { labelKey: 'sourcesList.typeLocal', colorClass: 'bg-info/10 text-info' },
+  // Neutral on purpose: a web source is a bookmark, not a live connection, so it takes no
+  // colour from the three that are wired into something.
+  web: { labelKey: 'sourcesList.typeWeb', colorClass: 'bg-foreground/10 text-foreground/70' },
 }
 
 const SOURCE_STATUS_CONFIG: Record<string, { labelKey: string; colorClass: string } | null> = {
@@ -29,8 +36,10 @@ const SOURCE_STATUS_CONFIG: Record<string, { labelKey: string; colorClass: strin
 
 const SOURCE_TYPE_FILTER_LABEL_KEYS: Record<string, string> = {
   api: 'sourcesList.filterApi',
+  email: 'sourcesList.filterEmail',
   mcp: 'sourcesList.filterMcp',
   local: 'sourcesList.filterLocalFolder',
+  web: 'sourcesList.filterWeb',
 }
 
 export interface SourcesListPanelProps {
@@ -57,6 +66,8 @@ export function SourcesListPanel({
   const { t } = useTranslation()
   const { workspaces, activeWorkspaceId } = useAppShellContext()
   const hasOtherWorkspaces = workspaces.length > 1
+  // A remote window's sources live on the hub, so their folders cannot be revealed here.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
 
   // Send to Workspace dialog state
   const [sendDialogOpen, setSendDialogOpen] = React.useState(false)
@@ -135,6 +146,7 @@ export function SourcesListPanel({
               sourceName={source.config.name}
               onOpenInNewWindow={() => window.electronAPI.openUrl(`craftagents://sources/source/${source.config.slug}?window=focused`)}
               onShowInFinder={() => window.electronAPI.showInFolder(source.folderPath)}
+              canShowInFinder={canRevealLocally}
               onDelete={() => onDeleteSource(source.config.slug)}
               onSendToWorkspace={hasOtherWorkspaces ? () => {
                 setSendResourceSlug(source.config.slug)

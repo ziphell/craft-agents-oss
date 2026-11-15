@@ -136,6 +136,7 @@ export function JSONPreviewOverlay({
       error={error ? { label: t('preview.parseError'), message: error } : undefined}
       embedded={embedded}
       className="bg-foreground-3"
+      closeOnBackdropClick
     >
       <ContentFrame title="JSON">
         <div className="flex-1 overflow-y-auto min-h-0 p-4">
@@ -146,7 +147,7 @@ export function JSONPreviewOverlay({
               collapsed={false}
               enableClipboard={true}
               displayDataTypes={false}
-              shortenTextAfterLength={100}
+              shortenTextAfterLength={0}
             >
               {/* Custom copy icon using lucide-react */}
               <JsonView.Copied

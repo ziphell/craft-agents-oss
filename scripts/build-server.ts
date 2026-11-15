@@ -57,6 +57,7 @@ import {
   buildSubprocessServers,
   getPlatformKey,
 } from './build/common';
+import { buildInterceptorBundle, stagePiSubprocess, PI_SERVER_DIRNAME } from './build/pi-subprocess';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,6 +95,7 @@ Options:
   --output=<path>        Output directory (default: dist/server)
   --compress             Create .tar.gz after assembly
   --skip-download        Reuse existing Bun/uv binaries
+  --assets-only          Stage resources/ only, then stop (no Bun/uv download, no bundles)
   --help                 Show this help message
 
 Examples:
@@ -112,16 +114,160 @@ Examples:
 // Resource assembly
 // ---------------------------------------------------------------------------
 
+/** What a binary is, as far as packaging cares: container format and CPU. */
+function describeBinary(file: string): { format: 'elf' | 'macho' | 'pe' | 'unknown'; arch: string } {
+  let head: Buffer;
+  try {
+    head = readFileSync(file).subarray(0, 20);
+  } catch {
+    return { format: 'unknown', arch: 'unknown' };
+  }
+  if (head[0] === 0x7f && head[1] === 0x45 && head[2] === 0x4c && head[3] === 0x46) {
+    const machine = head.readUInt16LE(18);
+    const arch = machine === 0x3e ? 'x64' : machine === 0xb7 ? 'arm64' : `machine-0x${machine.toString(16)}`;
+    return { format: 'elf', arch };
+  }
+  if (head[0] === 0xcf && head[1] === 0xfa && head[2] === 0xed && head[3] === 0xfe) {
+    // cputype at offset 4: CPU_TYPE_ARM64 = 0x0100000c
+    return { format: 'macho', arch: head.readUInt32LE(4) === 0x0100000c ? 'arm64' : 'x64' };
+  }
+  if (head[0] === 0x4d && head[1] === 0x5a) return { format: 'pe', arch: 'unknown' };
+  return { format: 'unknown', arch: 'unknown' };
+}
+
 function assembleResources(config: ServerBuildConfig): void {
   const { electronDir, outputDir, platform, arch } = config;
   const srcResources = join(electronDir, 'resources');
   const destResources = join(outputDir, 'resources');
 
   console.log('  Copying docs, themes, permissions, tool-icons...');
-  for (const dir of ['docs', 'themes', 'permissions', 'tool-icons']) {
+  // `drawio` is fetched rather than committed; when it is present the web UI's editor is
+  // served from the server's own `/drawio/` (see server-core/webui/drawio.ts), so it travels
+  // with the rest of the resources. Absent, the editor reports itself as not installed.
+  //
+  // `models` carries the Silero VAD model (~1.8 MB) that local speech recognition uses to split a
+  // recording on silence. Without it transcription still works, but the whole file is one chunk.
+  for (const dir of ['docs', 'themes', 'permissions', 'tool-icons', 'drawio', 'models']) {
     const src = join(srcResources, dir);
     if (existsSync(src)) {
       cpSync(src, join(destResources, dir), { recursive: true });
+    }
+  }
+
+  /**
+   * The office feature is not a desktop-only feature: the hub serves the editors at `/office/` on its
+   * own origin (`server-core/handlers/rpc/office.ts`), and the agent's document tools (`docx_tool` and friends) spawn
+   * `resources/cli/genoffice.cjs` through whichever runtime the host runs on (`Bun` here).
+   *
+   * Two of these carry their own `node_modules` — `office-engine` (jszip, pdf-lib, pdfium.wasm) and
+   * `cli` (jsdom, for Word/Markdown documents). Both are build artifacts rather than installs, which
+   * is why `.dockerignore` makes an exception for exactly those two paths.
+   */
+  console.log('  Copying the office editors, the engine and the command line...');
+  for (const dir of ['office', 'office-engine', 'cli']) {
+    const src = join(srcResources, dir);
+    if (existsSync(src)) {
+      cpSync(src, join(destResources, dir), { recursive: true });
+    } else {
+      console.warn(
+        `  ⚠ ${dir} is not built — documents will not open on this server.\n` +
+          `    bun scripts/build-office-assets.ts${dir === 'office-engine' ? ' && bun scripts/build-office-engine.ts' : ''}`,
+      );
+    }
+  }
+
+  /**
+   * The workbook sidecar, for the **target** platform and architecture, not the build host's.
+   *
+   * `office-native` holds one binary per platform and `workbook.ts` looks for a fixed name
+   * (`xlsx-sidecar`, or `xlsx-sidecar.exe` on Windows), so whatever the checkout holds is what every
+   * package would get. Copying it blindly is how an amd64 hub ends up with an `Exec format error` at
+   * the first workbook open — a failure that appears in production instead of at build time. So the
+   * file is inspected before it is staged: ELF vs Mach-O, and x86-64 vs arm64 inside an ELF.
+   *
+   * GenOffice publishes a Linux **amd64** build only (`.AppImage`, `amd64.deb`, `x86_64.rpm`), so an
+   * arm64 hub has no prebuilt to take; cargo is the only route there.
+   */
+  const sidecarName = 'xlsx-sidecar';
+  const sidecarSrc = join(srcResources, 'office-native', sidecarName);
+  const wantedArch = arch === 'arm64' ? 'arm64' : 'x64';
+  const wantedFormat = platform === 'darwin' ? 'macho' : 'elf';
+  if (!existsSync(sidecarSrc)) {
+    console.warn(
+      `  ⚠ office-native/${sidecarName} is missing — this server cannot open a .xlsx (reading formulas,\n` +
+        `    ranges, or a saved workbook relies on it). Take the ${platform}/${wantedArch} one from a\n` +
+        `    GenOffice installer: bun scripts/build-office-native.ts --from <extracted installer>`,
+    );
+  } else {
+    const found = describeBinary(sidecarSrc);
+    const matches = found.format === wantedFormat && (found.format !== 'elf' || found.arch === wantedArch);
+    if (!matches) {
+      console.warn(
+        `  ⚠ office-native/${sidecarName} is ${found.format}/${found.arch}, but this build targets\n` +
+          `    ${platform}/${wantedArch}. Not staged — a wrong binary fails at the first workbook open\n` +
+          `    with "Exec format error", not here. Provide the right one:\n` +
+          `    bun scripts/build-office-native.ts --from <extracted installer>`,
+      );
+    } else {
+      mkdirSync(join(destResources, 'office-native'), { recursive: true });
+      const sidecarDest = join(destResources, 'office-native', sidecarName);
+      copyFileSync(sidecarSrc, sidecarDest);
+      // `copyFileSync` does not carry mode bits, and the host spawns this file directly.
+      if (process.platform !== 'win32') chmodSync(sidecarDest, 0o755);
+      console.log(`  Workbook sidecar staged (${sidecarName}, ${found.format}/${found.arch})`);
+    }
+  }
+
+  // The command-line tools (Bun bundles + sharp/onnxruntime beside them) and their wrappers: the
+  // hub's agent finds them by name the same way the desktop one does. `bun run build:cli-tools` is
+  // what produces `cli-tools/dist`; a build without it ships the wrappers and no tools behind them,
+  // so say so here rather than at the first agent call.
+  const cliTools = join(srcResources, 'cli-tools', 'dist');
+  if (existsSync(cliTools)) {
+    // The bundles carry everything except the native packages, which resolve through
+    // `node_modules` upward. A server already stages sharp for its own headless image work, so the
+    // CLI must **not** bring a second copy: `/app/resources/cli-tools/dist/img-tool.mjs` walks up to
+    // `/app/node_modules` and finds it. (A desktop package has no node_modules, which is why the
+    // copy exists at all.) `onnxruntime-node`, used only by `img-tool text`, has no such upstream
+    // copy — it ships with the CLI even when sharp is shared.
+    const serverHasSharp = existsSync(join(outputDir, 'node_modules', 'sharp'));
+    // `sherpa-onnx-node` and its per-platform package are already staged for the server itself, so
+    // `asr-tool.mjs` resolves them by walking up to `/app/node_modules` — the same reason sharp is
+    // shared instead of copied twice.
+    const serverHasSherpa = existsSync(join(outputDir, 'node_modules', 'sherpa-onnx-node'));
+    const cliDest = join(destResources, 'cli-tools', 'dist');
+    mkdirSync(cliDest, { recursive: true });
+    // Entry by entry rather than a filtered recursive copy: the only decision is “does this
+    // directory bring `node_modules` with it”, and comparing one entry name says that without
+    // depending on which separator the platform hands back.
+    for (const entry of readdirSync(cliTools, { withFileTypes: true })) {
+      if (entry.name === 'node_modules') {
+        const modulesDest = join(cliDest, 'node_modules');
+        mkdirSync(modulesDest, { recursive: true });
+        for (const module of readdirSync(join(cliTools, 'node_modules'), { withFileTypes: true })) {
+          if (serverHasSharp && (module.name === 'sharp' || module.name === '@img')) continue;
+          if (serverHasSherpa && module.name.startsWith('sherpa-onnx-')) continue;
+          cpSync(join(cliTools, 'node_modules', module.name), join(modulesDest, module.name), { recursive: true, force: true });
+        }
+        continue;
+      }
+      cpSync(join(cliTools, entry.name), join(cliDest, entry.name), { recursive: true, force: true });
+    }
+    console.log(
+      `  Command-line tools staged (resources/cli-tools/dist${serverHasSharp ? ', sharp shared with the server' : ', sharp included'}${serverHasSherpa ? ', sherpa shared with the server' : ', sherpa included'}, onnxruntime included)`,
+    );
+  } else {
+    console.warn('  ⚠ cli-tools are not built — run `bun run build:cli-tools` before packaging');
+  }
+  const wrappers = join(srcResources, 'bin');
+  if (existsSync(wrappers)) {
+    // The destination is created here rather than later: this loop runs before the block that used
+    // to make it, and `copyFileSync` throws ENOENT when the parent directory is absent — which is
+    // how a linux packaging run died on `bin/craft-agent` before it ever reached electron-builder.
+    mkdirSync(join(destResources, 'bin'), { recursive: true });
+    for (const entry of readdirSync(wrappers, { withFileTypes: true })) {
+      if (entry.isDirectory()) continue;
+      copyFileSync(join(wrappers, entry.name), join(destResources, 'bin', entry.name));
     }
   }
 
@@ -166,7 +312,52 @@ function assembleResources(config: ServerBuildConfig): void {
 }
 
 // ---------------------------------------------------------------------------
-// uv binary — download into output dir (not electron resources)
+// Pi subprocess and its runtime companions
+// ---------------------------------------------------------------------------
+
+/**
+ * Stage everything the spawned `pi-agent-server` resolves at runtime.
+ *
+ * The generated entry script runs with `CRAFT_IS_PACKAGED=true`, so
+ * `runtime-resolver.ts` derives two locations from the app root, and both have
+ * to exist:
+ *
+ *   resources/pi-agent-server/index.js  (+ the photon wasm beside it)
+ *   dist/interceptor.cjs
+ *
+ * Without the first pair the server cannot run Pi sessions at all (and would
+ * drop every image if it could); without the interceptor the subprocess still
+ * starts but silently loses tool-metadata injection and API error capture.
+ *
+ * The bundle comes from {@link buildMcpServers}, which already repaired the
+ * inlined wasm path — {@link stagePiSubprocess} only moves it, with the wasm,
+ * into place. Both halves live in scripts/build/pi-subprocess.ts, the same
+ * module the Electron build stages through.
+ */
+function stagePiRuntime(config: ServerBuildConfig): void {
+  const { rootDir, outputDir } = config;
+  const bundle = join(rootDir, 'packages', 'pi-agent-server', 'dist', 'index.js');
+
+  if (!existsSync(bundle)) {
+    console.warn(`  Warning: Pi agent server not found at ${bundle}. Pi SDK sessions will not work.`);
+    return;
+  }
+
+  stagePiSubprocess({ bundle, destDir: join(outputDir, 'resources', PI_SERVER_DIRNAME) });
+  console.log(`  Pi subprocess staged (resources/${PI_SERVER_DIRNAME}/index.js + photon wasm)`);
+
+  buildInterceptorBundle({ rootDir, outfile: join(outputDir, 'dist', 'interceptor.cjs') });
+  console.log('  Interceptor bundle staged (dist/interceptor.cjs)');
+}
+
+// ---------------------------------------------------------------------------
+// uv binary — the Python **script** runtime
+//
+// Not for the agent's tools: those are Bun bundles (`resources/cli-tools`,
+// `bun run build:cli-tools`) and need nothing but Bun. `uv` is here because a
+// person's own scripts run through it (`transform_data language:"python3"`, an
+// automation script). A hub without it can still run every tool and
+// every Bun script; it just cannot run Python.
 // ---------------------------------------------------------------------------
 
 async function downloadUvForServer(config: ServerBuildConfig): Promise<void> {
@@ -387,11 +578,15 @@ function copyProductionDeps(config: ServerBuildConfig): void {
     ? `@anthropic-ai/claude-agent-sdk-win32-${arch}`
     : `@anthropic-ai/claude-agent-sdk-${platform}-${arch}`;
 
+  // sherpa-onnx-node is a thin wrapper; the native addon lives in the per-platform package.
+  const sherpaPlatformPkg = `sherpa-onnx-${platform === 'win32' ? 'win' : platform}-${arch}`;
+
   const PLATFORM_DEPS = [
     `@img/sharp-${platform === 'darwin' ? 'darwin' : 'linux'}-${arch}`,
     `@img/sharp-libvips-${platform === 'darwin' ? 'darwin' : 'linux'}-${arch}`,
     '@img/colour',
     sdkPlatformPkg,
+    sherpaPlatformPkg,
     '@vscode/ripgrep',
   ];
 
@@ -473,7 +668,7 @@ function copyWorkspacePackages(config: ServerBuildConfig): void {
       cpSync(srcDir, join(dest, 'src'), { recursive: true });
     }
 
-    // Copy dist/ directory if present (built artifacts like the WhatsApp worker)
+    // Copy dist/ directory if present (built artifacts like the WhatsApp worker or pi-agent-server)
     const distDir = join(src, 'dist');
     if (existsSync(distDir)) {
       cpSync(distDir, join(dest, 'dist'), { recursive: true });
@@ -566,9 +761,10 @@ export CRAFT_IS_PACKAGED=true
 export CRAFT_APP_ROOT="$ROOT"
 export CRAFT_RESOURCES_PATH="$ROOT/resources"
 
-# CLI tools (doc tools use uv + Python scripts)
+# Command-line tools: Bun bundles (no Python involved).
+export CRAFT_CLI_TOOLS="$ROOT/resources/cli-tools/dist"
+# The Python script runtime, for scripts a person writes.
 export CRAFT_UV="$ROOT/resources/bin/uv"
-export CRAFT_SCRIPTS="$ROOT/resources/scripts"
 
 # Prepend resource bin to PATH (makes doc tool wrappers available)
 export PATH="$ROOT/resources/bin:$ROOT/vendor/bun:$PATH"
@@ -598,9 +794,9 @@ echo ""
 # Make binaries executable
 chmod +x "$DIR/bin/craft-server" "$DIR/start.sh"
 [ -f "$DIR/vendor/bun/bun" ] && chmod +x "$DIR/vendor/bun/bun"
-[ -f "$DIR/resources/bin/uv" ] && chmod +x "$DIR/resources/bin/uv"
 
 # Make doc tool wrappers executable
+[ -f "$DIR/resources/bin/uv" ] && chmod +x "$DIR/resources/bin/uv"
 for wrapper in "$DIR/resources/bin/"*; do
   [ -f "$wrapper" ] && chmod +x "$wrapper"
 done
@@ -710,8 +906,8 @@ ENV CRAFT_IS_PACKAGED=true
 ENV CRAFT_BUNDLED_ASSETS_ROOT=/app
 ENV CRAFT_APP_ROOT=/app
 ENV CRAFT_RESOURCES_PATH=/app/resources
+ENV CRAFT_CLI_TOOLS=/app/resources/cli-tools/dist
 ENV CRAFT_UV=/app/resources/bin/uv
-ENV CRAFT_SCRIPTS=/app/resources/scripts
 ENV CRAFT_RPC_HOST=0.0.0.0
 ENV CRAFT_RPC_PORT=9100
 ENV PATH="/app/resources/bin:/app/vendor/bun:\${PATH}"
@@ -759,6 +955,7 @@ async function main(): Promise<void> {
       output: { type: 'string', default: 'dist/server' },
       compress: { type: 'boolean', default: false },
       'skip-download': { type: 'boolean', default: false },
+      'assets-only': { type: 'boolean', default: false },
       help: { type: 'boolean', default: false },
     },
     allowPositionals: true,
@@ -817,6 +1014,16 @@ async function main(): Promise<void> {
   }
   mkdirSync(outputDir, { recursive: true });
 
+  // `--assets-only`: stage `resources/` and stop. A build host wants to know whether the office
+  // editors are actually present before spending the download and bundle steps on a package that
+  // would ship without them.
+  if (values['assets-only']) {
+    console.log('\n[1/8] Assembling resources only (--assets-only)...');
+    assembleResources(config);
+    console.log('\nAssets staged. Stopping (--assets-only).');
+    return;
+  }
+
   // Step 2: Download Bun runtime
   console.log(`\n[2/8] Downloading Bun ${BUN_VERSION}...`);
   await downloadBunForServer(config);
@@ -837,6 +1044,9 @@ async function main(): Promise<void> {
     electronDir,
   };
   buildSubprocessServers(buildConfig);
+
+  // Stage the subprocess and its companions where the packaged runtime resolves them.
+  stagePiRuntime(config);
 
   // Build the WhatsApp worker bundle. Must happen before copyWorkspacePackages
   // so dist/worker.cjs exists when we copy the messaging-whatsapp-worker package.

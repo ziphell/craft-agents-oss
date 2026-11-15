@@ -33,10 +33,24 @@ import {
 } from '@craft-agent/session-tools-core';
 import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
-import { createBrowserTools, type BrowserPaneFns } from './browser-tools.ts';
+import { createBrowserTools } from './browser-tools.ts';
+import { getBrowserHostState, getRecordingHostState } from './browser-host-state.ts';
+import { createComputerTools } from './computer-tools.ts';
+import { createDeviceTools } from './device-tools.ts';
+import { createDrawioTools } from './drawio-tools.ts';
+import { createMarkdownTools } from './markdown-tools.ts';
+import { createHtmlTools } from './html-tools.ts';
+import { createMediaTools } from './media-tools.ts';
+import { createAsrTools } from './asr-tools.ts';
+import { createRecordingTools } from './recording-tools.ts';
+import { createOfficeTools } from './office-tools.ts';
+import type { BrowserPaneFns } from './browser-pane.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
-import { getBrowserToolEnabled } from '../config/storage.ts';
+import { getBrowserToolEnabled, getComputerUseEnabled } from '../config/storage.ts';
 import { isDecisionFeatureActive } from '../decisions/resolve.ts';
+import { readMediaChannels } from '../media/channels.ts';
+import { asrReady } from '../media/asr.ts';
+import { mediaCapabilities, mediaToolBrief } from '../media/tool-brief.ts';
 
 // Re-export types for backward compatibility
 export type {
@@ -55,7 +69,7 @@ export type {
 } from '@craft-agent/session-tools-core';
 
 // Re-export browser pane types for session manager wiring
-export type { BrowserPaneFns } from './browser-tools.ts';
+export type { BrowserPaneFns } from './browser-pane.ts';
 
 // ============================================================
 // Session-Scoped Tool Callbacks (re-exported from dedicated registry module)
@@ -79,6 +93,19 @@ export const CLAUDE_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'call_llm',
   'spawn_session',
   'browser_tool',
+  'device_tool',
+  'drawio_tool',
+  'markdown_tool',
+  'html_tool',
+  'media_tool',
+  'asr_tool',
+  'recording_tool',
+  'docx_tool',
+  'xlsx_tool',
+  'pptx_tool',
+  'pdf_tool',
+  'convert_tool',
+  'computer_tool',
 ]);
 
 /**
@@ -218,9 +245,20 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 export function getSessionScopedTools(
   sessionId: string,
   workspaceRootPath: string,
-  workspaceId?: string
+  workspaceId: string | undefined,
+  /**
+   * Whether the conversation is bound to a project. Required rather than defaulted: a caller that
+   * forgot it would either lose the project-scoped door (cuts) or advertise one the handler then
+   * refuses, and both failures are silent. Media generation is offered either way — its output
+   * follows the content root.
+   */
+  hasProject: boolean,
 ): ReturnType<typeof createSdkMcpServer> {
-  const cacheKey = `${sessionId}::${workspaceRootPath}`;
+  // Whether this hub has ever paired a device. Read per call rather than cached in the tool list,
+  // so a machine paired in Settings is offered from the next list build on. `undefined` means the
+  // host has no opinion (tests, hosts without a device registry) and keeps the tool.
+  const hasDevices = getSessionScopedToolCallbacks(sessionId)?.hasDevicesFn?.() ?? true;
+  const cacheKey = `${sessionId}::${workspaceRootPath}::${hasProject ? 'project' : 'session'}::${hasDevices ? 'devices' : 'no-devices'}`;
 
   // Return cached tools if available, but always create a fresh MCP server wrapper
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -267,6 +305,10 @@ export function getSessionScopedTools(
       // `decide` is advertised only while the decision layer is on; the tool list
       // is built per agent, so toggling the setting applies to new sessions.
       includeDecide: isDecisionFeatureActive('decideTool'),
+      // A conversation without a project is not offered project-scoped tools.
+      hasProject,
+      // A hub that has never paired a machine is not offered the device door.
+      hasDevices,
     })
       .filter(def => def.handler !== null) // Skip backend-specific tools (call_llm)
       .map(def => registryTool(def.name, def.inputSchema.shape));
@@ -280,6 +322,10 @@ export function getSessionScopedTools(
         getQueryFn: () => {
           const callbacks = getSessionScopedToolCallbacks(sessionId);
           return callbacks?.queryFn;
+        },
+        getImageModel: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.getImageModelFn?.();
         },
       }),
     );
@@ -297,11 +343,14 @@ export function getSessionScopedTools(
 
     // Add browser_* tools — backend-specific (requires BrowserPaneManager in Electron)
     // Gated by the "Built-in browser" setting so users with external browser tools
-    // (Playwright, Puppeteer, etc.) can disable the built-in one.
-    if (getBrowserToolEnabled()) {
+    // (Playwright, Puppeteer, etc.) can disable the built-in one, and by the host's own answer:
+    // a headless hub has no browser, so every call could only refuse. That machine's browser work
+    // is `device_tool`, which stays registered.
+    if (getBrowserToolEnabled() && getBrowserHostState(sessionId) !== false) {
       tools.push(
         ...createBrowserTools({
           sessionId,
+          workspaceRootPath,
           getBrowserPaneFns: () => {
             const callbacks = getSessionScopedToolCallbacks(sessionId);
             return callbacks?.browserPaneFns;
@@ -309,6 +358,141 @@ export function getSessionScopedTools(
         }),
       );
     }
+
+    // The desktop door — its own tool beside the browser's, because driving a GUI and reaching
+    // another machine are different questions. Opt-in: while the person has it off, the tool is
+    // not offered at all, so no schema suggests a capability that needs OS grants and a lease.
+    // Enabled on a host without a driver, it stays registered and refuses with a sentence.
+    if (getComputerUseEnabled()) {
+      tools.push(
+        ...createComputerTools({
+          sessionId,
+          workspaceRootPath,
+          getComputerPaneFns: async () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.getComputerPaneFns?.();
+          },
+        }),
+      );
+    }
+
+    // Device meta-tool — one door onto another connected machine. Offered only while this hub has
+    // a paired device: with none, the tool could only answer "no devices" and its brief (the
+    // largest per-door cost after media) would be paid on every request for nothing. The gate is
+    // the pairing record, not connectivity, so a device that is merely asleep keeps the door
+    // offered; pairing or forgetting a device changes the cache key, so the next list build
+    // reflects it.
+    if (hasDevices) {
+      tools.push(
+        ...createDeviceTools({
+          sessionId,
+          workspaceRootPath,
+          getDeviceFns: () => {
+            const callbacks = getSessionScopedToolCallbacks(sessionId);
+            return callbacks?.deviceFns;
+          },
+        }),
+      );
+    }
+
+    // Frames out of a recording are decoded by Chromium — the app's browser in a hidden window, or
+    // a hub's render host — and diagrams are drawn by the app's own drawio (another hidden window,
+    // or the same render host). Both are on this runtime,
+    // but neither is the browser door, so neither follows the "Built-in browser" setting: what they
+    // need is the engine behind the pane, which a runtime either has or has not. A door without it
+    // refuses by name.
+    //
+    // Media is the opposite case: the brief is the largest part of the tool list, and with no
+    // generation account every call could only refuse. No brief means no tool. Saving channels
+    // invalidates this cache, so an account added in Settings is offered from the next turn on.
+    const mediaBrief = mediaToolBrief(mediaCapabilities(readMediaChannels().channels))
+    tools.push(
+      ...createHtmlTools({
+        sessionId,
+        workspaceRootPath,
+        getSessionInfo: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.getSessionInfoFn?.() ?? null;
+        },
+        applyEdit: (path, edit) => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.officeApplyEditFn?.(path, edit) ?? Promise.resolve(null);
+        },
+      }),
+      // Accounts are not project work: a generated file and its source note land in the
+      // conversation's content root, which is the session folder when it is in no project.
+      ...(mediaBrief
+        ? createMediaTools({
+            workspaceRootPath,
+            sessionId,
+            // Read per call, like the library: a conversation moved into a project lands there next.
+            getSessionInfo: () => {
+              const callbacks = getSessionScopedToolCallbacks(sessionId);
+              return callbacks?.getSessionInfoFn?.() ?? null;
+            },
+            // The brief names only the kinds this machine actually has, read once when the session's
+            // tool list is built: an image-only account must not be described as if it also filmed
+            // clips.
+            description: mediaBrief,
+          })
+        : []),
+      // Recognition is not an account door and not a decoder: it follows the person's choice of
+      // where transcription runs, on either side of the same door. With neither a local model nor
+      // cloud recognition set up, every call could only refuse — so the door is not offered.
+      ...(asrReady()
+        ? createAsrTools({
+            workspaceRootPath,
+            sessionId,
+            getSessionInfo: () => {
+              const callbacks = getSessionScopedToolCallbacks(sessionId);
+              return callbacks?.getSessionInfoFn?.() ?? null;
+            },
+          })
+        : []),
+      // Decoding is Chromium's, so a host needs a browser to offer this door — but not a *pane*.
+      // A desktop answers with a hidden window of its own, a hub with the render host it staged;
+      // `getRecordingHostState` is the host's answer, and the old pane rule covers a caller that has
+      // not said (`undefined`).
+      ...((getRecordingHostState(sessionId) ?? (getBrowserHostState(sessionId) !== false))
+        ? createRecordingTools({
+            workspaceRootPath,
+            sessionId,
+            getSessionInfo: () => {
+              const callbacks = getSessionScopedToolCallbacks(sessionId);
+              return callbacks?.getSessionInfoFn?.() ?? null;
+            },
+            getBrowserPaneFns: () => getSessionScopedToolCallbacks(sessionId)?.browserPaneFns,
+            getRecordingFns: () => getSessionScopedToolCallbacks(sessionId)?.recordingFns,
+          })
+        : []),
+      ...createMarkdownTools({
+        sessionId,
+        workspaceRootPath,
+        getSessionInfo: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.getSessionInfoFn?.() ?? null;
+        },
+        applyEdit: (path, edit) => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.officeApplyEditFn?.(path, edit) ?? Promise.resolve(null);
+        },
+      }),
+      ...createDrawioTools({
+        sessionId,
+        workspaceRootPath,
+        getSessionInfo: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.getSessionInfoFn?.() ?? null;
+        },
+        getBrowserPaneFns: () => {
+          const callbacks = getSessionScopedToolCallbacks(sessionId);
+          return callbacks?.browserPaneFns;
+        },
+        // A hub has no pane to draw in: this is the launcher that drives the same drawio in a
+        // headless browser, and it is what makes `drawio_tool` work with nobody signed in.
+        getDrawioFns: () => getSessionScopedToolCallbacks(sessionId)?.drawioRenderFns,
+      }),
+    );
 
     sessionToolsCache.set(cacheKey, tools);
   }

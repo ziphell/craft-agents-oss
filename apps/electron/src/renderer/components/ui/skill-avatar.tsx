@@ -1,15 +1,19 @@
 /**
  * SkillAvatar - Thin wrapper around EntityIcon for skills.
  *
- * Sets fallbackIcon={Zap} and delegates all rendering to EntityIcon.
- * Use `fluid` prop for fill-parent sizing (e.g., Info_Page.Hero).
+ * Sets fallbackIcon to the shared skill mark (see @craft-agent/ui → mention-icons), so a skill
+ * with no icon of its own looks the same here as it does in a chip. Use `fluid` prop for
+ * fill-parent sizing (e.g., Info_Page.Hero).
  */
 
-import { Zap } from 'lucide-react'
 import { EntityIcon } from '@/components/ui/entity-icon'
+import { mentionIconComponent } from '@craft-agent/ui'
 import { useEntityIcon } from '@/lib/icon-cache'
 import type { IconSize } from '@craft-agent/shared/icons'
 import type { LoadedSkill } from '../../../shared/types'
+
+/** Made once, not per render: a new component identity would remount the avatar each time. */
+const SKILL_FALLBACK_ICON = mentionIconComponent('skill')
 
 interface SkillAvatarProps {
   /** LoadedSkill object */
@@ -37,7 +41,7 @@ export function SkillAvatar({ skill, size = 'md', fluid, className, workspaceId 
     <EntityIcon
       icon={icon}
       size={size}
-      fallbackIcon={Zap}
+      fallbackIcon={SKILL_FALLBACK_ICON}
       alt={skill.metadata.name}
       className={className}
       containerClassName={fluid ? 'h-full w-full' : undefined}

@@ -43,8 +43,15 @@ export interface MessageEnvelope {
   webContentsId?: number
   /** Client capabilities advertised on handshake. */
   clientCapabilities?: string[]
+  /** Client identity advertised on handshake — shown in the server's client list. */
+  clientInfo?: ClientInfo
   /** Server-registered channels, sent in handshake_ack. Clients use this to avoid calling unavailable channels. */
   registeredChannels?: string[]
+  /**
+   * What the credential behind this connection may do, sent in handshake_ack. A probe receives it
+   * without being bound to a device slot.
+   */
+  tokenScope?: 'client' | 'device' | 'both'
 
   // -- Reliable delivery fields --
 
@@ -62,6 +69,114 @@ export interface MessageEnvelope {
   serverVersion?: string
 }
 
+/**
+ * Identity a client advertises on handshake. All fields are optional so older
+ * clients (and non-Electron transports such as the CLI) keep working; the
+ * server fills in sensible fallbacks for the client list.
+ */
+export interface ClientInfo {
+  /** Human-readable device name (hostname for desktop clients). */
+  name?: string
+  /** `process.platform` / browser platform string. */
+  platform?: string
+  /** Whether the client runs on the server's machine or connects from elsewhere. */
+  mode?: 'local' | 'remote'
+  /**
+   * What this connection is for, declared by the client: a view of the hub (`window`) or this
+   * machine lending itself (`device`). Declared rather than inferred from capabilities, because a
+   * device may turn its own authorization off and declare no tools while remaining a device link.
+   *
+   * Absent for older clients; the server then falls back to the capability-based inference.
+   */
+  role?: 'window' | 'device'
+  /** Stable per-install id — survives reconnects, unlike `clientId`. */
+  deviceId?: string
+  /**
+   * Folders this device authorized **for the server it is connected to** — a per-connection list,
+   * not this install's workspace list. `device_tool` is path-based and does not follow workspaces.
+   */
+  allowedRoots?: string[]
+  /**
+   * The directory under which this install keeps one working directory per (hub, workspace):
+   * `<hubRootBase>/<hub device id>/<workspace id>`, used when a call omits `cwd`. Informational:
+   * the hub does not derive authorization from it.
+   */
+  hubRootBase?: string
+  /**
+   * App version this client runs, for diagnostics only.
+   *
+   * Deliberately **not** a compatibility gate: two installs on different app versions are expected
+   * to work, and features that one side lacks are negotiated per channel ({@link
+   * MessageEnvelope.registeredChannels}), not by comparing versions.
+   */
+  version?: string
+  /**
+   * This handshake only checks that the server is reachable and the credential is valid.
+   *
+   * A probe is acknowledged with its `tokenScope` and is never registered as a client: it does not
+   * claim a device slot, does not appear in the device list, and may not call any channel.
+   */
+  probe?: boolean
+}
+
+/**
+ * One device slot on a hub.
+ *
+ * Created in the hub's device list with a token shown once. It stays `deviceId: null` until a
+ * machine connects with that token; from then on the token only accepts that device and cannot be
+ * transferred. Removing the slot deletes the record.
+ */
+export interface DeviceTokenInfo {
+  id: string
+  label: string
+  scope: 'client' | 'device' | 'both'
+  /** The device that claimed this slot; null while it is still waiting. */
+  deviceId: string | null
+  /**
+   * The plaintext token while the slot is pending, so it can be copied later. Null once a device
+   * has claimed it — the hub then keeps only a hash.
+   */
+  token: string | null
+  createdAt: number
+  lastUsedAt: number | null
+}
+
+/** One live connection, as the server's transport sees it. */
+export interface ConnectedClientInfo {
+  clientId: string
+  /** Stable device identity, when the client advertises one. */
+  deviceId: string | null
+  /** Folders this connection authorized for this server (empty for a connection without device access). */
+  allowedRoots: string[]
+  /** Root of the per-hub working directories this device uses for calls that omit `cwd` (null when not advertised). */
+  hubRootBase: string | null
+  /** Display name — `clientInfo.name`, or a neutral fallback. */
+  name: string
+  platform: string | null
+  /** App version the client advertised, when it sent one. Diagnostics, not a gate. */
+  version: string | null
+  /** Local clients are the hub's own windows; remote clients are thin clients elsewhere. */
+  mode: 'local' | 'remote'
+  /** The role the client declared; null for a client that predates the field. */
+  role?: 'window' | 'device' | null
+  workspaceId: string | null
+  webContentsId: number | null
+  capabilities: string[]
+  /**
+   * What the credential behind this connection permits. `client` means it is here as a window:
+   * whatever it declared, this hub does not drive it.
+   */
+  scope: 'client' | 'device' | 'both'
+  /**
+   * What authenticated this connection. A one-to-one device pairing token (`device`) is what
+   * makes a machine a device record; the hub's own server token (`server`) never does. Null for a
+   * session-cookie connection (Web UI), which is a view of the hub.
+   */
+  tokenKind?: 'server' | 'device' | null
+  /** Unix epoch (ms) when the handshake completed. */
+  connectedAt: number
+}
+
 export interface WireError {
   code: ErrorCode
   message: string
@@ -76,6 +191,9 @@ export type ErrorCode =
   | 'HANDLER_ERROR'
   | 'CHANNEL_NOT_FOUND'
   | 'AUTH_FAILED'
+  | 'SCOPE_FORBIDDEN'
+  /** The credential may not open windows on this server (remote control is off for it). */
+  | 'REMOTE_CONTROL_DENIED'
   | 'PROTOCOL_VERSION_UNSUPPORTED'
   | 'SESSION_NOT_IDLE'
   | 'SESSION_ID_CONFLICT'
@@ -91,11 +209,15 @@ export type ErrorCode =
   | 'BROWSER_INSTANCE_NOT_OWNED'
   | 'BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED'
   | 'BROWSER_REMOTE_EVALUATE_BLOCKED'
+  | 'BROWSER_REMOTE_PICK_BLOCKED'
+  | 'BROWSER_REMOTE_FETCH_BLOCKED'
 
 const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   'HANDLER_ERROR',
   'CHANNEL_NOT_FOUND',
   'AUTH_FAILED',
+  'SCOPE_FORBIDDEN',
+  'REMOTE_CONTROL_DENIED',
   'PROTOCOL_VERSION_UNSUPPORTED',
   'SESSION_NOT_IDLE',
   'SESSION_ID_CONFLICT',
@@ -111,6 +233,8 @@ const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   'BROWSER_INSTANCE_NOT_OWNED',
   'BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED',
   'BROWSER_REMOTE_EVALUATE_BLOCKED',
+  'BROWSER_REMOTE_PICK_BLOCKED',
+  'BROWSER_REMOTE_FETCH_BLOCKED',
 ])
 
 export function isErrorCode(value: unknown): value is ErrorCode {

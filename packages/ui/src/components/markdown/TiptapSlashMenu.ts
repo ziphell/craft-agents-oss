@@ -31,6 +31,7 @@ type SlashIconName =
   | 'code-xml'
   | 'square-code'
   | 'workflow'
+  | 'share-2'
   | 'sigma'
 
 const LUCIDE_ICON_NODES: Record<SlashIconName, Array<[string, Record<string, string>]>> = {
@@ -107,6 +108,13 @@ const LUCIDE_ICON_NODES: Record<SlashIconName, Array<[string, Record<string, str
     ['path', { d: 'M7 11v4a2 2 0 0 0 2 2h4' }],
     ['rect', { width: '8', height: '8', x: '13', y: '13', rx: '2' }],
   ],
+  'share-2': [
+    ['circle', { cx: '18', cy: '5', r: '3' }],
+    ['circle', { cx: '6', cy: '12', r: '3' }],
+    ['circle', { cx: '18', cy: '19', r: '3' }],
+    ['path', { d: 'm8.59 13.51 6.83 3.98' }],
+    ['path', { d: 'm15.41 6.51-6.82 3.98' }],
+  ],
   sigma: [
     ['path', { d: 'M18 7V5a1 1 0 0 0-1-1H6.5a.5.5 0 0 0-.4.8l4.5 6a2 2 0 0 1 0 2.4l-4.5 6a.5.5 0 0 0 .4.8H17a1 1 0 0 0 1-1v-2' }],
   ],
@@ -147,7 +155,7 @@ export function isSlashSuggestionActive(editor: Editor): boolean {
 
 function insertRichBlockAndOpenEditor(
   editor: Editor,
-  type: 'mermaidBlock' | 'latexBlock',
+  type: 'mermaidBlock' | 'mindmapBlock' | 'latexBlock',
   code: string,
   insertPos?: number,
 ) {
@@ -162,7 +170,7 @@ function insertRichBlockAndOpenEditor(
   queueMicrotask(() => (editor as any).emit(RICH_BLOCK_EDIT_EVENT))
 }
 
-const VISUAL_LANGUAGES = new Set(['mermaid', 'latex', 'math', 'tex', 'katex'])
+const VISUAL_LANGUAGES = new Set(['mermaid', 'mindmap', 'latex', 'math', 'tex', 'katex'])
 const lastCodeLanguageByEditor = new WeakMap<Editor, string>()
 
 function findLastCodeLanguageInDoc(editor: Editor): string | null {
@@ -336,6 +344,22 @@ export function createSlashCommandItems(_editor: Editor): SlashCommandItem[] {
       aliases: ['mermaid', 'diagram', 'flowchart'],
       run: (e, insertPos) => {
         insertRichBlockAndOpenEditor(e, 'mermaidBlock', 'graph TD\n  A[Start] --> B[End]', insertPos)
+      },
+    },
+    {
+      id: 'mindmap-block',
+      title: 'Mind Map',
+      description: 'Insert a mind map block',
+      icon: 'share-2',
+      group: 'Blocks',
+      aliases: ['mindmap', 'mind map', 'tree', 'hierarchy', 'map'],
+      run: (e, insertPos) => {
+        insertRichBlockAndOpenEditor(
+          e,
+          'mindmapBlock',
+          'mindmap\n  root((Root))\n    Branch A\n    Branch B',
+          insertPos,
+        )
       },
     },
     {

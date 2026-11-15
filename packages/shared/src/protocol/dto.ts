@@ -17,7 +17,8 @@ import type {
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
-import type { CustomEndpointConfig } from '../config/llm-connections'
+import type { SessionMode } from '../sessions/types'
+import type { ConnectionModelEntry, CustomEndpointConfig } from '../config/llm-connections'
 import type {
   AuthRequest as SharedAuthRequest,
   CredentialInputMode as SharedCredentialInputMode,
@@ -26,6 +27,11 @@ import type {
 
 // Re-export generateMessageId for handler convenience
 export { generateMessageId } from '@craft-agent/core/types'
+
+// The conversation's mode family lives with the session field that carries it;
+// re-exported here so renderer code (which imports the protocol barrel) sees the
+// one shared type instead of repeating the union.
+export type { SessionMode } from '../sessions/types'
 
 // ---------------------------------------------------------------------------
 // Session types
@@ -53,10 +59,22 @@ export interface Session {
   preview?: string
   lastMessageAt: number
   messages: Message[]
+  /**
+   * Older messages exist that `messages` does not carry.
+   *
+   * Set by `sessions:getMessages` when it answers with a page instead of the
+   * whole conversation (see `takeMessagePage`). The client asks for the next
+   * page by passing its oldest message id back as `before`. Absent means the
+   * payload is the complete history — which is what every other producer of a
+   * `Session` still sends, so absence is the safe default.
+   */
+  messagesTruncated?: boolean
   isProcessing: boolean
   isFlagged?: boolean
   /** Permission mode for this session ('safe', 'ask', 'guarded', 'allow-all') */
   permissionMode?: PermissionMode
+  /** `bot` for the assistant's own conversation; absent for ordinary ones. */
+  role?: SessionRole
   sessionStatus?: SessionStatus
   /** Labels (additive tags, many-per-session — bare IDs or "id::value" entries) */
   labels?: string[]
@@ -74,6 +92,11 @@ export interface Session {
   sharedId?: string
   model?: string
   llmConnection?: string
+  /**
+   * Browser profile this conversation's browser work runs in (`undefined` = its workspace's
+   * default). A profile is a window: switching it moves the conversation to that profile's window.
+   */
+  browserProfile?: string
   thinkingLevel?: ThinkingLevel
   lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error'
   lastFinalMessageId?: string
@@ -105,6 +128,13 @@ export interface Session {
   supportsBranching?: boolean
   /** Workspace-scoped project id this session is bound to (undefined = unbound) */
   projectId?: string
+  /**
+   * The layer this conversation is working in (`goal` / `spec` / `plan`), or
+   * undefined for an ordinary conversation. Its home is the folder of the project
+   * this session belongs to, so a mode means nothing outside a project.
+   * Only affects the prompt block added for this conversation, no tools.
+   */
+  mode?: SessionMode
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */
@@ -117,6 +147,8 @@ export interface Session {
   taskNodeId?: string
   /** Tasks Conductor: total DAG node count (orchestrator only) — stable board progress denominator. */
   taskNodeCount?: number
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person. */
+  taskAwaitingApproval?: number
   /** Tasks Conductor: generate-time draft orchestrator, hidden from the board until adopted by createTask. */
   taskDraft?: boolean
 }
@@ -157,8 +189,27 @@ export interface CreateSessionOptions {
   branchFromSessionId?: string
   /** Bind the new session to a workspace project (inherits project's workingDirectory). */
   projectId?: string
+  /**
+   * The browser profile (account) this session's browser work starts in.
+   *
+   * Set by the parent when a session is spawned — like the working directory, it is inherited, so
+   * a child works in the same account as the conversation that spawned it. Omitted means "whatever
+   * the workspace defaults to".
+   */
+  browserProfile?: string
+  /** The layer the new session is working in (its home is the owning project's folder). */
+  mode?: SessionMode
   /** Mark the new session as a subtask of this parent session (undefined = top-level task). */
   parentSessionId?: string
+  /**
+   * What this conversation *is*, when it is not an ordinary one.
+   *
+   * `bot` is the assistant: the same workspace, the same model, the same sources and memory as any
+   * other conversation there. It is a role rather than a place on purpose: a second workspace for
+   * the assistant would mean a second copy of every setting, which is exactly what goes wrong
+   * quietly.
+   */
+  role?: SessionRole
   /** Tasks Conductor: slug of the task spec this session belongs to (orchestrator + child nodes). */
   taskSlug?: string
   /** Tasks Conductor: id of the run that spawned this child session (child nodes only). */
@@ -174,6 +225,13 @@ export interface CreateSessionOptions {
    */
   applyTaskLabel?: boolean
 }
+
+/**
+ * What a conversation is for.
+ *
+ * Absent means an ordinary conversation. `bot` is the one that can reach other workspaces.
+ */
+export type SessionRole = 'bot'
 
 export interface RemoteSessionTransferPayload {
   sourceSessionId: string
@@ -225,6 +283,13 @@ export interface TaskCreateRequest {
    * leave a duplicate tile). Distinct from `orchestratorSessionId`, which adopts a hidden draft.
    */
   attachToExistingSession?: string
+  /**
+   * Optional absolute path to the plan file this task is being created from — the same path
+   * `tasks:generate` was handed via `TaskGenerateRequest.planPath`. When present, the handler
+   * records it as the spec's `from` (the task's origin), stored portable on write like
+   * `ProjectConfig.workingDirectory`. Absent → no `from` is written. Sent verbatim; no validation.
+   */
+  planPath?: string
 }
 
 export interface TaskCreateResult {
@@ -244,6 +309,13 @@ export interface TaskCreateResult {
 export interface TaskGenerateRequest {
   /** Natural-language goal the orchestrator turns into a task.yaml DAG. */
   goal: string
+  /**
+   * Optional absolute path to a plan file (`*.plan.md`) the orchestrator must turn into the DAG
+   * instead of re-inventing a decomposition. Sent as an absolute path — a project's file paths are
+   * absolute (`FolderFile.path`). The handler reads the file and hands its text to the generator;
+   * it does NOT gate on the suffix, so any file the person points at is read.
+   */
+  planPath?: string
   /** Optional working title for the task / orchestrator session. */
   title?: string
   /** Optional model for the orchestrator session (defaults to the session default). */
@@ -329,12 +401,18 @@ export interface TaskGetResult {
 export interface TaskResultNodeDto {
   id: string
   title: string
-  /** pending | running | done | failed | cancelled | skipped */
+  /** pending | running | awaiting-approval | done | failed | cancelled | skipped */
   state: string
   /** The child session that ran this node, recovered from the run log (drill-in link). */
   sessionId?: string
   /** The node's recorded final output text (from nodes/<id>.json), when present. */
   output?: string
+  /** The node's declared structured fields (its `outputs:`), as filed at completion. These are
+   *  what a downstream `${nodes.<id>.output.<field>}` — or a `when:` condition — reads. */
+  params?: Record<string, unknown>
+  /** For a gate node (`kind: approval`) when it is the question put to the person — i.e. what is
+   *  being approved. Present whenever `state` is `awaiting-approval`. */
+  approvalPrompt?: string
 }
 
 /** One verifier verdict as shown in the Results view. */
@@ -395,6 +473,7 @@ export type SessionEvent =
   | { type: 'retry'; sessionId: string; phase: 'active' | 'end' }
   | { type: 'text_delta'; sessionId: string; delta: string; turnId?: string }
   | { type: 'text_complete'; sessionId: string; text: string; isIntermediate?: boolean; turnId?: string; parentToolUseId?: string; timestamp?: number; messageId?: string }
+  | { type: 'thinking_complete'; sessionId: string; text: string; turnId?: string; parentToolUseId?: string; timestamp?: number; messageId?: string }
   | { type: 'tool_start'; sessionId: string; toolName: string; toolUseId: string; toolInput: Record<string, unknown>; toolIntent?: string; toolDisplayName?: string; toolDisplayMeta?: ToolDisplayMeta; turnId?: string; parentToolUseId?: string; timestamp?: number }
   | { type: 'tool_result'; sessionId: string; toolUseId: string; toolName: string; result: string; turnId?: string; parentToolUseId?: string; isError?: boolean; timestamp?: number }
   | { type: 'error'; sessionId: string; error: string; timestamp?: number }
@@ -414,7 +493,9 @@ export type SessionEvent =
   | { type: 'sources_changed'; sessionId: string; enabledSourceSlugs: string[] }
   | { type: 'labels_changed'; sessionId: string; labels: string[] }
   | { type: 'project_id_changed'; sessionId: string; projectId: string | null }
+  | { type: 'mode_changed'; sessionId: string; mode: SessionMode | null }
   | { type: 'connection_changed'; sessionId: string; connectionSlug: string; supportsBranching?: boolean }
+  | { type: 'browser_profile_changed'; sessionId: string; profileId: string | null }
   | { type: 'task_backgrounded'; sessionId: string; toolUseId: string; taskId: string; intent?: string; turnId?: string; kind?: 'workflow' | 'task'; workflowId?: string }
   | { type: 'shell_backgrounded'; sessionId: string; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
   | { type: 'task_progress'; sessionId: string; toolUseId: string; elapsedSeconds: number; turnId?: string }
@@ -422,6 +503,15 @@ export type SessionEvent =
   | { type: 'workflow_agent_completed'; sessionId: string; workflowId: string; agentId: string; turnId?: string }
   | { type: 'shell_killed'; sessionId: string; shellId: string }
   | { type: 'user_message'; sessionId: string; message: Message; status: 'accepted' | 'queued' | 'processing'; optimisticMessageId?: string }
+  | { type: 'queued_message_cancelled'; sessionId: string; messageId: string; optimisticMessageId?: string }
+  | {
+      type: 'queued_messages_state'
+      sessionId: string
+      /** The authoritative queue, first to send first. Each entry names the
+       *  persisted id and, when the renderer owns an optimistic bubble, that id
+       *  too. A message absent from this list is not queued. */
+      order: Array<{ messageId: string; optimisticMessageId?: string }>
+    }
   | { type: 'session_flagged'; sessionId: string }
   | { type: 'session_unflagged'; sessionId: string }
   | { type: 'session_archived'; sessionId: string }
@@ -429,7 +519,7 @@ export type SessionEvent =
   | { type: 'name_changed'; sessionId: string; name?: string }
   | { type: 'session_model_changed'; sessionId: string; model: string | null }
   | { type: 'session_status_changed'; sessionId: string; sessionStatus: SessionStatus }
-  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId'>> }
+  | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'taskAwaitingApproval' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'mode' | 'hidden'>> }
   | { type: 'session_deleted'; sessionId: string }
   | { type: 'session_created'; sessionId: string }
   | { type: 'session_shared'; sessionId: string; sharedUrl: string }
@@ -443,6 +533,8 @@ export type SessionEvent =
 
 export interface SendMessageOptions {
   skillSlugs?: string[]
+  /** The message this one answers, when the person picked one. Stored, rendered, not injected. */
+  replyTo?: import('@craft-agent/core/types').MessageReply
   badges?: ContentBadge[]
   optimisticMessageId?: string
   /**
@@ -452,6 +544,17 @@ export interface SendMessageOptions {
    * surfacing) that should wake the agent without looking user-authored.
    */
   hidden?: boolean
+  /**
+   * Who produced this message. Omitted means `user` — a person at the composer.
+   *
+   * Set it whenever the text did not come from the keyboard in front of this conversation, because
+   * the renderer uses it to decide two things a person would notice: whether the text belongs in
+   * their draft tray, and whether it may be edited into their own words.
+   */
+  origin?: 'user' | 'agent' | 'system'
+  /** `origin: 'agent'`: the conversation that sent it. */
+  fromSessionId?: string
+  fromSessionName?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +577,7 @@ export type SessionCommand =
   | { type: 'setSources'; sourceSlugs: string[] }
   | { type: 'setLabels'; labels: string[] }
   | { type: 'setProjectId'; projectId: string | null }
+  | { type: 'setMode'; mode: SessionMode | null }
   | { type: 'setKanbanColumn'; column: string | null }
   | { type: 'showInFinder' }
   | { type: 'copyPath' }
@@ -482,6 +586,7 @@ export type SessionCommand =
   | { type: 'revokeShare' }
   | { type: 'refreshTitle' }
   | { type: 'setConnection'; connectionSlug: string }
+  | { type: 'setBrowserProfile'; profileId: string | null }
   | { type: 'setPendingPlanExecution'; planPath: string; draftInputSnapshot?: string }
   | { type: 'markCompactionComplete' }
   | { type: 'markPendingPlanExecutionDispatched' }
@@ -489,6 +594,8 @@ export type SessionCommand =
   | { type: 'addAnnotation'; messageId: string; annotation: AnnotationV1 }
   | { type: 'removeAnnotation'; messageId: string; annotationId: string }
   | { type: 'updateAnnotation'; messageId: string; annotationId: string; patch: Partial<AnnotationV1> }
+  /** Move a queued message to a new position (0-based, after removal). */
+  | { type: 'reorderQueuedMessage'; messageId: string; toIndex: number }
 
 export interface NewChatActionParams {
   input?: string
@@ -542,10 +649,10 @@ export interface DirectoryListingResult {
   platform: 'win32' | 'darwin' | 'linux'
   /** Whether the server truncated the directory list for safety/performance. */
   truncated: boolean
-  /** Total number of matching child directories before truncation. */
+  /** Total number of matching entries before truncation. */
   totalEntries: number
-  /** Child directory entries. */
-  entries: Array<{ name: string; path: string; isSymlink: boolean }>
+  /** Child entries. Files are only listed when the caller asked for them. */
+  entries: Array<{ name: string; path: string; isSymlink: boolean; isDirectory: boolean }>
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +668,18 @@ export interface FileAttachment {
   text?: string
   size: number
   thumbnailBase64?: string
+  /** Path where the file is stored in the session attachments folder (set by the Electron app). */
+  storedPath?: string
+  /** Path to a converted markdown version (for office files). */
+  markdownPath?: string
+  /**
+   * `path` names a file on the hub's filesystem, not this machine's.
+   *
+   * A remote window can attach a file that already sits on the server: its bytes are read
+   * from the hub, so `path` is meaningless to the local machine. Draft persistence keys off
+   * this flag, otherwise a later hydrate would read a same-named local file.
+   */
+  fromServer?: boolean
 }
 
 export interface SessionFile {
@@ -598,7 +717,14 @@ export interface LlmConnectionSetup {
   credential?: string
   baseUrl?: string | null
   defaultModel?: string | null
-  models?: string[] | null
+  /** Explicit small/fast model (title generation, summarization, mini agents). Absent = not picked, `null` = cleared. */
+  fastModel?: string | null
+  /** Explicit vision model for `call_llm`. Absent = not picked, `null` = cleared. */
+  visionModel?: string | null
+  /** Explicit omni/audio-capable model for `call_llm`. Absent = not picked, `null` = cleared. */
+  omniModel?: string | null
+  /** Model ids, or ids with per-model parameters for custom endpoints. */
+  models?: ConnectionModelEntry[] | null
   piAuthProvider?: string
   modelSelectionMode?: 'automaticallySyncedFromProvider' | 'userDefined3Tier'
   /** When true, reject setup if the connection doesn't already exist (reauth guard). */
@@ -768,6 +894,11 @@ export interface WorkspaceSettings {
   workingDirectory?: string
   localMcpEnabled?: boolean
   defaultLlmConnection?: string
+  /**
+   * Browser profile this workspace's browser work runs in by default (`undefined` = the built-in
+   * `default`). A conversation can override it; switching moves it to that profile's window.
+   */
+  browserProfile?: string
   enabledSourceSlugs?: string[]
 }
 
@@ -830,6 +961,432 @@ export interface WindowCloseRequest {
 // Browser / navigation types (data shapes used by BroadcastEventMap)
 // ---------------------------------------------------------------------------
 
+/**
+ * Element picked by the browser's element picker (`browser_tool pick`).
+ *
+ * Shared across the picker (BrowserCDP), the browser-pane capability wire
+ * protocol, and the `browser_tool pick` command — defined once here so the
+ * shape cannot drift between the three.
+ */
+export interface PickedElement {
+  /** Stable selector: `data-testid` > `id` > `:nth-of-type` path. */
+  selector: string
+  /** Lowercase tag name. */
+  tag: string
+  /** Trimmed text content, truncated to 200 chars. */
+  text: string
+  /** Viewport-relative bounding box. */
+  rect: { x: number; y: number; width: number; height: number }
+  /**
+   * What the person asked for by the way they picked it.
+   *
+   * The picker can show one button under the selection — "add to conversation" —
+   * and which button was used is a fact about the gesture, not about the element.
+   * It rides along on the element so it travels the existing paths (toolbar
+   * action, agent command) instead of needing a second result channel: an element
+   * picked that way is still an element, one that was picked *for* something.
+   */
+  intent?: 'add-to-conversation'
+}
+
+/**
+ * Where a picked element came from: the tab it was picked on.
+ *
+ * The picker belongs to the **window**, and stays armed while the user moves
+ * between its tabs — any tab's elements can be picked, and the same gesture on
+ * two tabs means two different places to change. So the tab it happened on
+ * travels with the element, and the chip and the agent read it from there.
+ *
+ * The address and title of that tab, which is why both are produced by one
+ * function in the pane manager.
+ */
+export interface PickedElementOrigin {
+  /**
+   * The id of that tab — what `--tab <id>` names it by, so the conversation can act on the tab
+   * the person pointed at rather than the one it happens to be working from.
+   */
+  tabId: string
+  /** The address the tab was on when the element was picked. */
+  url: string
+  /** That tab's title. */
+  title: string
+}
+
+/**
+ * An action the browser panel's toolbar forwards to the main window.
+ *
+ * The panel has no workspace context of its own (it is a separate
+ * render process), so it reports *what the user did* and lets the main window —
+ * which owns the binding — decide what it means.
+ */
+export type BrowserToolbarAction =
+  | {
+      kind: 'picked'
+      instanceId: string
+      /** Null when the user pressed Escape or the pick timed out. */
+      element: PickedElement | null
+    }
+  /**
+   * The person used the bar under the highlight: the element goes into a
+   * conversation.
+   *
+   * Separate from `picked` because the two do different things with the same
+   * element — one hands it to the edit flow, the other writes a draft into a
+   * conversation.
+   *
+   * `origin` is the tab inside the window this pick came from: with the picker
+   * resident across the window's tabs, the element alone does not say where it
+   * was picked, and that is the part the conversation needs to act on it.
+   */
+  | { kind: 'add-to-conversation'; instanceId: string; element: PickedElement; origin: PickedElementOrigin }
+  | { kind: 'pick-failed'; instanceId: string; message: string }
+
+/**
+ * The **work a tab is part of** — whose tab it is.
+ *
+ * The subject is the *work*, not the conversation doing it: a conversation is an
+ * executor, and executors change while the work stays the same. A DAG node re-run
+ * after a FAIL verdict (Conductor's repair loop) is a **new child session** for the
+ * **same node**, and it has to inherit the tab its predecessor was working in — with
+ * a session id as the subject, that tab would be an orphan the moment the first
+ * session stopped, unreachable to the one that replaced it.
+ *
+ * Two kinds, and the difference is what the tab is a tab *of*:
+ *
+ * - `session` — a conversation's own work. The tab it opened, and the tabs opened
+ *   from them (inheritance), are its task.
+ * - `task` — a piece of a Tasks DAG: the whole task (`nodeId: null`, the
+ *   orchestrator's own tabs), or one node of it. `taskSlug` + `runId` + `nodeId` are
+ *   the node's identity and survive re-runs; `sessionId` is only **who opened it**,
+ *   recorded so a person can be told which conversation's tab it was.
+ *
+ * Every variant carries `sessionId`, because a tab is always opened *by* a
+ * conversation — that is the provenance, and the actor identity a command is checked
+ * against. It is not part of "the same work": two sessions on the same node are the
+ * same work, and two sessions on different nodes of one task are not.
+ */
+export type TabBelongsTo =
+  | { kind: 'session'; sessionId: string }
+  | {
+      kind: 'task'
+      /** The task's slug (`task.yaml`) — the same one every node of it carries. */
+      taskSlug: string
+      /** Which run of it, so two runs do not share tabs. */
+      runId: string | null
+      /** Which node of the DAG, or `null` for the task itself (the orchestrator's tabs). */
+      nodeId: string | null
+      /** Who opened this tab — provenance for the person reading the rail. Not identity. */
+      sessionId: string
+    }
+
+/**
+ * Whether two tabs are tabs of the **same work** — the same conversation, or the
+ * same node of the same run of the same task.
+ *
+ * The precise question, and the one `reach` is decided by: a tab of another node of
+ * my task is not mine to work in. A re-run of a node *is* the same work, which is what
+ * lets the replacement session pick up the tab its predecessor left.
+ */
+export function sameWork(a: TabBelongsTo | null, b: TabBelongsTo | null): boolean {
+  if (!a || !b) return false
+  if (a.kind === 'session' && b.kind === 'session') return a.sessionId === b.sessionId
+  if (a.kind === 'task' && b.kind === 'task') {
+    return a.taskSlug === b.taskSlug && a.runId === b.runId && a.nodeId === b.nodeId
+  }
+  return false
+}
+
+/**
+ * Whether two tabs are tabs of the same **task**, whatever node and whatever run —
+ * the looser question, used for housekeeping.
+ *
+ * Closing is not working in: the orchestrator never opened its nodes' tabs, so a rule
+ * that read the precise work would leave a finished run's tabs in the window forever.
+ * Every conversation of a task may clean up after that task.
+ */
+export function sameTask(a: TabBelongsTo | null, b: TabBelongsTo | null): boolean {
+  if (!a || !b) return false
+  return a.kind === 'task' && b.kind === 'task' && a.taskSlug === b.taskSlug
+}
+
+/** The section of the tabs nobody's work owns — see {@link tabSectionOf}. */
+export const PERSON_TAB_SECTION = 'person'
+
+/**
+ * Which **section of a window's tab list** a tab is drawn in.
+ *
+ * Coarser than `sameWork`, on purpose and not by accident: the rail cuts a window's tabs into
+ * one section per conversation and **one per task** — a task's nodes are one piece of work, so
+ * their tabs are drawn together — and the tabs nobody's work owns are a section of their own.
+ * Two surfaces need to agree on this: the two lists that draw a window's tabs (the rail and the
+ * badge's list), and the window itself, which reads it to decide where the display goes when a
+ * tab closes — the tab that takes over is a neighbour in the same section if there is one.
+ *
+ * **Not** an ownership question. A caller that reads this as reach hands one node of a DAG the
+ * tabs of another; `sameWork` above is the precise one, and it is what `reach` is decided by.
+ */
+export function tabSectionOf(work: TabBelongsTo | null): string {
+  if (!work) return PERSON_TAB_SECTION
+  return work.kind === 'session' ? `session:${work.sessionId}` : `task:${work.taskSlug}`
+}
+
+/**
+ * The work a conversation is part of, told from the fields a session carries.
+ *
+ * **The one place a session becomes a tab's owner.** A Conductor child says which task, run
+ * and node it executes — so the session that runs a node and the one repair spawns to re-run
+ * the *same* node are the same work, and the second one inherits the tab rather than opening
+ * another. The orchestrator, which carries the task but no node, is the task itself; a
+ * conversation that is part of no task is its own work.
+ */
+export function workOfSession(session: {
+  id: string
+  taskSlug?: string
+  taskRunId?: string
+  taskNodeId?: string
+}): TabBelongsTo {
+  if (!session.taskSlug) return { kind: 'session', sessionId: session.id }
+  return {
+    kind: 'task',
+    taskSlug: session.taskSlug,
+    runId: session.taskRunId ?? null,
+    nodeId: session.taskNodeId ?? null,
+    sessionId: session.id,
+  }
+}
+
+/**
+ * A work, in words — for a message that has to say whose tab something is.
+ *
+ * `"the task checkout-flow's node pay"`, `"session-4f2a…'s"`, or `"nobody's"` — never a bare
+ * session id for a task tab, whose opener is provenance rather than the point.
+ */
+export function describeWork(work: TabBelongsTo | null): string {
+  if (!work) return "nobody's"
+  if (work.kind === 'session') return `${work.sessionId}'s`
+  return work.nodeId ? `the task ${work.taskSlug}'s node ${work.nodeId}` : `the task ${work.taskSlug}`
+}
+
+/**
+ * Why a page did not load, as the host saw it.
+ *
+ * `code` is Chromium's own name (`ERR_NAME_NOT_RESOLVED`, `ERR_CONNECTION_REFUSED`, …) or
+ * `HTTP_ERROR` for a main-frame response the server itself refused with 5xx — that case
+ * does not fail the load, so it has no Chromium code to report. A reader turns this into a
+ * sentence; the raw code is not something to show a person.
+ */
+export interface BrowserLoadError {
+  code: string
+  /** The response status, for `HTTP_ERROR` alone. */
+  status?: number
+  /** The address that failed — what a retry re-opens. */
+  url: string
+}
+
+/**
+ * Why a tab's own process ended.
+ *
+ * Not a load failure: the address may be perfectly good, and the page is still not there because
+ * the process drawing it died. Kept apart from {@link BrowserLoadError} because the two answer
+ * different questions and the answer is Chromium's, not ours: `reason` is its word (`crashed`,
+ * `oom`, `killed`, …) and `exitCode` is the process's. A reader that only knows about load errors
+ * still sees `error` — a crash is reported as one, with `ERR_RENDERER_CRASHED` — and this is what
+ * says *why* rather than *that*.
+ */
+export interface BrowserTabCrash {
+  reason: string
+  exitCode: number
+}
+
+/**
+ * One tab of a browser window.
+ *
+ * The fields are in three groups, because they are not equally trustworthy:
+ *
+ * - **observation** — what the tab itself reports (address, title, favicon,
+ *   loading). One producer, so nothing here can disagree with the document it describes.
+ * - **declaration** — whose work it is (`belongsTo`). Written once, when the
+ *   tab is created, and never changed afterwards: a statement of intent.
+ * - **driven-by** — who has been moving it (`drivenBy`). One per tab, and a
+ *   session may have several, so it is not a claim of its own: it is a trace of use,
+ *   and it is what the rail's plain dot draws. Swept when that session stops working
+ *   (its queue of turns empties, it is force-stopped or deleted) or when the tab
+ *   changes hands, and it says nothing about who the tab belongs to.
+ *
+ * Keeping them apart is the point: a caller that reads a declaration as a
+ * measurement is reading somebody's intention as a fact, and one that reads a
+ * driven-by mark as ownership will close work that is not theirs.
+ *
+ * `lockedBy` is none of the three: it is the tab's own **hold** — who is mid-work on it
+ * right now — which is written while that work lasts and let go when it ends (see the
+ * field).
+ *
+ * The driven-by field is the one that used to be called the tab's **lease**. The data
+ * never changed; the word did, because "lease" promised an exclusivity and an expiry this
+ * fact never had.
+ */
+export interface BrowserTabSummary {
+  /** Stable across the tab's life; what `--tab` and the toolbar name it by. */
+  id: string
+  /**
+   * The browser profile this tab is signed into (see `browser-profiles.ts`).
+   *
+   * A window's profile, reported per tab because that is where a reader looks: one window is one
+   * account, so every tab of a window answers the same. Printed by `tabs` so an agent can tell which
+   * account it is looking at.
+   */
+  profileId: string
+
+  // -- Observation ---------------------------------------------------------
+  url: string
+  title: string
+  favicon: string | null
+  isLoading: boolean
+  /**
+   * Whether the tab's document is still arriving, even when the bar draws no spinner for it.
+   *
+   * True while the built-in error page loads too: until it commits, the webContents holds
+   * Chromium's blank failure page, and a reader that starts now would read that instead of
+   * the document the tab is about to show.
+   */
+  documentLoading?: boolean
+  /**
+   * Why this tab's page failed to load, right now, or absent/null when it did not.
+   *
+   * A tab is not "broken" in any lasting sense: the next navigation clears this. It is here
+   * so the chrome can say *why* the page is blank instead of leaving a person with an empty
+   * rectangle and a URL that looks like it worked.
+   */
+  error?: BrowserLoadError | null
+  /**
+   * Why the page's process ended, when it did — absent otherwise.
+   *
+   * Present with {@link error} set to `ERR_RENDERER_CRASHED`, so a reader that predates this field
+   * still reports the failure rather than a working tab. Cleared by the next navigation: a new
+   * document is a new process.
+   */
+  crashed?: BrowserTabCrash | null
+  /**
+   * What the webContents actually has committed, when it is not {@link url}.
+   *
+   * `url` is the tab's logical address — what the address bar says, including an address
+   * whose load failed. A failed navigation never commits, so the previous document stays
+   * in the webContents; this field is how a reader tells that apart from the address the
+   * person asked for. The built-in error page is deliberately not reported: it is our own
+   * stand-in, not a document anyone asked for — {@link error} says why it is there.
+   */
+  documentUrl?: string
+  /** Whether this is the tab the window is showing. */
+  active: boolean
+  /**
+   * How the browser asked for this tab, when the browser asked for it rather than a
+   * command opening it: `'link'` for a `target="_blank"`, `'popup'` for a scripted
+   * `window.open` with features, `null` for every other way a tab comes to exist
+   * (the address bar, `tab-new`, the panel).
+   *
+   * Here rather than in the declaration half because nobody *stated* it — the browser
+   * reported it, the same way it reports a title. It is worth keeping because both are
+   * now played in the same window, which costs the tab its `window.opener`: a popup
+   * that waits for a `postMessage` from the tab that opened it (Google's sign-in) will
+   * never get one, and this field is how that becomes diagnosable instead of mysterious.
+   */
+  disposition: 'link' | 'popup' | null
+
+  // -- Declaration ---------------------------------------------------------
+  /**
+   * Which work this tab **belongs to**, or `null` for a person's tab.
+   *
+   * Written when the tab is created — by the conversation whose tool opened it, or by
+   * **inheritance**: a tab derived from another (a `target="_blank"`, a popup, a link on a
+   * page of ours) belongs to whatever the tab it came from belongs to.
+   * Inheritance is what makes a conversation's tabs a *group* — the link it could not
+   * follow itself still lands in its task — without asking who clicked, which could not be
+   * answered anyway (an agent's click and a person's look the same from here).
+   *
+   * The reason it is here rather than derived: an agent must be able to leave other people's
+   * tabs alone, and "which of these are mine" is not visible in a
+   * URL. It is also the key the tab rail groups by, so a window shows one section per task.
+   *
+   * The work rather than the conversation, because a tab outlives the session that opened
+   * it — see {@link TabBelongsTo}. Which conversation moved it last is
+   * `drivenBy`'s answer and which one is inside it *now* is `lockedBy`'s, and those
+   * stay session ids.
+   */
+  belongsTo: TabBelongsTo | null
+
+  // -- Where conversations work from --------------------------------------
+  /**
+   * Which conversations **work from this tab** — their cursors, one entry per conversation, and
+   * `[]` when it is no conversation's.
+   *
+   * It answers the question that otherwise has no answer: *where does my next command go when
+   * I name no tab?* Not "wherever the window is showing" — that tab belongs to the person, and
+   * it moves the moment they click, which is how a user switching tabs used to silently retarget
+   * somebody's work. One conversation, one entry: it moves when that conversation names another
+   * tab (or opens one), and it ends with the tab it was on when that tab is closed — the
+   * conversation comes back with no tab of its own and is told to name one, rather than being
+   * pointed at whatever is on screen. It is dropped when the conversation ceases to exist.
+   *
+   * **Several conversations may hold one tab**, and that is the point rather than an accident:
+   * a tab that is nobody's work (a person's) is where the person is looking, so whoever they are
+   * talking to works there — one conversation's cursor cannot be the thing that decides another
+   * may not. It used to be a single id and doubled as a claim ("somebody works from this tab, so
+   * it is not yours"), which made the person's own tab out of reach for the conversation they had
+   * just handed it to; the list is what let that claim go. Being a **route** and not a claim, it
+   * decides nothing about who may work where: reach is about the **work** a tab belongs to
+   * (`whyTabIsOutOfReach`), and what keeps two conversations out of one tab at the same moment is
+   * the **hold** ({@link lockedBy}), which lasts a turn and is drawn.
+   */
+  cursorOf: string[]
+
+  // -- Driven by -----------------------------------------------------------
+  /**
+   * Which session moved this tab last, or `null` when nobody has — the trace the rail draws
+   * as a plain dot, and what the agent's `tabs` reports as `driven by`.
+   *
+   * One per tab, and a session may have several: a conversation's command reaches
+   * the tab it works from — its own cursor, written at the same moment — so that tab records
+   * who moved it. Several conversations sharing the window take turns *here*, tab by tab, and
+   * this is what makes "who is moving which tab" answerable instead of guessed.
+   *
+   * Let go when that session **stops working** — its queue of turns empties, it is force-stopped,
+   * or it is deleted — and when the tab changes hands. The hold next to it ({@link lockedBy}) is the
+   * one let go at the end of *every* turn, so the two part company exactly where a session drove a
+   * tab it is not inside at this moment. It decides nothing: no routing, no reach, no lock.
+   *
+   * This field was called `driverSessionId` and described as the tab's *lease*; the data never
+   * changed, and neither did what it means — the name and the prose did, because "lease"
+   * promised an exclusivity and an expiry this fact never had.
+   */
+  drivenBy: string | null
+
+  // -- The lock ------------------------------------------------------------
+  /**
+   * Which session is **holding this tab at the moment**, or `null` when nobody is.
+   *
+   * The tab lock: a tab is held while the conversation working on it is
+   * mid-work, which is when a person cannot click or type into it — unless they have dismissed
+   * their half of the overlay ({@link overlayDismissed}) — and another conversation's
+   * commands that name it are refused. Narrower than a window-wide lock: the chrome, the
+   * other tabs and the window itself stay usable.
+   *
+   * Per tab, stored on the tab: several conversations share one window (a parent and its
+   * child sessions run in parallel — Conductor), each holding its own tab, so a single
+   * window-level slot could only ever mean "whoever started last".
+   */
+  lockedBy: string | null
+  /**
+   * Whether the person has dismissed the agent's lock **for their own view**, or `false`.
+   *
+   * The lock above is the agent's claim and does not change. This is only the person's half:
+   * the purple ring, the dim and the input shield they were looking at are gone, so they can
+   * click and type into the tab again. Agent-to-agent rules still read {@link lockedBy}.
+   *
+   * Reset whenever the hold changes hands, so a new claim gets its own overlay back.
+   */
+  overlayDismissed: boolean
+}
+
 export interface BrowserInstanceInfo {
   id: string
   url: string
@@ -838,20 +1395,136 @@ export interface BrowserInstanceInfo {
   isLoading: boolean
   canGoBack: boolean
   canGoForward: boolean
-  boundSessionId: string | null
-  ownerType: 'session' | 'manual'
-  ownerSessionId: string | null
+  /**
+   * Why the page on screen failed to load, if it did — the active tab's `error`.
+   *
+   * Optional the same way `tabs` is: a reader that pre-dates the field treats missing as
+   * "nothing went wrong", which is what an older host could have said anyway.
+   */
+  error?: BrowserLoadError | null
+  /**
+   * The window's tabs, in the order they were opened, with the active one marked.
+   *
+   * Optional so a renderer that pre-dates the field keeps working — treat missing
+   * as a single-tab window. The window-level fields above stay the *active*
+   * tab's, so a reader that only wants "what is on screen" needs nothing here.
+   */
+  tabs?: BrowserTabSummary[]
   isVisible: boolean
+  /**
+   * Whether the window is minimized.
+   *
+   * A minimized window is not a page's home: its tab is parked (`tabHome`), and only there can a
+   * viewer's `resize-viewport` be honoured exactly. Optional — a reader that pre-dates the field
+   * treats missing as "not minimized".
+   */
+  isMinimized?: boolean
   agentControlActive: boolean
   themeColor: string | null
   /**
-   * Workspace that owns this browser instance, or `null` for unbound manual
-   * windows. Renderers filter the tab strip / status badge by `activeWorkspaceId`
-   * so a session in workspace A doesn't see windows opened by workspace B.
+   * The workspace whose browser window this is, or `null` for a window opened
+   * with no workspace context. A workspace holds **one window per profile**, shared by every
+   * conversation working in that profile, and no session owns it — which
+   * conversation is working where is a fact about its **tabs** (`lockedBy`,
+   * `cursorOf`, `belongsTo`), because a parent and its child sessions can be
+   * in it at once (Conductor). Renderers
+   * filter the tab strip / status badge by `activeWorkspaceId` so a conversation
+   * in workspace A doesn't see windows of workspace B.
+   *
    * Missing/null entries always pass the filter — this keeps older renderers
    * and main processes that pre-date the field working unchanged.
    */
   workspaceId?: string | null
+  /**
+   * The browser profile this window is signed into — the other half of its identity.
+   *
+   * What the top bar's badge needs to tell two windows apart: two profiles of the same site draw
+   * the same favicon and title, so without this they are indistinguishable. Optional for the same
+   * reason as `workspaceId` — a reader that pre-dates it treats the window as the built-in profile.
+   */
+  profileId?: string
+}
+
+/**
+ * One frame of a watched tab — see docs/browser-view-streaming.md.
+ *
+ * A viewer that is not the window the tab lives in subscribes to these; the frame is the tab's
+ * page, not the desktop, so nothing outside that page is ever in it.
+ */
+export interface BrowserStreamFrame {
+  streamId: string
+  tabId: string
+  /** JPEG bytes, base64. `data:image/jpeg;base64,` + this is an `<img>` src. */
+  data: string
+  /** CSS pixels of the tab's viewport — the basis every input coordinate is in. */
+  width: number
+  height: number
+  /** When Chromium took the frame (ms since epoch). */
+  atMs: number
+}
+
+export interface BrowserStreamStartRequest {
+  instanceId: string
+  tabId: string
+}
+
+export interface BrowserStreamStartResult {
+  streamId: string
+  tabId: string
+  /** CSS pixels of the tab's viewport, so a viewer can size itself before the first frame. */
+  width: number
+  height: number
+  /**
+   * The agent holding the tab when the stream started, or `null`. The viewer uses it to know
+   * whether it may take control now: a held tab is the lock's to give, not the stream's.
+   */
+  lockedBy: string | null
+  /**
+   * Whether the person had already dismissed their half of that lock, or `false`. A dismissed
+   * hold does not refuse input, so the viewer may take control on a tab that is still held.
+   */
+  overlayDismissed: boolean
+}
+
+/**
+ * One input event, forwarded from a viewer to the tab it is watching.
+ *
+ * Coordinates are CSS pixels in the tab's viewport. `key` follows `KeyboardEvent.key`; `modifiers`
+ * is the CDP bitmask (Alt=1, Ctrl=2, Meta=4, Shift=8).
+ */
+export type BrowserStreamInput =
+  | {
+      type: 'mouse'
+      action: 'move' | 'down' | 'up'
+      x: number
+      y: number
+      button?: 'left' | 'right' | 'middle'
+      clickCount?: number
+      /** Buttons held during the event (left=1, right=2, middle=4) — CDP's drag bitmask. */
+      buttons?: number
+    }
+  | { type: 'wheel'; x: number; y: number; deltaX: number; deltaY: number }
+  | { type: 'key'; action: 'down' | 'up'; key: string; code?: string; text?: string; modifiers?: number }
+  /**
+   * Text an input method committed, sent as one string rather than as its keystrokes.
+   *
+   * Composition keys never belonged to the page (the IME consumed them), so the viewer holds them
+   * on an editable target of its own and forwards only the result — `Input.insertText` enters it
+   * the way a paste would, with `beforeinput`/`input` and no `keydown`.
+   */
+  | { type: 'text'; text: string }
+
+/**
+ * Where the caret is in a watched tab, in the tab viewport's CSS pixels.
+ *
+ * The viewer's input method has to anchor its candidate window at the caret of the field being
+ * typed into — and that field lives on the server, not in the viewer. This is what the server
+ * answers so the invisible input can be parked there instead of at the last click.
+ */
+export interface BrowserCaretRect {
+  x: number
+  y: number
+  height: number
 }
 
 export interface DeepLinkNavigation {
@@ -860,4 +1533,93 @@ export interface DeepLinkNavigation {
   tabParams?: Record<string, string>
   action?: string
   actionParams?: Record<string, string>
+}
+
+// ---------------------------------------------------------------------------
+// Craft Bot — the cross-workspace assistant
+// ---------------------------------------------------------------------------
+
+/**
+ * A task the assistant handed to a workspace.
+ *
+ * There are two kinds, and they are two kinds because they are two different things in this app:
+ *
+ * - `session` — a conversation the assistant started (`spawn_session`). It **is** the child
+ *   session, so `parentSessionId` is the whole link and nothing has to be recorded.
+ * - `task` — a task graph the assistant created (`create_task`). It cannot be a child session:
+ *   an orchestrator with a `parentSessionId` disappears from the board and loses its task editor.
+ *   So the link is `task.yaml`'s `created_by`, written when the graph was made.
+ *
+ * Both are derived views, not stored tasks — which is why they survive a restart and why "open"
+ * always has somewhere to go.
+ */
+export interface BotTask {
+  /** A conversation the assistant started, or a task graph it created. */
+  kind: 'session' | 'task'
+  /** The delegated session, or (for `task`) the orchestrator session that owns the graph. */
+  sessionId: string
+  name?: string
+  /** The workspace it runs in. */
+  workspaceId: string
+  workspaceName: string
+  projectId?: string
+  /** `running` while that work is processing; otherwise `idle` (queued, or finished). */
+  state: 'running' | 'idle'
+  /**
+   * It finished while the person was not looking.
+   *
+   * The child is an ordinary session, so the app already tracks this (`hasUnread`); the workbench
+   * only borrows it to mark the card. It is **not** used to decide what is listed — a card nobody
+   * ever opens would then sit there forever, which is the pile this column exists to avoid.
+   */
+  unread?: boolean
+  startedAt: number
+  lastMessageAt?: number
+  /** `kind: 'task'`: the task's slug. */
+  slug?: string
+  /** `kind: 'task'` with a run alive in memory: the run's id, and what a stop needs. */
+  runId?: string
+  /** `kind: 'task'` with a live run: nodes finished vs declared. */
+  progress?: { done: number; total: number }
+}
+
+/**
+ * The assistant's conversation in one workspace.
+ *
+ * It carries the workspace and what the conversation inherited from it: the panel's most useful
+ * piece of information is "which settings am I actually using", and its absence is what makes a
+ * working session look disconnected.
+ */
+export interface BotSession {
+  sessionId: string
+  workspaceId: string
+  workspaceName: string
+  name?: string
+  model?: string
+  permissionMode?: 'safe' | 'ask' | 'guarded' | 'allow-all'
+}
+
+/**
+ * A file a task produced.
+ *
+ * Derived from the workspace's creations index (the session's own transcript says which paths it
+ * wrote), not recorded separately — so a task that ran before this field existed still answers.
+ */
+export interface BotArtifact {
+  path: string
+  title: string
+  /** Same vocabulary as the works library, so a badge can say what will open it. */
+  format: string
+  /** False once the file was deleted or moved; the card stays, greyed. */
+  exists: boolean
+}
+
+export interface BotTaskResult {
+  task: BotTask
+  /** The last assistant text of that session, if it has one yet. */
+  lastText?: string
+  /** True while the delegated session is processing its turn. */
+  isProcessing: boolean
+  /** What that session wrote, newest first. Empty when it wrote nothing a person would open. */
+  artifacts?: BotArtifact[]
 }

@@ -6,8 +6,8 @@
  * - Calling `i18n.changeLanguage(persisted)` after `setupI18n()` makes
  *   `i18n.resolvedLanguage` match the persisted value.
  *
- * Together these mean: if `preferences.json` has `uiLanguage: 'hu'` on disk,
- * main-process `i18n.resolvedLanguage` will be `'hu'` after the bootstrap
+ * Together these mean: if `preferences.json` has `uiLanguage: 'zh-Hans'` on disk,
+ * main-process `i18n.resolvedLanguage` will be `'zh-Hans'` after the bootstrap
  * block in `apps/electron/src/main/index.ts` runs — which is the actual
  * thing that broke title generation across restarts.
  *
@@ -49,14 +49,14 @@ describe('main-process i18n bootstrap', () => {
           import { setupI18n, i18n } from '@craft-agent/shared/i18n';
           import { setPersistedUiLanguage, getPersistedUiLanguage } from '@craft-agent/shared/config';
           setupI18n();
-          setPersistedUiLanguage('hu');
+          setPersistedUiLanguage('zh-Hans');
           const persisted = getPersistedUiLanguage();
           await i18n.changeLanguage(persisted);
           console.log(JSON.stringify({ persisted, resolved: i18n.resolvedLanguage }));
         `,
       )
       expect(r.exitCode).toBe(0)
-      expect(JSON.parse(r.stdout)).toEqual({ persisted: 'hu', resolved: 'hu' })
+      expect(JSON.parse(r.stdout)).toEqual({ persisted: 'zh-Hans', resolved: 'zh-Hans' })
       expect(existsSync(join(configDir, 'preferences.json'))).toBe(true)
     } finally {
       rmSync(configDir, { recursive: true, force: true })

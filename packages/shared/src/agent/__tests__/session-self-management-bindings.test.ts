@@ -6,7 +6,10 @@ import {
 } from '../session-scoped-tools.ts';
 import { createClaudeContext } from '../claude-context.ts';
 import { attachSessionSelfManagementBindings } from '../session-self-management-bindings.ts';
-import type { SessionToolContext, SessionInfo } from '@craft-agent/session-tools-core';
+import type {
+  SessionToolContext,
+  SessionInfo,
+} from '@craft-agent/session-tools-core';
 import { SESSION_TOOL_REGISTRY } from '@craft-agent/session-tools-core';
 
 // Minimal noop callbacks for createClaudeContext
@@ -290,3 +293,4 @@ describe('Claude/Pi session self-management parity', () => {
     expect(listResult.content[0]!.text).toContain('not available in this context');
   });
 });
+

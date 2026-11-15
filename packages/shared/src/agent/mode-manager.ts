@@ -17,10 +17,10 @@ import { homedir } from 'os';
 import { existsSync, realpathSync } from 'fs';
 import { debug } from '../utils/debug.ts';
 import { isReadOnlyMcpToolName } from './mcp-tool-names.ts';
-import { dirname, isAbsolute, relative, resolve } from 'path';
+import { dirname, isAbsolute, parse, relative, resolve } from 'path';
 import { getSessionSafeAllowedToolNames } from '@craft-agent/session-tools-core';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
-import { isBrowserToolNameOrAlias } from './browser-tool-names.ts';
+import { resolveToolName } from './tool-names.ts';
 import type { PermissionsContext, MergedPermissionsConfig } from './permissions-config.ts';
 import {
   validateBashCommand,
@@ -37,6 +37,11 @@ import {
   type PowerShellValidationReason,
 } from './powershell-validator.ts';
 import { sanitizePromptLine } from '../prompts/prompt-sanitize.ts';
+import {
+  consumeBrowserProfileChange,
+  getBrowserProfilePromptState,
+} from './browser-profile-prompt-state.ts';
+import { getBrowserHostState } from './browser-host-state.ts';
 import {
   type PermissionMode,
   type ModeConfig,
@@ -144,7 +149,13 @@ function expandHome(path: string): string {
 function globToRegex(pattern: string): RegExp {
   // Expand ~ then apply the same case/separator normalization used on paths so
   // that patterns match on Windows (backslash separators, case-insensitive FS).
-  const expanded = expandHome(pattern);
+  // A POSIX-rooted pattern (`/tmp/**`) names a path under the current drive's root on Windows —
+  // the same folder the path itself resolves to — so it is rooted the same way.
+  const posixRooted = /^[\\/]/.test(pattern) && !/^[\\/]{2}/.test(pattern);
+  const rooted = process.platform === 'win32' && posixRooted
+    ? `${parse(process.cwd()).root}${pattern.slice(1)}`
+    : pattern;
+  const expanded = expandHome(rooted);
   const expandedPattern = process.platform === 'win32'
     ? expanded.replace(/\\/g, '/').toLowerCase()
     : expanded;
@@ -1835,6 +1846,9 @@ const ALWAYS_ALLOWED_TOOLS = new Set([
   'LSP',                            // Language server (read-only)
   // Browser automation tool (canonical wrapper)
   'browser_tool',
+  // Diagrams: converted and drawn by the drawio webapp the app already ships, in a hidden window
+  // of its own — the third door, and the only one whose subject is a file rather than a window.
+  'drawio_tool',
 ]);
 
 /**
@@ -1861,6 +1875,14 @@ export function shouldAllowToolInMode(
   options?: {
     plansFolderPath?: string;
     dataFolderPath?: string;
+    /**
+     * The folder of the project this session belongs to, when it belongs to one.
+     *
+     * Writes there are allowed in Explore mode because that folder is where the project's specs
+     * (`*.spec.md`) are written — the person's demand lives there, so a session working on it must
+     * be able to put it on disk. Not passed at all for a session that is in no project.
+     */
+    projectFolderPath?: string;
     permissionsContext?: PermissionsContext;
   }
 ): ToolCheckResult {
@@ -1900,9 +1922,9 @@ export function shouldAllowToolInMode(
     }
   }
 
-  // Browser tool aliases (legacy browser_open/browser_snapshot/...)
-  // are normalized centrally to avoid drift across permission checks.
-  if (isBrowserToolNameOrAlias(toolName)) {
+  // The browser tool is read-only by nature, under any of its spellings — the old split names
+  // (browser_open/browser_snapshot/…) included, which is why the judgement is central.
+  if (resolveToolName(toolName) === 'browser') {
     return { allowed: true };
   }
 
@@ -1926,7 +1948,7 @@ export function shouldAllowToolInMode(
         (rejection.type === 'dangerous_operator' && rejection.operatorType === 'redirect') ||
         looksLikePotentialWrite(command);
 
-      if (likelyWriteAttempt && (options?.plansFolderPath || options?.dataFolderPath)) {
+      if (likelyWriteAttempt && (options?.plansFolderPath || options?.dataFolderPath || options?.projectFolderPath)) {
         const targetPath = extractBashWriteTarget(command) ?? extractPowerShellWriteTarget(command);
         if (targetPath) {
           // Check plans folder with robust path containment (prevents sibling-prefix bypasses)
@@ -1941,8 +1963,15 @@ export function shouldAllowToolInMode(
             return { allowed: true };
           }
 
+          // Check the project's own folder with robust path containment — it is where the
+          // project's specs are written, so it needs no mode change to be writable.
+          if (options?.projectFolderPath && isPathWithinDirectory(targetPath, options.projectFolderPath)) {
+            debug(`[Mode] Allowing write to project folder: ${targetPath}`);
+            return { allowed: true };
+          }
+
           // Target path extracted but not in any allowed folder - give specific error with helpful hint
-          debug(`[Mode] Write target "${targetPath}" is not in plans or data folder`);
+          debug(`[Mode] Write target "${targetPath}" is not in any allowed folder`);
           const pathHint = options?.plansFolderPath ? getPathHint(targetPath, options.plansFolderPath, options?.dataFolderPath) : null;
           const lines = [
             `Write blocked (Explore mode) - target not in allowed folders:`,
@@ -1955,15 +1984,19 @@ export function shouldAllowToolInMode(
           if (options?.dataFolderPath) {
             lines.push(`  Data:   ${options.dataFolderPath}`);
           }
+          if (options?.projectFolderPath) {
+            lines.push(`  Project: ${options.projectFolderPath}`);
+          }
           if (pathHint) {
             lines.push(``, pathHint);
           }
           const plansHint = options?.plansFolderPath ? `For plans, write to: ${options.plansFolderPath}` : null;
           const dataHint = options?.dataFolderPath ? `For data output, write to: ${options.dataFolderPath}` : null;
+          const projectHint = options?.projectFolderPath ? `For the project's specs, write to: ${options.projectFolderPath}` : null;
           lines.push(
             ``,
             `Allowed paths in Explore mode:`,
-            ...[plansHint, dataHint].filter(Boolean).map(p => `• ${p}`),
+            ...[plansHint, dataHint, projectHint].filter(Boolean).map(p => `• ${p}`),
             `• Or ask the user to switch to Ask or Auto mode (${config.shortcutHint}) to enable writes anywhere`
           );
           return {
@@ -1986,7 +2019,10 @@ export function shouldAllowToolInMode(
     };
   }
 
-  // Handle Write/Edit/MultiEdit/NotebookEdit - allow if targeting plans folder or allowedWritePaths
+  // Handle Write/Edit/MultiEdit/NotebookEdit - allow if targeting the plans folder, the data
+  // folder, the session's project folder, or allowedWritePaths. The project folder is among them
+  // because it is where the project's specs are written: the person turned the work on there, so
+  // Explore mode must not stand between the agent and the file the demand *is*.
   if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') {
     const input = toolInput as Record<string, unknown> | null;
     const filePath = (input?.file_path ?? input?.notebook_path) as string | undefined;
@@ -2007,6 +2043,12 @@ export function shouldAllowToolInMode(
         return { allowed: true };
       }
 
+      // Check the project's own folder — where this session's specs live
+      if (options?.projectFolderPath && isPathWithinDirectory(filePath, options.projectFolderPath)) {
+        debug(`[Mode] Allowing ${toolName} to project folder`);
+        return { allowed: true };
+      }
+
       // Check allowedWritePaths from permissions config
       if (config.allowedWritePaths && config.allowedWritePaths.length > 0) {
         if (matchesAllowedWritePath(filePath, config.allowedWritePaths)) {
@@ -2015,8 +2057,8 @@ export function shouldAllowToolInMode(
         }
       }
 
-      // Not in plans/data folder and not in allowedWritePaths - provide detailed rejection
-      if (options?.plansFolderPath || options?.dataFolderPath) {
+      // Not in plans/data/project folder and not in allowedWritePaths - provide detailed rejection
+      if (options?.plansFolderPath || options?.dataFolderPath || options?.projectFolderPath) {
         debug(`[Mode] ${toolName} target "${filePath}" not in allowed folders or allowedWritePaths`);
         const pathHint = options?.plansFolderPath ? getPathHint(filePath, options.plansFolderPath, options?.dataFolderPath) : null;
         const lines = [
@@ -2030,15 +2072,19 @@ export function shouldAllowToolInMode(
         if (options?.dataFolderPath) {
           lines.push(`  Data:   ${options.dataFolderPath}`);
         }
+        if (options?.projectFolderPath) {
+          lines.push(`  Project: ${options.projectFolderPath}`);
+        }
         if (pathHint) {
           lines.push(``, pathHint);
         }
         const plansHint = options?.plansFolderPath ? `For plans, write to: ${options.plansFolderPath}` : null;
         const dataHint = options?.dataFolderPath ? `For data output, write to: ${options.dataFolderPath}` : null;
+        const projectHint = options?.projectFolderPath ? `For the project's specs, write to: ${options.projectFolderPath}` : null;
         lines.push(
           ``,
           `Allowed paths in Explore mode:`,
-          ...[plansHint, dataHint].filter(Boolean).map(p => `• ${p}`),
+          ...[plansHint, dataHint, projectHint].filter(Boolean).map(p => `• ${p}`),
           `• Or ask the user to switch to Ask or Auto mode (${config.shortcutHint}) to enable writes anywhere`
         );
         return {
@@ -2188,7 +2234,7 @@ export function getSessionState(sessionId: string): { permissionMode: Permission
  */
 export function formatSessionState(
   sessionId: string,
-  options?: { plansFolderPath?: string; dataFolderPath?: string; consumeModeChangeUserSignal?: boolean }
+  options?: { plansFolderPath?: string; dataFolderPath?: string; projectFolderPath?: string; consumeModeChangeUserSignal?: boolean }
 ): string {
   const diagnostics = getPermissionModeDiagnostics(sessionId);
 
@@ -2215,6 +2261,37 @@ export function formatSessionState(
     }
   }
 
+  // The browser profile this conversation works in. Volatile by nature — the user can switch it
+  // between turns — so it rides the user tail with the rest of `<session_state>` instead of the
+  // cached system prefix. `browserProfileChanged` is a one-shot: it belongs to the first turn
+  // after a switch, and repeating it would claim the user switched again.
+  const browserProfile = getBrowserProfilePromptState(sessionId);
+  if (browserProfile) {
+    result += `\nbrowserProfile: ${sanitizePromptLine(browserProfile.name, sessionStateTags)}`;
+    result +=
+      '\nbrowserProfileNote: browser work that names no profile lands in this profile; ' +
+      '"--profile <name>" reaches another profile, and tabs already open stay in their own window.';
+    const change = consumeBrowserProfileChange(sessionId);
+    if (change) {
+      result +=
+        `\nbrowserProfileChanged: the user switched this conversation's browser profile from ` +
+        `${sanitizePromptLine(change.from, sessionStateTags)} to ${sanitizePromptLine(change.to, sessionStateTags)}.`;
+    }
+  }
+
+  // Whether this server has a browser of its own. On a headless hub `browser_tool` cannot run, and
+  // saying so is what turns "the tool refused" into "this deployment has no browser; use a device".
+  // Announced only when the answer is none — a server with a browser needs no line.
+  if (getBrowserHostState(sessionId) === false) {
+    result += '\nbrowserHost: none — this server has no browser of its own.';
+    result +=
+      '\nbrowserHostNote: browser_tool cannot run here. If `device_tool` is available, a connected ' +
+      'device that this server has been allowed to use may provide a browser (' +
+      'device_tool {"device":"<id>","tool":"browser","args":{"command":"…"}}). If it is not in your ' +
+      'tool list, no device is usable and this server has no browser. This is expected for this ' +
+      'deployment — not a setup error, and not a reason to retry browser_tool.';
+  }
+
   // Always include plans folder path so agent knows where plans are stored
   if (options?.plansFolderPath) {
     result += `\nplansFolderPath: ${sanitizePromptLine(options.plansFolderPath, sessionStateTags)}`;
@@ -2223,6 +2300,12 @@ export function formatSessionState(
   // Include data folder path so agent knows where transform_data output goes
   if (options?.dataFolderPath) {
     result += `\ndataFolderPath: ${sanitizePromptLine(options.dataFolderPath, sessionStateTags)}`;
+  }
+
+  // Include the project's folder path so the agent knows where this session's specs go — and,
+  // being one of the folders Explore mode allows writes to, where it may write them.
+  if (options?.projectFolderPath) {
+    result += `\nprojectFolderPath: ${options.projectFolderPath}`;
   }
 
   result += '\n</session_state>';

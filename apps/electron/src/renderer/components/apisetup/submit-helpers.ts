@@ -36,6 +36,16 @@ export function resolvePresetStateForBaseUrlChange(params: {
 }): { activePreset: PresetKey; lastNonCustomPreset: PresetKey | null } {
   const { matchedPreset, activePreset, activePresetHasEmptyUrl, lastNonCustomPreset } = params
 
+  // Picking 'Custom' is a decision, not a default: a URL that happens to equal a
+  // listed provider's endpoint must not re-brand the form as that provider. Doing
+  // so drops the very thing Custom exists for — the user's own model list,
+  // protocol and headers (e.g. typing DeepSeek's own URL to run `deepseek-flash`
+  // as a custom model would silently switch to the built-in DeepSeek provider).
+  // Switching presets stays possible by picking one from the dropdown.
+  if (activePreset === 'custom') {
+    return { activePreset, lastNonCustomPreset }
+  }
+
   if (matchedPreset !== 'custom') {
     return {
       activePreset: matchedPreset,

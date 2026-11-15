@@ -13,7 +13,6 @@
  */
 
 import { RPC_CHANNELS } from './types'
-import { FEATURE_FLAGS } from '@craft-agent/shared/feature-flags'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -29,7 +28,7 @@ export interface MenuItemAction {
   shortcut: string              // Electron accelerator: 'CmdOrCtrl+B'
   shortcutDisplayMac: string    // Display on macOS: '⌘B'
   shortcutDisplayOther: string  // Display on Windows/Linux: 'Ctrl+B'
-  ipcChannel: string
+  ipcChannel?: string           // Optional: renderer-only actions dispatch via actionId
   icon: string                  // Lucide icon name
 }
 
@@ -261,6 +260,16 @@ export const ROOT_MENU = {
     ipcChannel: RPC_CHANNELS.menu.NEW_WINDOW,
     icon: 'AppWindow',
   },
+  connectServer: {
+    type: 'action',
+    id: 'connectServer',
+    actionId: 'app.connectServer',
+    labelKey: 'menu.connectServer',
+    shortcut: '',
+    shortcutDisplayMac: '',
+    shortcutDisplayOther: '',
+    icon: 'Server',
+  },
   keyboardShortcuts: {
     type: 'action',
     id: 'keyboardShortcuts',
@@ -384,6 +393,7 @@ const SETTINGS_ICONS: Record<SettingsSubpage, string> = {
   appearance: 'Palette',
   input: 'Keyboard',
   workspace: 'Building2',
+  browser: 'Globe',
   permissions: 'ShieldCheck',
   labels: 'Tag',
   messaging: 'MessageSquare',
@@ -397,7 +407,6 @@ const SETTINGS_ICONS: Record<SettingsSubpage, string> = {
  * Order is determined by SETTINGS_PAGES in settings-registry.ts
  */
 export const SETTINGS_ITEMS: SettingsMenuItem[] = SETTINGS_PAGES
-  .filter(page => page.id !== 'server' || FEATURE_FLAGS.embeddedServer)
   .map(page => ({
     id: page.id,
     labelKey: page.labelKey,

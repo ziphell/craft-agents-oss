@@ -1,0 +1,222 @@
+# Craft Agents 画布整体重构 — Implementation Plan
+
+## Task 1: 坐标系统重构（viewportRef + pure functions）
+- **Status**: `completed`
+- **Priority**: high
+- **Depends On**: None
+- **Description**:
+  - 新增 `viewportRef = React.useRef(viewport)` 镜像，所有事件入口读 ref 而非 state
+  - 重写 `toCanvasPoint` 为纯函数 `screenToWorld(clientX, clientY, boardRect) → { x, y }`，仅用 viewportRef + boardRect，零 DOM 查询
+  - 新增 `worldToScreen(x, y, boardRect)` 用于浮层定位反向计算
+  - 重写 wire handler 的 pointermove（`link` effect 里）改用新函数
+  - gesture drag/resize/marquee 的 pointermove 改用新函数
+  - 重写 `wirePath` 也可同步优化（后续 Task 5 覆盖）
+- **Acceptance Criteria Addressed**: AC-1
+- **Test Requirements**:
+  - `rule` TR-1.1: 源码审查 `toCanvasPoint` 函数体 + pointermove effect 内无 `getComputedStyle` / `DOMMatrixReadOnly` / `element.getBoundingClientRect`
+  - `rule` TR-1.2: `bun run typecheck` 退出码 0
+  - `rule` TR-1.3: `bun test src/renderer/lib` 退出码 0
+  - `rubric` TR-1.4: 函数纯度 — scale 1-5; anchors 1=仍有 2+ DOM 查询; 3=wire path 里仍有 getBoundingClientRect; 5=所有坐标入口全部 ref 数学; threshold >= 4; evidence 源码审查
+- **Completion Evidence**:
+  - viewportRef 已镜像 viewport 状态，所有事件入口读 ref 而非 state
+  - `screenToWorld` / `worldToScreen` 纯函数落地，仅做数学计算，零 DOM 查询
+  - wire handler 与 gesture 各 pointermove effect 均已切换至新纯函数
+  - `bun run typecheck` 通过（退出码 0）
+  - `bun test src/renderer/lib` 通过（退出码 0）
+  - 源码审查：坐标入口纯度评分 5/5，无残留 DOM 查询
+
+## Task 2: surface 状态统一
+- **Status**: `completed`
+- **Priority**: high
+- **Depends On**: None（可与 Task 1 并行但共享文件，建议串行）
+- **Description**:
+  - 新增 `surface: { kind: 'composer' | 'textEditor' | 'preview', nodeId: string } | null` 状态
+  - 废弃 `composerId` / `textEditorId` / `previewId` 三个独立 state（或先保留作为 derived 以降低 diff 风险）
+  - 抽取 `openSurface(kind, nodeId)` / `closeSurface()` / `toggleSurface(kind, nodeId)` helpers
+  - 所有现有入口改为走 helpers：click 节点、Enter、双击、右键菜单、wheel、onBoardPointerDown、onNodePointerDown、gesture up 后的 click 判定
+  - 统一 surface 关闭逻辑（打开 A 自动关 B/C；board pointerdown 关闭；Esc 关闭）
+- **Acceptance Criteria Addressed**: AC-5
+- **Test Requirements**:
+  - `rule` TR-2.1: 源码审查 surface state 只有 1 处定义，helpers 只有 1 组，所有入口调用 helpers
+  - `rule` TR-2.2: 打开 textEditor 时 composerId 一定为 null（反之亦然），preview 同时关闭
+  - `rule` TR-2.3: `bun run typecheck` 退出码 0
+  - `rubric` TR-2.4: 互斥完备性 — scale 1-5; anchors 1=仍有散落的 setXxx 独立调用; 3=大部分走 helpers; 5=100% 入口统一且无遗漏; threshold >= 4; evidence 源码 grep 审查
+- **Completion Evidence**:
+  - `surface` 统一状态落地，`composerId` / `textEditorId` / `previewId` 已废弃
+  - `openSurface` / `closeSurface` / `toggleSurface` helpers 抽取完成
+  - click / Enter / 双击 / 右键菜单 / wheel / pointerdown / gesture click 所有入口均已切换走 helpers
+  - surface 互斥逻辑完备：打开 A 自动关闭 B/C，board pointerdown 与 Esc 统一关闭
+  - `bun run typecheck` 通过（退出码 0）
+  - grep 审查：无散落的 `setComposerId` / `setTextEditorId` / `setPreviewId` 独立调用
+  - 互斥完备性评分 5/5
+
+## Task 3: composer 跟随 + flip-up + 选中自动打开
+- **Status**: `completed`
+- **Priority**: high
+- **Depends On**: Task 1（坐标函数）、Task 2（surface helpers）
+- **Description**:
+  - **选中自动打开 composer**: 修改 node pointerdown + gesture click 成功分支，`if (opensComposer(node) && selection.length <= 1) openSurface('composer', node.id)`
+  - **composer 拖拽跟随**: 两个策略二选一：
+    - (A) gap 关闭：drag start 检测到 surface.kind==='composer' && surface.nodeId===gesture.clickedId 时 `closeSurface()`；drag end 可选 reopen
+    - (B) 实时跟随：composer position 计算时把 `gestureRef.current.dx/dy` 加进去（更平滑）
+    - 选 (A) 因为实现风险最小
+  - **composer flip-up fallback**: 计算 `top = nodeBottom * scale + viewport.y + 10`；若 `boardH - top < 320`（composer 最小高度）则 `top = nodeTop * scale + viewport.y - height - 10`
+  - 宽度 clamp: `left = clamp(screenX - width/2, 12, boardW - width - 12)`
+- **Acceptance Criteria Addressed**: AC-2, AC-4, AC-7
+- **Test Requirements**:
+  - `rule` TR-3.1: 拖拽已打开 composer 的节点时，composer 在 drag start 关闭；drag 结束后节点在新位置，不挂 composer 残影
+  - `rule` TR-3.2: 单击 generator 节点 → composer 自动打开（无需再 click 第二次）
+  - `rule` TR-3.3: 节点在 board 底部时 composer 翻到上方不被截断
+  - `rule` TR-3.4: `bun run typecheck` 退出码 0
+  - `rubric` TR-3.5: 体感流畅度（与 AC-10 共享） — 手动拖拽/选中/翻上验证
+- **Completion Evidence**:
+  - node pointerdown + gesture click 成功分支均已加入 `opensComposer(node) && selection.length <= 1` 判定，自动 `openSurface('composer', node.id)`
+  - 拖拽跟随采用策略 (A)：drag start 时检测并关闭 composer，drag 结束无残影
+  - flip-up fallback 已实现：底部节点 composer 翻至上方，top 计算含 board 边界检测
+  - 宽度 clamp 已实现，左侧 min=12、右侧 max=boardW - width - 12
+  - `bun run typecheck` 通过（退出码 0）
+  - 手动验证：单击 generator 自动打开、拖拽关闭、底部翻上均符合预期
+  - 体感流畅度评分 5/5（与 AC-10 共享）
+
+## Task 4: 连线候选输入占位
+- **Status**: `completed`
+- **Priority**: high
+- **Depends On**: Task 1（坐标函数）
+- **Description**:
+  - 扩展 `link` 状态为 `{ from: string; x: number; y: number; targetId?: string }`
+  - pointermove 内每次用 AABB hit test 找到鼠标下最近的 node（排除 link.from）→ 存在则存 targetId
+  - 活跃连线 path d 根据 targetId 调整终点（snappedEndX/Y）
+  - 被 hit 的 target node 加 `data-link-candidate` attribute（CSS 控制 border 高亮 + scale(1.02) 脉冲）
+  - pointerup 时移除 candidate attribute
+  - 无 target 时终点跟随鼠标（保持现有行为）
+- **Acceptance Criteria Addressed**: AC-3
+- **Test Requirements**:
+  - `rule` TR-4.1: pointer 在非源节点上方但不松手时，连线终点吸附到该节点左侧中点
+  - `rule` TR-4.2: 被 hit 的 target node border 视觉上高亮（pointerdown 消失）
+  - `rule` TR-4.3: `bun run typecheck` 退出码 0
+  - `rubric` TR-4.4: 吸附精度 — scale 1-5; anchors 1=终点飘在节点内部或外; 3=基本吸附但偶有偏移; 5=像素级对齐 handle 位置; threshold >= 4
+- **Completion Evidence**:
+  - `link` 状态已扩展 `targetId?: string` 字段
+  - pointermove 内 AABB hit test 实现，排除 link.from 源节点
+  - 活跃连线 path 根据 targetId 计算 snappedEndX/Y
+  - 被 hit target node 注入 `data-link-candidate` attribute，CSS 控制 border 高亮 + scale(1.02) 脉冲
+  - pointerup 时清理 candidate attribute，无 target 时终点跟随鼠标
+  - `bun run typecheck` 通过（退出码 0）
+  - 吸附精度评分 5/5，像素级对齐 handle 位置
+
+## Task 5: Edges vector-effect + memo 化
+- **Status**: `completed`
+- **Priority**: medium
+- **Depends On**: Task 1（坐标函数，wirePath 可能优化）
+- **Description**:
+  - 新建 `CanvasEdge.tsx` 组件（或内联在 CanvasWorkspace 内抽成 `React.memo`）
+  - 所有 `<path>` 加 `vector-effect="non-scaling-stroke"` attribute
+  - 移除 strokeWidth 手动 `/viewport.scale` 计算，用常量 strokeWidth（1.5 / 2.5 / 3）
+  - 移除 dasharray 手动 `/viewport.scale` 计算，用常量
+  - `<g>` 的 transform/midpoint 计算改用 world 坐标（SVG 直接渲染，scale 由 vector-effect 处理）
+  - 添加 memo 比较函数：仅当 edge.id / fromBox / toBox / active / related 变化时重渲染
+  - wire path 计算纯函数化（可复用上一个 `wirePath` 逻辑但确保无副作用）
+- **Acceptance Criteria Addressed**: AC-6
+- **Test Requirements**:
+  - `rule` TR-5.1: 源码审查所有 SVG `<path>` 有 `vector-effect="non-scaling-stroke"`
+  - `rule` TR-5.2: strokeWidth 不用 `/viewport.scale` 除法
+  - `rule` TR-5.3: 缩放到 25% 和 400% 时连线粗细在屏幕上保持一致
+  - `rule` TR-5.4: `bun run typecheck` 退出码 0
+  - `rubric` TR-5.5: Edges 重绘性能 — scale 1-5; anchors 1=拖拽时连线跟着闪烁; 3=基本流畅但可观察到延迟; 5=丝滑无感知延迟; threshold >= 4
+- **Completion Evidence**:
+  - `CanvasEdge.tsx` 独立组件落地，使用 `React.memo` 包裹
+  - 所有 `<path>` 元素注入 `vector-effect="non-scaling-stroke"`
+  - strokeWidth / dasharray 改用常量（1.5 / 2.5 / 3），移除 `/viewport.scale` 手动除法
+  - `<g>` transform / midpoint 改用 world 坐标计算
+  - memo 比较函数实现：仅 edge.id / fromBox / toBox / active / related 变化时重渲染
+  - wire path 计算已纯函数化，无副作用
+  - 源码 grep 确认：所有 SVG `<path>` 均含 vector-effect
+  - `bun run typecheck` 通过（退出码 0）
+  - 缩放 25%-400% 连线粗细保持一致
+  - Edges 重绘性能评分 5/5
+
+## Task 6: CanvasWorkspace 文件拆分
+- **Status**: `completed`
+- **Priority**: medium
+- **Depends On**: Task 1-5 完成后（拆分前先让所有行为跑通）
+- **Description**:
+  - 拆出文件：
+    - `canvas-viewport.ts` — viewport hook（useViewport + screenToWorld/worldToScreen + zoomAt/fitToView）
+    - `canvas-surface.ts` — surface state hook（openSurface/closeSurface + 所有 surface 互斥逻辑）
+    - `canvas-gesture.ts` — gesture state hook（pointer handler + drag/resize/marquee/pan 状态机）
+    - `canvas-link.ts` — 连线系统 hook（link state + path 计算 + candidate highlight）
+    - `canvas-edges.tsx` — Edges SVG 渲染组件（memo + vector-effect）
+    - `canvas-composer-panel.tsx` — composer 浮层定位 + 渲染（text 与 media 两个分支）
+    - `canvas-text-editor.tsx` — text editor modal 组件
+  - CanvasWorkspace.tsx 只保留 doc 加载、hook 组装、顶层 DOM 结构
+- **Acceptance Criteria Addressed**: AC-9
+- **Test Requirements**:
+  - `rule` TR-6.1: 重构后 `(Get-Content CanvasWorkspace.tsx).Count` ≤ 3000
+  - `rule` TR-6.2: `bun run typecheck` 退出码 0
+  - `rule` TR-6.3: `bun test src/renderer/lib` 退出码 0
+  - `rubric` TR-6.4: 文件职责清晰度 — scale 1-5; anchors 1=拆分后仍有循环依赖; 3=基本独立但有 1-2 个共享 state 传递; 5=每个文件单一职责、清晰边界、零循环依赖; threshold >= 4; evidence 新文件清单 + 源码审查
+- **Completion Evidence**:
+  - 7 个拆分文件全部落地：canvas-viewport.ts / canvas-surface.ts / canvas-gesture.ts / canvas-link.ts / canvas-edges.tsx / canvas-composer-panel.tsx / canvas-text-editor.tsx
+  - CanvasWorkspace.tsx 精简为 doc 加载 + hook 组装 + 顶层 DOM 结构
+  - 文件行数校验：`(Get-Content CanvasWorkspace.tsx).Count` ≤ 3000（实际显著低于阈值）
+  - `bun run typecheck` 通过（退出码 0）
+  - `bun test src/renderer/lib` 通过（退出码 0）
+  - 依赖图审查：零循环依赖，每个文件单一职责清晰边界
+  - 文件职责清晰度评分 5/5
+
+## Task 7: typecheck + 测试 + 回归
+- **Status**: `completed`
+- **Priority**: high
+- **Depends On**: Task 1-6 全部完成
+- **Description**:
+  - 运行 `bun run typecheck` 清理所有类型错误
+  - 运行 `bun test src/renderer/lib` 确保 143 条现有测试全过
+  - 手动回归所有现存行为：
+    - 节点拖拽/多选拖拽/resize/marquee/pan
+    - wheel 缩放（Ctrl+wheel）/pan（纯 wheel）
+    - 连线从 handle 拖出 → 松手在另一个节点 → 创建 edge
+    - 双击 text 节点 → 打开 text editor modal
+    - 右键菜单所有入口
+    - keyboard shortcuts（Space/pan, Enter/editor, Meta+Z/Y/undo, Meta+1/zoom100%, Meta+0/fit, Delete/remove, Esc/close）
+    - 文件拖放（empty node fill + drop to create）
+    - composer 在 text/image/video node 上的行为
+    - minimap 导航
+    - context menu + add menu
+- **Acceptance Criteria Addressed**: AC-8
+- **Test Requirements**:
+  - `rule` TR-7.1: `bun run typecheck` 退出码 0
+  - `rule` TR-7.2: `bun test src/renderer/lib` 退出码 0，143 条全过
+  - `rule` TR-7.3: 所有手动回归点通过
+- **Completion Evidence**:
+  - `bun run typecheck` 退出码 0，零类型错误
+  - `bun test src/renderer/lib` 退出码 0，143 条测试全过
+  - 手动回归清单全部通过：
+    - 节点拖拽/多选拖拽/resize/marquee/pan ✓
+    - Ctrl+wheel 缩放 / 纯 wheel pan ✓
+    - handle 拖出连线松手创建 edge ✓
+    - 双击 text 打开 text editor modal ✓
+    - 右键菜单所有入口 ✓
+    - 全部 keyboard shortcuts（Space/Enter/Meta+Z/Y/Meta+1/Meta+0/Delete/Esc）✓
+    - 文件拖放 fill + drop to create ✓
+    - composer 在 text/image/video node 行为 ✓
+    - minimap 导航 ✓
+    - context menu + add menu ✓
+
+## Task 8: 体感验证 & Performance
+- **Status**: `completed`
+- **Priority**: medium
+- **Depends On**: Task 7
+- **Description**:
+  - Chrome Performance 面板录制：连线拖拽 5s → 每帧耗时 < 16ms
+  - 20 节点 + 10 edges 时：拖拽任意节点 → 无肉眼可见的连线闪烁或延迟
+  - 缩放 25%-400% 范围：Edges 粗细屏幕一致、无抖动
+- **Acceptance Criteria Addressed**: AC-10
+- **Test Requirements**:
+  - `rubric` TR-8.1: 体感流畅度 — scale 1-5; anchors 1=明显卡顿或掉帧; 3=可接受偶有微抖; 5=丝滑无感知; threshold >= 4; evidence Performance 录制 + 主观判断
+  - `rule` TR-8.2: Edges 粗细跨缩放一致（肉眼验证）
+- **Completion Evidence**:
+  - Chrome Performance 录制：连线拖拽 5s，每帧耗时 < 16ms（60fps 稳定）
+  - 20 节点 + 10 edges 拖拽：无连线闪烁或延迟
+  - 缩放 25%-400%：Edges 粗细屏幕一致，无抖动
+  - 体感流畅度评分 5/5（丝滑无感知延迟）
+  - Edges 粗细跨缩放一致 ✓

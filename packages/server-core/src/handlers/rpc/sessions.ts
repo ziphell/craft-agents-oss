@@ -11,6 +11,8 @@ const VALID_THINKING_LEVELS_LIST = THINKING_LEVEL_IDS.map(id => `'${id}'`).join(
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import { setTransferableHandler } from './transfer'
+import { searchMessages } from '../../sessions/message-search'
+import { listQuestions } from '../../sessions/conversation-outline'
 
 interface ClientSessionWatchState {
   watcher: import('fs').FSWatcher
@@ -58,34 +60,44 @@ export function cleanupSessionFileWatchForClient(clientId: string): void {
   clientSessionWatches.delete(clientId)
 }
 
-// Recursive directory scanner for session files
-// Filters out internal files (session.jsonl) and hidden files (. prefix)
-// Returns only non-empty directories
+// Recursive directory scanner for session files.
+//
+// The panel shows what the folder holds — there is no exclude list: hidden entries (`.foo`,
+// `.cache/`) and the session's own `session.jsonl` are part of the folder and are listed like
+// any other, the way an editor's file explorer lists everything it finds. A directory that is
+// still empty is listed too, so a folder the agent just created does not vanish.
 async function scanSessionDirectory(dirPath: string): Promise<import('@craft-agent/shared/protocol').SessionFile[]> {
   const { readdir, stat } = await import('fs/promises')
   const entries = await readdir(dirPath, { withFileTypes: true })
   const files: import('@craft-agent/shared/protocol').SessionFile[] = []
 
   for (const entry of entries) {
-    // Skip internal and hidden files
-    if (entry.name === 'session.jsonl' || entry.name.startsWith('.')) continue
-
     const fullPath = join(dirPath, entry.name)
 
     if (entry.isDirectory()) {
       // Recursively scan subdirectory
-      const children = await scanSessionDirectory(fullPath)
-      // Only include non-empty directories
-      if (children.length > 0) {
-        files.push({
-          name: entry.name,
-          path: fullPath,
-          type: 'directory',
-          children,
-        })
-      }
+      files.push({
+        name: entry.name,
+        path: fullPath,
+        type: 'directory',
+        children: await scanSessionDirectory(fullPath),
+      })
+      continue
+    }
+
+    // A symbolic link is listed, not followed: a link that points back into this tree cannot
+    // make the scan endless. `stat` resolves the link so a link to a file still shows a size.
+    let stats
+    try {
+      stats = await stat(fullPath)
+    } catch {
+      // Gone between readdir and stat — nothing left to show.
+      continue
+    }
+
+    if (stats.isDirectory()) {
+      files.push({ name: entry.name, path: fullPath, type: 'directory', children: [] })
     } else {
-      const stats = await stat(fullPath)
       files.push({
         name: entry.name,
         path: fullPath,
@@ -109,8 +121,12 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.sessions.CREATE,
   RPC_CHANNELS.sessions.DELETE,
   RPC_CHANNELS.sessions.GET_MESSAGES,
+  RPC_CHANNELS.sessions.SEARCH_MESSAGES,
+  RPC_CHANNELS.sessions.GET_QUESTIONS,
   RPC_CHANNELS.sessions.SEND_MESSAGE,
   RPC_CHANNELS.sessions.CANCEL,
+  RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE,
+  RPC_CHANNELS.sessions.SEND_QUEUED_MESSAGE_NOW,
   RPC_CHANNELS.sessions.KILL_SHELL,
   RPC_CHANNELS.tasks.GET_OUTPUT,
   RPC_CHANNELS.sessions.RESPOND_TO_PERMISSION,
@@ -177,13 +193,51 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
     return sessionManager.markAllSessionsRead(workspaceId)
   })
 
-  // Get a single session with messages (for lazy loading)
-  server.handle(RPC_CHANNELS.sessions.GET_MESSAGES, async (_ctx, sessionId: string) => {
-    const end = perf.start('rpc.getSessionMessages')
-    const session = await sessionManager.getSession(sessionId)
-    end()
-    return session
-  })
+  // Get a single session with messages (for lazy loading).
+  //
+  // `options` asks for one page instead of the whole conversation: omitting it
+  // keeps the old behaviour (every message), which is what other clients expect.
+  server.handle(
+    RPC_CHANNELS.sessions.GET_MESSAGES,
+    async (_ctx, sessionId: string, options?: { limit?: number; before?: string }) => {
+      const end = perf.start('rpc.getSessionMessages')
+      const session = await sessionManager.getSession(sessionId, options)
+      end()
+      return session
+    },
+  )
+
+  // Where a query occurs in a conversation — over its *whole* history.
+  //
+  // A client holds only the newest page, so it cannot answer this itself; and
+  // search is precisely the feature that must reach what the reader cannot see.
+  // Hits carry message ids, so the client can open the page that holds one.
+  server.handle(
+    RPC_CHANNELS.sessions.SEARCH_MESSAGES,
+    async (_ctx, sessionId: string, query: string) => {
+      const end = perf.start('rpc.searchSessionMessages')
+      const session = await sessionManager.getSession(sessionId)
+      end()
+      if (!session) return { total: 0, hits: [], limited: false }
+      return searchMessages(session.messages, query)
+    },
+  )
+
+  // Every question in the conversation, for the turn rail.
+  //
+  // The rail is a navigator: it must tick questions the client has not loaded,
+  // otherwise it silently claims the conversation starts where the page does —
+  // and clicking an old tick has nowhere to go.
+  server.handle(
+    RPC_CHANNELS.sessions.GET_QUESTIONS,
+    async (_ctx, sessionId: string) => {
+      const end = perf.start('rpc.getQuestions')
+      const session = await sessionManager.getSession(sessionId)
+      end()
+      if (!session) return []
+      return listQuestions(session.messages)
+    },
+  )
 
   // Create a new session
   server.handle(RPC_CHANNELS.sessions.CREATE, async (_ctx, workspaceId: string, options?: import('@craft-agent/shared/protocol').CreateSessionOptions) => {
@@ -227,7 +281,7 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
       }
 
       sessionManager
-        .sendMessage(sessionId, message, attachments, storedAttachments, options, undefined, undefined, onAck, { callerClientId })
+        .sendMessage(sessionId, message, attachments, storedAttachments, options, undefined, undefined, onAck)
         .then(() => {
           // sendMessage finished without firing onAck — should not happen in
           // practice (every code path that creates a user message acks).
@@ -262,6 +316,16 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
   // Cancel processing
   server.handle(RPC_CHANNELS.sessions.CANCEL, async (_ctx, sessionId: string, silent?: boolean) => {
     return sessionManager.cancelProcessing(sessionId, silent)
+  })
+
+  // Cancel one queued (not yet replaying) message so the user can edit it
+  server.handle(RPC_CHANNELS.sessions.CANCEL_QUEUED_MESSAGE, async (_ctx, sessionId: string, messageId: string, content?: string) => {
+    return sessionManager.cancelQueuedMessage(sessionId, messageId, content)
+  })
+
+  // Send a queued message now: stop the running turn, then replay this one first
+  server.handle(RPC_CHANNELS.sessions.SEND_QUEUED_MESSAGE_NOW, async (_ctx, sessionId: string, messageId: string) => {
+    return sessionManager.sendQueuedMessageNow(sessionId, messageId)
   })
 
   // Kill background shell
@@ -342,12 +406,15 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
         return sessionManager.setSessionLabels(sessionId, command.labels)
       case 'setProjectId':
         return sessionManager.setSessionProjectId(sessionId, command.projectId)
+      case 'setMode':
+        return sessionManager.setSessionMode(sessionId, command.mode)
       case 'setKanbanColumn':
         return sessionManager.setKanbanColumn(sessionId, command.column)
       case 'showInFinder': {
         const sessionPath = sessionManager.getSessionPath(sessionId)
         if (sessionPath) {
-          deps.platform.showItemInFolder?.(sessionPath)
+          // Open the session's own folder (not its parent with the folder selected).
+          await deps.platform.openPath?.(sessionPath)
         }
         return
       }
@@ -365,10 +432,14 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
       case 'refreshTitle':
         log.info(`IPC: refreshTitle received for session ${sessionId}`)
         return sessionManager.refreshTitle(sessionId)
-      // Connection selection (locked after first message)
+      // Explicit connection switch (user picked a model under another connection)
       case 'setConnection':
         log.info(`IPC: setConnection received for session ${sessionId}, connection: ${command.connectionSlug}`)
         return sessionManager.setSessionConnection(sessionId, command.connectionSlug)
+      // Explicit browser profile switch — the conversation's *next* tabs open in it
+      case 'setBrowserProfile':
+        log.info(`IPC: setBrowserProfile received for session ${sessionId}, profile: ${command.profileId ?? 'workspace default'}`)
+        return sessionManager.setSessionBrowserProfile(sessionId, command.profileId)
       // Pending plan execution (Accept & Compact flow)
       case 'setPendingPlanExecution':
         return sessionManager.setPendingPlanExecution(sessionId, command.planPath, command.draftInputSnapshot)
@@ -384,6 +455,8 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
         return sessionManager.removeMessageAnnotation(sessionId, command.messageId, command.annotationId)
       case 'updateAnnotation':
         return sessionManager.updateMessageAnnotation(sessionId, command.messageId, command.annotationId, command.patch)
+      case 'reorderQueuedMessage':
+        return sessionManager.reorderQueuedMessage(sessionId, command.messageId, command.toIndex)
       default: {
         const _exhaustive: never = command
         throw new Error(`Unknown session command: ${JSON.stringify(command)}`)
@@ -481,8 +554,10 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
       }
 
       state.watcher = watch(sessionPath, { recursive: true }, (_eventType, filename) => {
-        // Ignore internal files and hidden files
-        if (filename && (filename.includes('session.jsonl') || filename.startsWith('.'))) {
+        // The transcript is appended to on every message, and the tree is listed in full on every
+        // signal — so its own writes are left out of the trigger. This is churn control, not a
+        // filter: `session.jsonl` is listed in the tree like any other file.
+        if (filename && filename.includes('session.jsonl')) {
           return
         }
 

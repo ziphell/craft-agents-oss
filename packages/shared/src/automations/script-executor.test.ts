@@ -13,7 +13,6 @@ import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { executeScriptAction, clampScriptTimeout, createScriptHistoryEntry, DEFAULT_SCRIPT_TIMEOUT_MS, MAX_SCRIPT_TIMEOUT_MS } from './script-executor.ts';
 import { buildScriptEnv } from './utils.ts';
-import { loadPageConfig, savePageConfig } from '../pages/storage.ts';
 import type { ScriptAction } from './types.ts';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -156,58 +155,6 @@ describe('script-executor', () => {
     }, 15_000);
   });
 
-  describe('page refresh recording', () => {
-    it('records the outcome on page.json after the run', async () => {
-      const pageDir = join(workspaceDir, 'pages', 'dash');
-      mkdirSync(pageDir, { recursive: true });
-      savePageConfig(workspaceDir, {
-        schemaVersion: 1,
-        id: 'page_test0001',
-        slug: 'dash',
-        name: 'Dash',
-        kind: 'interactive',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      writeFileSync(join(workspaceDir, 'refresh.ts'), 'console.log("refreshed")');
-
-      const result = await executeScriptAction(
-        action({ script: 'refresh.ts', page: 'dash' }),
-        ctx(),
-      );
-      expect(result.success).toBe(true);
-
-      const config = loadPageConfig(workspaceDir, 'dash');
-      expect(config?.lastRefresh?.ok).toBe(true);
-      expect(config?.lastRefresh?.durationMs).toBeGreaterThanOrEqual(0);
-      expect(config?.lastRefresh?.error).toBeUndefined();
-    });
-
-    it('records failures with the captured stderr', async () => {
-      mkdirSync(join(workspaceDir, 'pages', 'dash'), { recursive: true });
-      savePageConfig(workspaceDir, {
-        schemaVersion: 1,
-        id: 'page_test0002',
-        slug: 'dash',
-        name: 'Dash',
-        kind: 'interactive',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      writeFileSync(join(workspaceDir, 'bad.ts'), 'console.error("kaput"); process.exit(1)');
-
-      const result = await executeScriptAction(
-        action({ script: 'bad.ts', page: 'dash' }),
-        ctx(),
-      );
-      expect(result.success).toBe(false);
-
-      const config = loadPageConfig(workspaceDir, 'dash');
-      expect(config?.lastRefresh?.ok).toBe(false);
-      expect(config?.lastRefresh?.error).toContain('kaput');
-    });
-  });
-
   describe('clampScriptTimeout', () => {
     it('defaults and clamps', () => {
       expect(clampScriptTimeout(undefined)).toBe(DEFAULT_SCRIPT_TIMEOUT_MS);
@@ -229,14 +176,12 @@ describe('script-executor', () => {
           stdout: '',
           stderr: 'e'.repeat(5000),
           durationMs: 42,
-          page: 'dash',
         },
       });
       expect(entry.id).toBe('abc123');
       expect(entry.ok).toBe(false);
       const script = entry.script as Record<string, unknown>;
       expect(script.script).toBe('x.ts');
-      expect(script.page).toBe('dash');
       expect((script.error as string).length).toBeLessThanOrEqual(2000);
     });
   });
@@ -249,15 +194,12 @@ describe('script-executor', () => {
         const env = buildScriptEnv(
           'SchedulerTick',
           { workspaceId: 'ws', timestamp: 123, localTime: '10:00', utcTime: 't' } as never,
-          { workspaceRootPath: workspaceDir, page: 'dash' },
+          { workspaceRootPath: workspaceDir },
         );
         expect(env.CRAFT_TEST_PASSTHROUGH).toBe('yes');
         expect(env.NOT_CRAFT_SECRET).toBeUndefined();
         expect(env.CRAFT_EVENT).toBe('SchedulerTick');
         expect(env.CRAFT_WORKSPACE_PATH).toBe(workspaceDir);
-        expect(env.CRAFT_PAGE_SLUG).toBe('dash');
-        expect(env.CRAFT_PAGE_DIR).toBe(join(workspaceDir, 'pages', 'dash'));
-        expect(env.CRAFT_PAGE_DATA_DIR).toBe(join(workspaceDir, 'pages', 'dash', 'data'));
         expect(env.PATH).toBeUndefined();
         // Every key is CRAFT_* or a documented essential
         const essentials = new Set(IS_WINDOWS

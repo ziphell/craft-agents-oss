@@ -72,9 +72,22 @@ export async function createTaskFromSpec(
   workspaceId: string,
   workspaceRoot: string,
   spec: TaskSpec,
-  opts?: { save?: boolean },
+  opts?: {
+    save?: boolean
+    /**
+     * The conversation creating this task, recorded on the spec as `created_by`.
+     *
+     * Callers pass the invoking session when there is one. It is written **into the file** rather
+     * than kept in memory because the reader (Craft Bot's workbench) is answering "which tasks did
+     * I start" after a restart, and an in-memory link would answer nothing then.
+     */
+    createdBy?: string
+  },
 ): Promise<CreateTaskFromSpecResult> {
-  if (opts?.save !== false) saveTaskSpec(workspaceRoot, spec)
+  const stored: TaskSpec = opts?.createdBy && !spec.created_by
+    ? { ...spec, created_by: opts.createdBy }
+    : spec
+  if (opts?.save !== false) saveTaskSpec(workspaceRoot, stored)
 
   const orchestrator = await sessionManager.createSession(workspaceId, {
     name: spec.title,

@@ -11,9 +11,16 @@ import ReactDOM from 'react-dom/client'
 import { useTranslation, initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import { setupI18n } from '@craft-agent/shared/i18n'
-import { EyeOff, X, XCircle } from 'lucide-react'
-import { BrowserControls } from '@craft-agent/ui'
+import { Check, Circle, Code, Copy, Download, EyeOff, Globe, Lock, MessageSquare, Minus, MousePointerClick, Plus, Square, X, XCircle } from 'lucide-react'
+import { BrowserControls, Spinner, useReleaseStaleInteraction } from '@craft-agent/ui'
 import { HeaderIconButton } from '@/components/ui/HeaderIconButton'
+import { PanelLeftRounded } from '@/components/icons/PanelLeftRounded'
+import { cn } from '@/lib/utils'
+import { getHostname } from '@/components/browser/utils'
+import { groupTabsByWork, shouldShowGroupHeaders, type TabGroup } from '@/components/browser/tab-groups'
+import { TAB_RAIL_WIDTH, TOOLBAR_HEIGHT } from '../shared/panel-geometry'
+import type { BrowserLoadError, BrowserTabSummary, TabBelongsTo } from '../shared/types'
+import { RECORDING_FORMATS, pickRecordingFormat } from '../shared/recording-formats'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -30,13 +37,127 @@ setupI18n([LanguageDetector, initReactI18next])
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * One file this window has fetched, as the bar reports it.
+ *
+ * The shape the host writes into a tab's download log, minus the tab it came from: the
+ * window's list is what a person asks "where did that go" about, and which tab asked for
+ * a file is not part of that answer.
+ */
+interface ToolbarDownloadEntry {
+  id: string
+  timestamp: number
+  filename: string
+  state: 'started' | 'completed' | 'interrupted' | 'cancelled'
+  bytesReceived: number
+  totalBytes: number
+  /** Where it was saved. Absent while it is still being fetched, and for one that never got that far. */
+  savePath?: string
+}
+
 interface ToolbarState {
+  /** What the URL bar shows: the address of the tab on screen. */
   url: string
   title: string
+  /**
+   * Which browser profile this window is signed into.
+   *
+   * A profile is a window: the window answers "which profile am I" with one value, and the chrome is
+   * where a person looks to check. Absent until the host's first push.
+   */
+  profileName?: string
   isLoading: boolean
+  /**
+   * Why the tab on screen failed to load, if it did.
+   *
+   * The bar shows it only as a red mark in the address's icon slot; the page area draws
+   * the explanation and the retry. Absent/null is the ordinary case; the host clears it
+   * when the next load starts.
+   */
+  error?: BrowserLoadError | null
   canGoBack: boolean
   canGoForward: boolean
-  themeColor?: string | null
+  /**
+   * Whether the window is maximized, for the minimize/maximize-restore buttons.
+   *
+   * The window's fact, not the button's memory: it can be maximized from outside the bar
+   * (a double-click on the drag region, the OS's own window menu), so the icon has to say
+   * which of the two a press will do.
+   */
+  maximized?: boolean
+  /**
+   * Whether the window's element picker is on.
+   *
+   * The window's mode, reported rather than guessed: it can also end from inside
+   * the page (Escape), which this renderer never sees otherwise. `undefined` = no
+   * state yet, which reads as "off" — the picker is not something to flash on.
+   */
+  picking?: boolean
+  /**
+   * Whether the tab on screen has its developer tools up.
+   *
+   * The tab's tools, not the window's: they follow what is on screen, so they are put
+   * away when the user switches tabs. `undefined` = no state yet, which reads as "off"
+   * for the same reason as `picking` — nothing to flash on.
+   */
+  devTools?: boolean
+  /**
+   * How many times the host has asked for the caret in the address bar.
+   *
+   * A new tab exists to be given an address, so the caret belongs in the bar rather than in
+   * the empty page it opened — and coming back to that tab asks again. A number because it is
+   * a request, not a state; `undefined` until the first push, which reads as "nothing asked".
+   */
+  urlBarFocusToken?: number
+  /**
+   * The window's tabs, in the order they were opened.
+   *
+   * `undefined` for a window that has not pushed state yet — the rail draws no
+   * tabs until it is told which ones exist, because an empty list would be chrome
+   * with no content.
+   */
+  tabs?: BrowserTabSummary[]
+  /**
+   * What to call each conversation whose tabs are in `tabs`, by opener id.
+   *
+   * The rail groups tabs by who opened them, and a session id is
+   * not a name. A missing entry is a conversation with no name yet — the rail says
+   * something generic rather than printing an id.
+   */
+  sessionLabels?: Record<string, string>
+  /**
+   * Whether the person has folded the rail away.
+   *
+   * The window's flag, not this document's: the rail's room is part of the tab area, so the page
+   * has already been placed without it by the time this arrives — the chrome draws the state
+   * rather than deciding it. Absent (`undefined`) until the first push reads as "out", which is
+   * what a window is born with.
+   */
+  railCollapsed?: boolean
+  /**
+   * The recording the person started from this window, if one is running.
+   *
+   * `null` (or no state yet) is the ordinary case. The window reports it rather than the
+   * button remembering it, because a recording also ends from the host side — the
+   * recorded tab is closed, or its window is — and a button still claiming to record a
+   * file that is already finished would be worse than no button.
+   */
+  recording?: {
+    /** Where the file is being written. */
+    file: string
+    /** Epoch ms, so the elapsed time is counted from the recording rather than from a click. */
+    startedAt: number
+    bytes: number
+  } | null
+  /**
+   * The window's recent downloads, newest first.
+   *
+   * `undefined` for a window that has not pushed state yet, and `[]` for one that has
+   * never downloaded anything — the button is drawn for the second and not the first.
+   * The window's rather than the tab on screen's, because the person who clicked moves
+   * on while the file is still arriving.
+   */
+  downloads?: ToolbarDownloadEntry[]
 }
 
 declare global {
@@ -49,13 +170,489 @@ declare global {
       reload: () => Promise<void>
       stop: () => Promise<void>
       setMenuGeometry: (open: boolean, height?: number) => Promise<void>
+      /**
+       * Render the built-in error page into the tab that failed. The copy travels with
+       * the call — this document is the side that has i18n.
+       */
+      showErrorPage: (copy: { message: string; url: string; retry: string }) => Promise<void>
       hideWindow: () => Promise<void>
       closeWindowEntirely: () => Promise<void>
+      /** Minimize the window — it is chromeless, so this is its own caption button. */
+      minimize: () => Promise<void>
+      /** Maximize if restored, restore if maximized: one button, the window says which. */
+      toggleMaximize: () => Promise<void>
+      /**
+       * The label is the caller's: the bar is drawn in the page, which has no i18n.
+       */
+      pickElement: (labels?: { add: string }) => Promise<void>
+      cancelPick: () => Promise<void>
+      /** Switch to one of this window's tabs, close one, add one, or unlock one. */
+      tabAction: (
+        action: 'activate' | 'close' | 'new' | 'release',
+        tabId?: string,
+        /**
+         * For `new` alone: the work the tab is being opened **for**, when a section's
+         * header asked for it rather than the rail's own `+` — see `createTab`'s
+         * `openedByPerson` on the host side.
+         */
+        work?: TabBelongsTo | null,
+      ) => Promise<void>
+      /** Open the current tab's developer tools, or close them if they are up. */
+      toggleDevTools: () => Promise<void>
+      /** Arm a recording of the tab on screen; the display media request follows it. */
+      startRecording: (extension?: string) => Promise<ToolbarState['recording']>
+      /** Finish the recording and close the file. Answers with `null` when nothing came through. */
+      stopRecording: () => Promise<{ file: string; bytes: number; seconds: number } | null>
+      /** One encoded chunk, in the order produced. */
+      sendRecordingChunk: (chunk: ArrayBuffer) => void
+      /** Show a finished download in its folder, by the `savePath` the state carried. */
+      revealDownload: (savePath: string) => Promise<void>
+      /** Fold the rail away, or bring it back — the window re-places the page and says so. */
+      toggleRailCollapsed: () => Promise<void>
       onStateUpdate: (callback: (state: ToolbarState) => void) => () => void
-      onThemeColor: (callback: (color: string | null) => void) => () => void
       onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => () => void
     }
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  The chrome's own shape                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The rail's width and the bar's height, from the one place both sides read them.
+ *
+ * The main process places the page as a view rectangle off these same numbers
+ * (`panel-geometry.ts`), so the slot this document leaves for it is the slot the page lands in.
+ */
+const RAIL_WIDTH_PX = TAB_RAIL_WIDTH
+const BAR_HEIGHT_PX = TOOLBAR_HEIGHT
+
+/**
+ * Where the leftmost control of the top band starts.
+ *
+ * There is nothing to steer around: the window is chromeless (`frame: false`), and a frameless
+ * window wears no OS caption buttons on any platform — the macOS traffic lights included, since
+ * they belong to the native title bar this window does not have (the workspace windows get theirs
+ * from `titleBarStyle: 'hiddenInset'`; this one asks for neither). The value is therefore just the
+ * margin the rail's own rows start at — 6px of list padding plus the 8px inside a row — which is
+ * what lines the toggle up with the column beneath it.
+ */
+const RAIL_TOGGLE_INSET = 14
+
+/**
+ * The rail's toggle: fold the rail away, or bring it back.
+ *
+ * The one control in the chrome that is not about a tab or an address. Drawn by whichever surface
+ * is at the window's left edge — the rail's header while the rail is out, the bar's own left end
+ * once it is folded (`BrowserToolbarApp`) — which is what keeps it on the same pixel in both
+ * states, and what makes it the way *back* from a folded rail.
+ */
+function RailToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const { t } = useTranslation()
+  const label = t('menu.toggleSidebar')
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      aria-pressed={collapsed}
+      className={cn(
+        'titlebar-no-drag grid h-6 w-6 shrink-0 place-items-center rounded-[6px] transition-colors',
+        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        'text-foreground/65 hover:bg-foreground/[0.06] hover:text-foreground',
+      )}
+      onClick={onToggle}
+    >
+      <PanelLeftRounded className="h-[18px] w-[18px]" />
+    </button>
+  )
+}
+
+/** `0:07` — a recording's length, in the form a person reads a stopwatch in. */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+/**
+ * How far along a download is, or `null` when its size is not known yet.
+ *
+ * `null` rather than 0%: a server that sends no length has a download with no
+ * denominator, and "0%" would be a claim about it rather than a missing number.
+ */
+function downloadPercent(entry: Pick<ToolbarDownloadEntry, 'bytesReceived' | 'totalBytes'>): number | null {
+  if (entry.totalBytes <= 0) return null
+  return Math.max(0, Math.min(100, Math.round((entry.bytesReceived / entry.totalBytes) * 100)))
+}
+
+/*
+ * What to record into — the table and the picker come from `shared/recording-formats.ts`, because
+ * a conversation's recording is encoded by a hidden window of its own and the two must answer
+ * this the same way. The order to try, and why mp4 is first, are written up there.
+ */
+
+/* ------------------------------------------------------------------ */
+/*  Tab rail                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One tab's own mark, in the rail's leading column.
+ *
+ * A column of truncated 11px titles is slow to read by text alone, and the site's own
+ * icon is the thing the eye can use instead — the window's chip in the top bar draws the
+ * same image from the same field, so a tab looks like itself in both places.
+ *
+ * Three states, in the order they can be trusted: a tab that is loading says so with a
+ * thin ring — the site's icon, once in hand, stays inside it — a tab with an icon shows
+ * it, and everything else gets a globe — including an icon that failed to load, which is
+ * what a site with none amounts to anyway. `failed` is cleared when the address changes,
+ * because the next page's icon is a different request and one 404 is not a verdict on the
+ * site.
+ */
+function TabIcon({ src, loading }: { src: string | null; loading: boolean }) {
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    setFailed(false)
+  }, [src])
+
+  const icon = src && !failed ? src : null
+
+  if (loading) {
+    if (!icon) {
+      // Nothing to sit inside the ring: a square skeleton in the icon slot's shape, so an
+      // empty load is not a large empty circle.
+      return <span className="h-3.5 w-3.5 animate-pulse rounded-[3px] bg-current opacity-20" />
+    }
+    return (
+      <span className="relative flex h-4 w-4 items-center justify-center">
+        <span className="absolute inset-0 rounded-full border border-current opacity-20" />
+        <span className="absolute inset-0 animate-spin rounded-full border border-transparent border-t-current opacity-60" />
+        <img
+          src={icon}
+          alt=""
+          className="h-2.5 w-2.5 rounded-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      </span>
+    )
+  }
+  if (!icon) return <Globe className="h-4 w-4" />
+
+  return (
+    <img
+      src={icon}
+      alt=""
+      className="h-4 w-4 rounded-[3px] object-cover"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
+/**
+ * The window's tabs, down the window's left edge.
+ *
+ * Tabs are a list that grows with use, and a window has height to spare rather
+ * than width: as a row across the top the list had to share its room with the
+ * address bar, so a second tab pushed the bar aside and every chip after it
+ * scrolled out of sight — which is what made it unusable. A column gives every
+ * tab the same width, and the bar keeps the geometry it always had.
+ *
+ * It reads as chrome, so it drags the window like the bar does — except the tabs
+ * themselves and the `+`, which are things to click. Its colours are the app's,
+ * not the page's: chrome is not part of the page (the page's own colour still tints
+ * the window's chip in the top bar, which is about *which* window, not this surface).
+ */
+function TabRail({
+  tabs,
+  sessionLabels,
+  onSelect,
+  onClose,
+  onNewFor,
+  onRelease,
+}: {
+  tabs: BrowserTabSummary[]
+  sessionLabels: Record<string, string>
+  onSelect: (tabId: string) => void
+  onClose: (tabId: string) => void
+  /**
+   * One more tab **for this work** — the `+` on a section's header, rather than the rail's
+   * own `+` above it. The tab is the work's and joins its section.
+   */
+  onNewFor: (work: TabBelongsTo) => void
+  /** Unlock this tab: the agent's hold is dropped, which is the person taking the wheel. */
+  onRelease: (tabId: string) => void
+}) {
+  const { t } = useTranslation()
+  const tone = {
+    /** An inactive row's text: readable, never competing with the tab on screen. */
+    text: 'text-foreground/65',
+    /**
+     * A section's name. A step quieter than the tabs under it — it is a label for them,
+     * not one of them — but not so quiet that a section reads as a divider.
+     */
+    group: 'text-foreground/55',
+    /** The tab on screen: solid text over a tint the row keeps while it is current. */
+    active: 'bg-foreground/[0.08] text-foreground',
+    hover: 'hover:bg-foreground/[0.04]',
+    /** Held down anywhere on the row — the pill is the same moment the tab answers (the switch is the press). */
+    pressed: 'active:bg-foreground/[0.1]',
+  }
+
+  /**
+   * The tabs, sectioned by whose work they are — a person's, one of the conversations this
+   * window is shared with, or a task of the Tasks DAG.
+   *
+   * The rule lives in `groupTabsByWork` because the badge's tab list in the top bar
+   * draws the same list and the two must not disagree about it. Headers only appear
+   * when there is more than one group: with a single group they would be a row saying
+   * "all of these are yours" over all of them.
+   */
+  const groups = groupTabsByWork(tabs)
+  const showHeaders = shouldShowGroupHeaders(groups)
+
+  /**
+   * What to write on a group's header: a name, never an id.
+   *
+   * A task is named by its own slug — that is the name the board, the task's folder and every
+   * one of its sessions use — so nothing has to be pushed alongside the tabs for it, the way a
+   * conversation's name has to be (`sessionLabels`: the rail is a separate document).
+   */
+  const groupLabel = (group: TabGroup): string => {
+    const work = group.work
+    if (!work) return t('browser.openedByYou')
+    if (work.kind === 'task') return work.taskSlug
+    return sessionLabels[work.sessionId] ?? t('browser.openedByConversation')
+  }
+
+  /**
+   * The `+` on a section's header: one more tab **for that work**.
+   *
+   * What the person does with it is set a page up in advance — open the site, get to the
+   * screen, sign in — so the conversation it belongs to can carry on from there, which is
+   * why the tab is made the work's rather than the person's. It comes with the header, so it
+   * is there whether the window holds one section or several; the person's own section has no
+   * header and no button, because one more of your own tabs is what the rail's `+` above is.
+   *
+   * Named for the two shapes work comes in, because "put a tab in this group" is not
+   * something a person would say to themselves: what they are doing is opening a page for a
+   * conversation, or for a task.
+   */
+  const groupAddButton = (work: TabBelongsTo) => {
+    const label = work.kind === 'task' ? t('browser.newTabForTask') : t('browser.newTabForConversation')
+    return (
+      <button
+        type="button"
+        aria-label={label}
+        title={label}
+        // `-mr-1`: out of the header's own padding, so the icon sits in the column the
+        // rows' close buttons are in rather than on a margin of its own.
+        className="titlebar-no-drag -mr-1 grid h-5 w-5 shrink-0 place-items-center rounded-[5px] text-foreground/60 transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        onClick={() => onNewFor(work)}
+      >
+        <Plus className="h-3 w-3" />
+      </button>
+    )
+  }
+
+  return (
+    // The rail is the chrome's left column, under the window's title bar in the same document
+    // (`BrowserToolbarApp`): its own width is the host's `TAB_RAIL_WIDTH`, so it takes its room
+    // from the window rather than inheriting a view's rectangle.
+    <div className="flex h-full shrink-0 flex-col browser-chrome-surface" style={{ width: RAIL_WIDTH_PX }}>
+      <div className="titlebar-drag-region scrollbar-hide flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-1.5 pb-1.5 pt-1.5">
+        {groups.map((group) => (
+          <div key={group.key} className="relative flex flex-col gap-0.5">
+            {/*
+              The section's own guide: a hairline down the gutter, with its tabs indented
+              past it. A name in a slightly different grey is not enough to read as a
+              section on its own — it says "these belong together" only to somebody who
+              already knew. The step in and the line are the two cues that do not have to
+              be read. It starts below the name (`top-8`), so the line never underlines it.
+            */}
+            {showHeaders && (
+              <span
+                aria-hidden
+                className="pointer-events-none absolute left-1 top-8 bottom-1 w-px rounded-full bg-foreground/10"
+              />
+            )}
+
+            {showHeaders && (
+              /*
+                A name that scrolls away with its own tabs, not a sticky band. Sticking
+                would mean covering the rows sliding under it, and a cover drawn over the
+                column's own half-tint is a flatter grey — the column is translucent so the
+                window's material can read through it, and a second translucent layer on
+                top is the third grey nobody chose (`docs/browser-window-chrome.md`). The
+                name is worth less than the column being one piece; the hairline and the
+                step in already say where a section starts.
+
+                The negative margin takes the band out of the scrollport's own 6px list
+                padding, so the name starts on the column's 14px inset — the same one the
+                toggle above and a row's own text sit on (`RAIL_TOGGLE_INSET`), with the
+                rows stepped in past it.
+
+                One height for every section (`min-h-8`), button or no button: a band that
+                grew only where it holds one would read as two kinds of section.
+              */
+              <div
+                className={cn(
+                  '-mx-1.5 flex min-h-8 items-center gap-1 px-3.5 py-1 text-[10px] font-medium',
+                  tone.group,
+                )}
+              >
+                {/* A message, not a robot: a section is a conversation's work, and the
+                    person reading the rail is looking at conversations. */}
+                {group.work !== null && <MessageSquare className="h-3 w-3 shrink-0" />}
+                <span className="min-w-0 flex-1 truncate">{groupLabel(group)}</span>
+                {group.work !== null && groupAddButton(group.work)}
+              </div>
+            )}
+
+            {group.tabs.map((tab) => {
+              const label = tab.title.trim() || getHostname(tab.url) || t('browser.untitledTab')
+              // Everything the row is too narrow to say: the title it truncates, the
+              // address behind it, and — since the hold and the dot are unlabelled marks —
+              // what an agent has to do with it.
+              const tooltip = [
+                label,
+                tab.url,
+                tab.lockedBy !== null ? t('browser.tabInUse') : tab.drivenBy !== null ? t('browser.tabDriven') : null,
+              ]
+                .filter(Boolean)
+                .join('\n')
+
+              return (
+                <div
+                  key={tab.id}
+                  className={cn(
+                    'group flex items-center gap-0.5 rounded-[6px] transition-colors',
+                    // Stepped in past the section's guide, so a row reads as belonging to
+                    // the name above it and not to the column. Not when there are no
+                    // headers: the only section there is cannot be nested under anything.
+                    showHeaders && 'ml-3',
+                    // Focus lights the row the way hover does. `*:focus-visible` turns the
+                    // outline off app-wide, so a row that ignored focus would leave the
+                    // keyboard with nothing to go by. Hover is for the inactive rows only:
+                    // on the current tab it comes out *dimmer* than the tab already is,
+                    // which reads as the tab losing its place.
+                    'focus-within:bg-foreground/[0.08]',
+                    tab.active ? tone.active : cn(tone.text, tone.hover),
+                    tone.pressed,
+                  )}
+                >
+                  <button
+                    type="button"
+                    className="titlebar-no-drag flex min-w-0 flex-1 items-start gap-1.5 rounded-[6px] px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+                    title={tooltip}
+                    /*
+                      The switch is on the **press**, not on the release: that is what a
+                      browser's own tab does — the tab answers the moment it is touched, and a
+                      press that ends somewhere else has still chosen it. Primary button only,
+                      so a right-press is left to be whatever it is elsewhere (the rail draws no
+                      menu of its own, and the row's other buttons are siblings, not inside this
+                      one, so neither reaches here).
+                    */
+                    onMouseDown={(event) => {
+                      if (event.button === 0) onSelect(tab.id)
+                    }}
+                    /*
+                      The keyboard has no press to give, so it keeps the click — and only the one
+                      it makes itself (`detail === 0`): a mouse click is the release of the press
+                      already answered above, and switching again on it would be the same act
+                      done twice.
+                    */
+                    onClick={(event) => {
+                      if (event.detail === 0) onSelect(tab.id)
+                    }}
+                  >
+                    {/*
+                      Dimmed as a whole rather than letting the text do it twice: the
+                      globe inherits a colour while an image cannot, so the slot states
+                      its own and lets one opacity rule both. That is what keeps a page
+                      with an icon and a page without them equally quiet until one of
+                      them is the tab on screen.
+                    */}
+                    <span
+                      className={cn(
+                        'flex h-4 w-4 shrink-0 items-center justify-center text-foreground',
+                        tab.active ? 'opacity-100' : 'opacity-70',
+                      )}
+                    >
+                      <TabIcon src={tab.favicon} loading={tab.isLoading} />
+                    </span>
+                    <span className="relative min-w-0 flex-1 text-[11px]">
+                      <span className="block truncate">{label}</span>
+                      {tab.lockedBy !== null && (
+                        <span aria-hidden className="tab-title-shimmer pointer-events-none absolute inset-0 truncate">
+                          {label}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+
+                  {/*
+                    What is happening to the tab, in the same place on every row instead of
+                    after the title: read down the rail's right edge and the answer is one
+                    column, and a row's own marks never move the title they sit beside.
+                    Three facts, three marks: the title highlight says an agent is working here
+                    right now (it survives the person's dismissal — the work goes on), the lock
+                    says the agent still holds the tab (unlocking it drops only the person's
+                    half: ring, dim and shield), and the plain dot is the weaker fact, a tab
+                    somebody has driven but is not working on now.
+                  */}
+                  {tab.lockedBy === null && tab.drivenBy !== null && (
+                    <span
+                      aria-label={t('browser.tabDriven')}
+                      title={t('browser.tabDriven')}
+                      className="mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                    />
+                  )}
+
+                  {tab.lockedBy !== null && !tab.overlayDismissed && (
+                    <button
+                      type="button"
+                      aria-label={t('browser.takeOverTab')}
+                      title={t('browser.takeOverTab')}
+                      className="titlebar-no-drag grid h-5 w-5 shrink-0 place-items-center rounded-[5px] text-accent transition-colors hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      onClick={() => onRelease(tab.id)}
+                    >
+                      <Lock className="h-3 w-3" />
+                    </button>
+                  )}
+
+                  {/*
+                    Always in the layout, so a title truncates once and never reflows when
+                    the pointer arrives: what hovering reveals is the button, not the room
+                    for it. The current tab's stays out — it is the one row not asking to be
+                    found — and the keyboard brings it back on focus, since a control that
+                    cannot be seen is not a control anybody can use.
+                  */}
+                  <button
+                    type="button"
+                    aria-label={t('browser.closeTab')}
+                    title={t('browser.closeTab')}
+                    className={cn(
+                      'titlebar-no-drag mr-1 grid h-5 w-5 shrink-0 place-items-center rounded-[5px] text-foreground',
+                      'transition-[opacity,background-color] hover:bg-foreground/10 hover:opacity-100',
+                      'focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                      tab.active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70',
+                    )}
+                    onClick={() => onClose(tab.id)}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -71,39 +668,111 @@ function BrowserToolbarApp() {
     canGoBack: false,
     canGoForward: false,
   })
-  const [themeColor, setThemeColor] = useState<string | null>(null)
   const [windowMenuOpen, setWindowMenuOpen] = useState(false)
+  const [downloadsMenuOpen, setDownloadsMenuOpen] = useState(false)
   const menuContentRef = useRef<HTMLDivElement | null>(null)
+  const downloadsMenuContentRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * Whether this opening of the window menu has already been answered.
+   *
+   * Its items act on the press **and** on Radix's `onSelect`, so one of them has to be the
+   * second word on the same act — see `runWindowMenuAction`.
+   */
+  const windowMenuAnswered = useRef(false)
+
+  /**
+   * Edit mode, as the window reports it.
+   *
+   * Not this renderer's own state: the mode outlives a single pick and can also
+   * end in the page (Escape), so the toolbar that drew it has to be told what it
+   * is rather than remember what it asked for.
+   */
+  const picking = state.picking === true
+  /**
+   * Whether the current tab's developer tools are up, as the window reports it.
+   *
+   * Not this renderer's state for the same reason as `picking`: the tools can be closed
+   * from their own window, and switching tabs puts them away.
+   */
+  const devTools = state.devTools === true
+  /**
+   * Whether the rail is folded away — the window's flag, drawn rather than kept here. A state
+   * that has not arrived yet reads as "out", which is what a window is born with.
+   */
+  const railCollapsed = state.railCollapsed === true
+  /**
+   * Whether the window is maximized, as the window reports it.
+   *
+   * Not this renderer's state for the same reason as `picking`: it can also change from
+   * outside the bar (a double-click on the drag region), so the button draws the window's
+   * fact rather than the last thing it asked for.
+   */
+  const maximized = state.maximized === true
 
   const api = window.browserToolbar
 
-  useEffect(() => {
-    if (!api) return
-    return api.onStateUpdate((s) => {
-      setState(s)
-      // Sync theme color from full state push (initial load / reconnection)
-      if ('themeColor' in s) {
-        setThemeColor((s as ToolbarState).themeColor ?? null)
-      }
-    })
-  }, [api])
+  // The chrome drops its hover state when the window loses focus — the pointer is still on some
+  // button, and nothing would otherwise clear it, so a hover would still be there when the window
+  // comes back (`useReleaseStaleInteraction`).
+  useReleaseStaleInteraction()
+
+  /**
+   * The recording, as the window reports it.
+   *
+   * The person's own recording of the tab in front of them: they press the button, drive
+   * the page, press it again. It is here rather than in the agent's tool set because
+   * "now" is the one thing nobody can say from inside the thing being recorded.
+   */
+  const recording = state.recording ?? null
+  const [recorder, setRecorder] = useState<MediaRecorder | null>(null)
+  const [elapsedMs, setElapsedMs] = useState(0)
+  const [savedFile, setSavedFile] = useState<string | null>(null)
+  const [recordFailed, setRecordFailed] = useState(false)
+
+  /**
+   * The window's recent downloads, and the one the person has already looked at.
+   *
+   * The list is the host's (a download is the window's, not this renderer's); what is
+   * kept here is only whether the newest finished one has been seen, which is what the
+   * button's accent mark means. `downloadsMenuOpen` sets it: opening the list *is*
+   * looking, so the mark has nothing left to say.
+   */
+  const downloads = state.downloads ?? []
+  const [seenDownloadId, setSeenDownloadId] = useState<string | null>(null)
+  const downloading = downloads.find((entry) => entry.state === 'started') ?? null
+  const newestFinished = downloads.find((entry) => entry.state !== 'started') ?? null
+  const unseenDownload = newestFinished !== null && newestFinished.id !== seenDownloadId
 
   useEffect(() => {
     if (!api) return
-    return api.onThemeColor(setThemeColor)
+    return api.onStateUpdate(setState)
   }, [api])
 
   useEffect(() => {
     if (!api) return
     return api.onForceCloseMenu(() => {
       setWindowMenuOpen(false)
+      setDownloadsMenuOpen(false)
     })
   }, [api])
 
+  /**
+   * The open menu's geometry, whichever menu it is.
+   *
+   * Both menus are drawn in this same document, so both have to tell the host one is open or it
+   * does not know to lift the chrome over the page for the menu to hang across — and the height
+   * says how far down it hangs. One slot, because only one of them can be open at a time.
+   */
   useEffect(() => {
     if (!api) return
 
-    if (!windowMenuOpen) {
+    // "A menu is open" is the *state*, never the presence of its content element. The
+    // content mounts a beat after the state flips, and reading that beat as "no menu" is
+    // not a harmless no-op: the host shrinks the bar back to its 48 pixels and sends the
+    // menu the force-close it was just told to open. After that the full-window tap
+    // catcher is up over the bar, so every further click on the button is swallowed by it
+    // and only ever puts the invisible menu away — the button stops working for good.
+    if (!windowMenuOpen && !downloadsMenuOpen) {
       void api.setMenuGeometry(false, 0)
       return
     }
@@ -111,30 +780,135 @@ function BrowserToolbarApp() {
     // Prime expansion immediately to avoid a constrained first measurement.
     void api.setMenuGeometry(true, 120)
 
+    const content = () => (windowMenuOpen ? menuContentRef.current : downloadsMenuContentRef.current)
+
     const sendGeometry = () => {
-      const height = Math.ceil(menuContentRef.current?.getBoundingClientRect().height ?? 0)
-      void api.setMenuGeometry(true, height)
+      const el = content()
+      if (!el) return
+      void api.setMenuGeometry(true, Math.ceil(el.getBoundingClientRect().height ?? 0))
     }
 
-    let frame = requestAnimationFrame(sendGeometry)
-    const observer = new ResizeObserver(() => {
+    const observer = new ResizeObserver(sendGeometry)
+
+    // Attached as soon as the content exists, so a menu that mounts late is still
+    // measured — the host is already expanded by then, and nothing else would tell it
+    // how tall the open menu actually is.
+    let frame = 0
+    let attempts = 0
+    const attach = () => {
+      const el = content()
+      if (!el) {
+        if (attempts++ < 2) frame = requestAnimationFrame(attach)
+        return
+      }
+      observer.observe(el)
       sendGeometry()
-    })
-
-    if (menuContentRef.current) {
-      observer.observe(menuContentRef.current)
     }
+
+    frame = requestAnimationFrame(attach)
 
     return () => {
       cancelAnimationFrame(frame)
       observer.disconnect()
       void api.setMenuGeometry(false, 0)
     }
-  }, [api, windowMenuOpen])
+  }, [api, windowMenuOpen, downloadsMenuOpen])
+
+  /**
+   * How long the recording has been running, counted from when it started.
+   *
+   * From the host's `startedAt` rather than from a click here: the button is the person's,
+   * and a renderer that reloaded mid-recording would otherwise start counting again.
+   */
+  const recordingStartedAt = recording?.startedAt ?? null
+  useEffect(() => {
+    if (recordingStartedAt === null) {
+      setElapsedMs(0)
+      return
+    }
+    const tick = () => setElapsedMs(Date.now() - recordingStartedAt)
+    tick()
+    const timer = setInterval(tick, 500)
+    return () => clearInterval(timer)
+  }, [recordingStartedAt])
+
+  /** Where it went, said for a moment and then out of the way. */
+  useEffect(() => {
+    if (!savedFile) return
+    const timer = setTimeout(() => setSavedFile(null), 8000)
+    return () => clearTimeout(timer)
+  }, [savedFile])
 
   const handleNavigate = useCallback((url: string) => {
-    void api?.navigate(url)
+    // The failure is reported through state (`error`), not a rejection this side could
+    // draw — the host knows the code and pushes it with the next state update.
+    void api?.navigate(url)?.catch(() => undefined)
   }, [api])
+
+  /**
+   * The failure as a sentence, for the built-in error page.
+   *
+   * Chromium groups a family under one meaning — every certificate problem is the same
+   * thing to the person reading it — so this maps families rather than enumerating every
+   * code. The address below the sentence is the full one, for what the sentence cannot
+   * cover.
+   */
+  const browserErrorMessage = useCallback((failure: BrowserLoadError): string => {
+    switch (failure.code) {
+      case 'ERR_NAME_NOT_RESOLVED':
+      case 'ERR_NAME_RESOLUTION_FAILED':
+        return t('browser.error.nameNotResolved')
+      // Not a load failure at all: the address was fine and the process drawing it ended. The
+      // host reports it this way so that everything reading `error` says something true
+      // (`tabs`' `crashed:`, `snapshot`'s refusal) — this is the sentence for the person.
+      case 'ERR_RENDERER_CRASHED':
+        return t('browser.error.crashed')
+      case 'ERR_CONNECTION_REFUSED':
+      case 'ERR_CONNECTION_RESET':
+      case 'ERR_CONNECTION_CLOSED':
+      case 'ERR_ADDRESS_UNREACHABLE':
+      case 'ERR_EMPTY_RESPONSE':
+        return t('browser.error.connectionRefused')
+      case 'ERR_CONNECTION_TIMED_OUT':
+      case 'ERR_TIMED_OUT':
+        return t('browser.error.timeout')
+      case 'ERR_INTERNET_DISCONNECTED':
+      case 'ERR_NETWORK_CHANGED':
+        return t('browser.error.offline')
+      case 'ERR_CERT_AUTHORITY_INVALID':
+      case 'ERR_CERT_COMMON_NAME_INVALID':
+      case 'ERR_CERT_DATE_INVALID':
+      case 'ERR_SSL_PROTOCOL_ERROR':
+        return t('browser.error.certificate')
+      case 'HTTP_ERROR':
+        return t('browser.error.httpStatus', { status: failure.status ?? '' })
+      default:
+        return t('browser.error.unknown')
+    }
+  }, [t])
+
+  /**
+   * Hand the failure to the host, which renders the built-in error page into the tab.
+   *
+   * The copy is ours (this is the side with i18n). Once per failure: the host has
+   * already put the page in place, and a state replay must not reload it.
+   */
+  const shownErrorKey = useRef<string | null>(null)
+  useEffect(() => {
+    if (!api) return
+    if (!state.error) {
+      shownErrorKey.current = null
+      return
+    }
+    const key = `${state.error.code}:${state.error.status ?? ''}:${state.error.url}`
+    if (shownErrorKey.current === key) return
+    shownErrorKey.current = key
+    void api.showErrorPage({
+      message: browserErrorMessage(state.error),
+      url: state.error.url,
+      retry: t('browser.retry'),
+    }).catch(() => undefined)
+  }, [api, state.error, browserErrorMessage, t])
 
   const handleGoBack = useCallback(() => {
     void api?.goBack()
@@ -162,26 +936,294 @@ function BrowserToolbarApp() {
     void api?.closeWindowEntirely()
   }, [api])
 
-  return (
-    <>
-      {/*
-        Full-window outside-tap catcher while menu is open.
-        Critical for draggable titlebar windows (Windows) where outside-click
-        dismissal can be unreliable if events fall into app-region: drag zones.
-      */}
-      {windowMenuOpen && (
-        <div
-          className="fixed inset-0 z-[90] titlebar-no-drag bg-black/[0.0039215686]"
-          onPointerDown={(event) => {
-            event.preventDefault()
-            setWindowMenuOpen(false)
-          }}
-        />
-      )}
+  /**
+   * One answer per opening of the window menu, whichever event arrives first.
+   *
+   * Its two items are the whole reason this window can be closed, and they used to answer only on
+   * Radix's `onSelect` — which is the **release**. Two things eat that release:
+   *
+   * - **the window's native views are laid out again** while the menu is open. The menu is only
+   *   visible because the host lifts the chrome over the page (`restackViews`), and every geometry
+   *   update re-adds the page's view (`contentView.addChildView`) under a pointer that is already
+   *   down; a release delivered after that is one the item never sees;
+   * - **Radix's own rule for a menu**: a release that ends a pixel off the row is a cancellation,
+   *   the way a native menu cancels. A two-item menu in the window's corner is exactly where a
+   *   hand drifts.
+   *
+   * Both leave the same impression — the menu stays open and nothing happened — and both are
+   * answered by acting on the press. `windowMenuAnswered` then keeps the release (and the
+   * keyboard's Enter, which arrives as `select` with no press before it) from saying it twice.
+   */
+  const runWindowMenuAction = useCallback((action: () => void) => {
+    if (windowMenuAnswered.current) return
+    windowMenuAnswered.current = true
+    action()
+  }, [])
 
-      <BrowserControls
+  const handleMinimize = useCallback(() => {
+    void api?.minimize()
+  }, [api])
+
+  const handleToggleMaximize = useCallback(() => {
+    void api?.toggleMaximize()
+  }, [api])
+
+  /**
+   * Turn the window's element picker on or off.
+   *
+   * Neither call is awaited for its outcome: the mode is the window's, and it arrives
+   * back as state. The bar's word goes with the call — it is drawn inside the page,
+   * which has no i18n, and this is the side that does.
+   */
+  const handleTogglePick = useCallback(() => {
+    if (!api) return
+    if (picking) {
+      void api.cancelPick()
+      return
+    }
+    void api.pickElement({ add: t('browser.addToConversation') })
+  }, [api, picking, t])
+
+  const handleToggleDevTools = useCallback(() => {
+    void api?.toggleDevTools()
+  }, [api])
+
+  /**
+   * Show one downloaded file in its folder.
+   *
+   * The path travels back to the host rather than being opened here: revealing is
+   * something only the OS can do, and the host is the side that wrote the file down in
+   * the first place (so this cannot be turned into "open anything").
+   */
+  const handleRevealDownload = useCallback((savePath: string) => {
+    void api?.revealDownload(savePath)
+  }, [api])
+
+  /**
+   * Opening the list is looking at it — which is what takes the button's mark away.
+   */
+  const handleDownloadsMenuOpenChange = useCallback((open: boolean) => {
+    setDownloadsMenuOpen(open)
+    if (open) setSeenDownloadId(newestFinished?.id ?? null)
+  }, [newestFinished])
+
+  /**
+   * What a row says about one download.
+   *
+   * A percentage while it is arriving, the refusal when it did not arrive, and nothing
+   * at all when it simply arrived — the check beside the name is that answer, and a word
+   * there would only be read by somebody already looking at the row.
+   */
+  const downloadStateLabel = useCallback((entry: ToolbarDownloadEntry): string => {
+    if (entry.state === 'started') {
+      const percent = downloadPercent(entry)
+      return percent === null ? t('browser.downloading') : `${percent}%`
+    }
+    if (entry.state === 'completed') return ''
+    return t('browser.downloadFailed')
+  }, [t])
+
+  /**
+   * Start or stop the person's recording of this tab.
+   *
+   * Starting is three steps in a fixed order: **arm** the recording (the host opens the
+   * file and takes the tab — the display-media request is answered with exactly that tab),
+   * **ask** for the picture, then record what comes back. There is no picker to click
+   * through: the request this makes is the one the host is waiting for.
+   */
+  const handleToggleRecord = useCallback(async () => {
+    if (!api) return
+
+    if (recording) {
+      // Stopped through the recorder rather than straight at the host: the final chunk is
+      // produced by `stop`, and the file must not be closed before it has been sent. (The
+      // recorder can also be gone — the host ends a recording whose tab is closed — and
+      // then there is nothing left but to tell the host, which answers `null`.)
+      if (recorder && recorder.state !== 'inactive') recorder.stop()
+      else void api.stopRecording()
+      return
+    }
+
+    setRecordFailed(false)
+    setSavedFile(null)
+
+    // The format first, because the host opens the file — and names it — before any of the
+    // picture exists, and because a build that can record into nothing has to be caught before
+    // there is a file to leave behind.
+    const format = pickRecordingFormat()
+    if (!format) {
+      setRecordFailed(true)
+      return
+    }
+
+    try {
+      await api.startRecording(format.extension)
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+      const media = new MediaRecorder(stream, { mimeType: format.mimeType })
+
+      /**
+       * Every chunk handed to the host so far, as one promise.
+       *
+       * `arrayBuffer()` is asynchronous, so at `stop` the last chunk is normally still
+       * being read — and the last chunk is not optional. Measured (see the recorder spike):
+       * an mp4 hands out its header early and everything else here, so a file closed
+       * without this chunk still loads and has nothing to show. So `stop` waits on the
+       * chain, and chaining is also what makes the chunks reach the host in the order they
+       * were produced.
+       */
+      let sent: Promise<void> = Promise.resolve()
+      media.ondataavailable = (event) => {
+        if (event.data.size === 0) return
+        const data = event.data
+        sent = sent
+          .then(() => data.arrayBuffer())
+          .then((chunk) => api.sendRecordingChunk(chunk))
+          // A chunk that could not be sent is a second lost, not a reason for the stop
+          // below never to run: the file still has to be closed.
+          .catch(() => undefined)
+      }
+      media.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop())
+        setRecorder(null)
+        void sent.then(() => api.stopRecording()).then((finished) => {
+          // `null` is "nothing reached the file", which the host has already removed.
+          if (finished) setSavedFile(finished.file)
+        })
+      }
+      // A chunk a second: a window that dies mid-recording loses a second rather than the
+      // whole thing, for the containers that stream. What can never be lost is the chunk
+      // `stop` produces (see `sent`) — measured for an mp4, that chunk carries very nearly
+      // the whole recording.
+      media.start(1000)
+      setRecorder(media)
+    } catch {
+      // No picture — the request was refused, or there is no tab to record. Nothing was
+      // captured, so the armed file goes away rather than sitting in the session empty.
+      setRecordFailed(true)
+      setRecorder(null)
+      void api.stopRecording()
+    }
+  }, [api, recording, recorder])
+
+  const handleSelectTab = useCallback((tabId: string) => {
+    void api?.tabAction('activate', tabId)
+  }, [api])
+
+  const handleCloseTab = useCallback((tabId: string) => {
+    void api?.tabAction('close', tabId)
+  }, [api])
+
+  const handleNewTab = useCallback(() => {
+    void api?.tabAction('new')
+  }, [api])
+
+  /**
+   * Open a tab for one piece of work — the `+` on a section's header.
+   *
+   * The work goes with the request rather than being applied here: which conversation a
+   * tab belongs to is the window's fact, and the tab comes back belonging to it through
+   * the state push (see the host's `createTab`, which is where the tab is made).
+   */
+  const handleNewTabForWork = useCallback((work: TabBelongsTo) => {
+    void api?.tabAction('new', undefined, work)
+  }, [api])
+
+  /**
+   * Unlock one tab.
+   *
+   * The agent's overlay is what holds the tab, so dropping the hold is the unlock — and for
+   * the person in front of this window, unlocking is taking the wheel. No session is named:
+   * whoever is working there lets go. The agent may take it again on its next command; this
+   * is an escape hatch, not a setting.
+   */
+  const handleReleaseLock = useCallback((tabId: string) => {
+    void api?.tabAction('release', tabId)
+  }, [api])
+
+  /**
+   * Fold the rail away, or bring it back.
+   *
+   * Asked for rather than done: the rail's room is part of the tab area, so the window is what
+   * re-places the page — and it answers by pushing the new state, which is what this renderer
+   * draws. Nothing here remembers the flag, because nothing here owns it.
+   */
+  const handleToggleRail = useCallback(() => {
+    void api?.toggleRailCollapsed()
+  }, [api])
+
+  /**
+   * The window's chrome, one document: the title bar across the whole window, and under it the rail
+   * down the left edge with the page's slot beside it.
+   *
+   * The title bar runs edge to edge on purpose — the rail is *under* it, not beside it, so nothing
+   * cuts the band the address sits in. The slot is left bare (the page is a view of its own, on top
+   * of this one), which is also what lets a menu hang down across the page while the host has the
+   * chrome lifted over it (`restackViews`). Placed after the hooks so one document runs one hook
+   * list in one order.
+   */
+  return (
+    <div className="fixed inset-0 flex flex-col">
+      {/*
+        The window's own top band, the whole width: the rail's toggle at the window's left edge
+        (past the traffic lights on macOS), then the address and the window's actions. It wears the
+        chrome surface, like the column under it, so the band is one piece with the rest of the
+        chrome rather than a panel beside it.
+      */}
+      <div
+        className="titlebar-drag-region browser-chrome-surface flex shrink-0 items-center"
+        style={{ height: BAR_HEIGHT_PX }}
+      >
+        <div
+          className="titlebar-drag-region flex h-full shrink-0 items-center"
+          style={{
+            // The rail's own room in the band: the toggle at the window's left edge (past the
+            // traffic lights on macOS) and the `+` at its right, so both stay on the pixels they
+            // had while the rail's column sat beside the bar. Folded away the `+` follows the
+            // toggle — the way to add a tab cannot go away with the rail.
+            width: railCollapsed ? undefined : RAIL_WIDTH_PX,
+            paddingLeft: RAIL_TOGGLE_INSET,
+            paddingRight: 8,
+            justifyContent: railCollapsed ? 'flex-start' : 'space-between',
+          }}
+        >
+          <RailToggle collapsed={railCollapsed} onToggle={handleToggleRail} />
+          {/*
+            Which profile this window uses — right of the rail's toggle, where the eye already
+            goes to orient itself in the window. Folded, the rail's own room is gone, so the chip
+            keeps a fixed width instead of stretching the band.
+          */}
+          {state.profileName && (
+            <span
+              title={state.profileName}
+              className={cn(
+                'titlebar-no-drag min-w-0 flex-1 truncate px-2 text-[11px] leading-none text-foreground/55',
+                railCollapsed && 'max-w-[110px] flex-none',
+              )}
+            >
+              {state.profileName}
+            </span>
+          )}
+          <button
+            type="button"
+            aria-label={t('browser.newTab')}
+            title={t('browser.newTab')}
+            className={cn(
+              'titlebar-no-drag grid h-6 w-6 shrink-0 place-items-center rounded-[6px] transition-colors',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+              'text-foreground/65 hover:bg-foreground/[0.06] hover:text-foreground',
+              railCollapsed && 'ml-1',
+            )}
+            onClick={handleNewTab}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <BrowserControls
         url={state.url}
         loading={state.isLoading}
+        error={state.error ?? null}
         canGoBack={state.canGoBack}
         canGoForward={state.canGoForward}
         onNavigate={handleNavigate}
@@ -189,15 +1231,189 @@ function BrowserToolbarApp() {
         onGoForward={handleGoForward}
         onReload={handleReload}
         onStop={handleStop}
+        focusAddressBarToken={state.urlBarFocusToken}
         trailingContent={(
           <div className="ml-2 flex items-center gap-1.5 titlebar-no-drag">
-            <DropdownMenu open={windowMenuOpen} onOpenChange={setWindowMenuOpen}>
+            {/*
+              What the mode is doing, in the window's own chrome: how to use it.
+            */}
+            {picking && (
+              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-accent/15 px-2 py-1 text-[11px] text-accent">
+                {t('browser.pickHint')}
+              </span>
+            )}
+
+            {/*
+              These buttons say what they do through the browser's native `title`, not the
+              app's tooltip: this bar is a 48px-tall view and a popup of ours is clipped by
+              it — the OS's own tooltip is not (the rail's rows do the same).
+            */}
+            <HeaderIconButton
+              icon={picking
+                ? <X className="h-3.5 w-3.5" />
+                : <MousePointerClick className="h-3.5 w-3.5" />}
+              aria-label={picking ? t('browser.cancelPick') : t('browser.pickElement')}
+              title={picking ? t('browser.cancelPick') : t('browser.pickElement')}
+              className={picking ? 'bg-accent/15 text-accent' : undefined}
+              // One door for everything done *with* the page: click an element, or box
+              // several, and the bar on the page is where the selection is handed to the
+              // conversation. Pressed again it turns the mode off (the host
+              // reads the same state this chip does).
+              onClick={handleTogglePick}
+            />
+
+            {/*
+              The current tab's developer tools. Available whatever the tab is: they
+              are about the page.
+            */}
+            <HeaderIconButton
+              icon={<Code className="h-3.5 w-3.5" />}
+              aria-label={t('browser.devTools')}
+              title={t('browser.devTools')}
+              className={devTools ? 'bg-foreground/10 text-foreground' : undefined}
+              onClick={handleToggleDevTools}
+            />
+
+            {/*
+              The downloads button, and the window's recent downloads behind it.
+
+              It appears when there is something to report — a file being fetched right
+              now, or one fetched a moment ago — because a download used to be answered
+              with nothing at all: the file was saved and the person was told neither that
+              it happened nor where it went. The mark is on the button until the list has
+              been opened, and every row shows the file in its folder when clicked.
+            */}
+            {downloads.length > 0 && (
+              <DropdownMenu open={downloadsMenuOpen} onOpenChange={handleDownloadsMenuOpenChange}>
+                <DropdownMenuTrigger asChild>
+                  <HeaderIconButton
+                    icon={downloading
+                      ? <Spinner className="h-3.5 w-3.5" />
+                      : <Download className="h-3.5 w-3.5" />}
+                    aria-label={t('browser.downloads')}
+                    title={t('browser.downloads')}
+                    className={unseenDownload ? 'bg-accent/15 text-accent' : undefined}
+                  />
+                </DropdownMenuTrigger>
+
+                <StyledDropdownMenuContent
+                  ref={downloadsMenuContentRef}
+                  align="end"
+                  side="bottom"
+                  sideOffset={6}
+                  minWidth="min-w-56"
+                  className="titlebar-no-drag z-[110] max-h-none overflow-visible"
+                >
+                  {downloads.map((entry) => (
+                    <StyledDropdownMenuItem
+                      key={entry.id}
+                      // A file still arriving has nowhere to be shown yet.
+                      disabled={!entry.savePath}
+                      title={entry.savePath ?? entry.filename}
+                      onSelect={() => entry.savePath && handleRevealDownload(entry.savePath)}
+                    >
+                      {entry.state === 'completed'
+                        ? <Check className="h-3.5 w-3.5" />
+                        : entry.state === 'started'
+                          ? <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                          : <XCircle className="h-3.5 w-3.5" />}
+                      <span className="max-w-[220px] truncate">{entry.filename}</span>
+                      <span className="ml-auto pl-3 tabular-nums text-muted-foreground">
+                        {downloadStateLabel(entry)}
+                      </span>
+                    </StyledDropdownMenuItem>
+                  ))}
+                </StyledDropdownMenuContent>
+              </DropdownMenu>
+            )}
+
+            {downloading && downloadPercent(downloading) !== null && (
+              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-foreground/5 px-2 py-1 text-[11px] tabular-nums text-muted-foreground">
+                {`${downloadPercent(downloading)}%`}
+              </span>
+            )}
+
+            {/*
+              The record button: the person's own recording of the tab they are on, which
+              is the one thing a recording needs that no agent can supply — "now". The
+              file goes to their downloads folder (see the host's `record` handler) and
+              nothing is sent to any conversation about it.
+            */}
+            <HeaderIconButton
+              icon={recording
+                ? <Square className="h-3 w-3 fill-current" />
+                : <Circle className="h-3.5 w-3.5" />}
+              aria-label={recording ? t('browser.stopRecording') : t('browser.startRecording')}
+              title={recording ? t('browser.stopRecording') : t('browser.startRecording')}
+              className={recording ? 'bg-destructive/15 text-destructive' : undefined}
+              onClick={() => void handleToggleRecord()}
+            />
+
+            {recording && (
+              // The elapsed time, and **what this recording is taking**: the button's meaning is
+              // wider than "record the screen" — the page reports what was clicked and filled, and
+              // values too, except where a field says it is a secret. Saying so is what makes the
+              // press an informed one, so it sits here rather than in a tooltip.
+              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-destructive/15 px-2 py-1 text-[11px] tabular-nums text-destructive">
+                {formatElapsed(elapsedMs)} · {t('browser.recordingNoted')}
+              </span>
+            )}
+
+            {savedFile && (
+              <span
+                className="inline-flex max-w-[220px] select-none items-center truncate whitespace-nowrap rounded-[6px] bg-foreground/5 px-2 py-1 text-[11px] text-muted-foreground"
+                title={savedFile}
+              >
+                {t('browser.recordingSaved')} · {savedFile.split(/[/\\]/).pop()}
+              </span>
+            )}
+
+            {recordFailed && (
+              <span className="inline-flex select-none items-center whitespace-nowrap rounded-[6px] bg-destructive/15 px-2 py-1 text-[11px] text-destructive">
+                {t('browser.recordFailed')}
+              </span>
+            )}
+
+            {/*
+              The window's own minimize and maximize/restore.
+
+              The window is chromeless, so it wears no OS caption buttons on any platform —
+              these are them, drawn on the app's own surface like the workspace window's own
+              (see `WindowControls`). The second button's mark is the window's state, so a
+              maximize from outside the bar (a double-click on the drag region) turns it into
+              a restore here.
+            */}
+            <HeaderIconButton
+              icon={<Minus className="h-3.5 w-3.5" />}
+              aria-label={t('menu.minimize')}
+              title={t('menu.minimize')}
+              className="bg-background shadow-minimal hover:bg-foreground/5"
+              onClick={handleMinimize}
+            />
+            <HeaderIconButton
+              icon={maximized
+                ? <Copy className="h-3.5 w-3.5" />
+                : <Square className="h-3 w-3" />}
+              aria-label={maximized ? t('menu.restore') : t('menu.maximize')}
+              title={maximized ? t('menu.restore') : t('menu.maximize')}
+              className="bg-background shadow-minimal hover:bg-foreground/5"
+              onClick={handleToggleMaximize}
+            />
+
+            <DropdownMenu
+              open={windowMenuOpen}
+              onOpenChange={(open) => {
+                // A menu opening is a fresh act: the answer of the last one has nothing to do with
+                // this one (and a menu closed without an answer must not silence the next click).
+                if (open) windowMenuAnswered.current = false
+                setWindowMenuOpen(open)
+              }}
+            >
               <DropdownMenuTrigger asChild>
                 <HeaderIconButton
                   icon={<X className="h-3.5 w-3.5" />}
                   aria-label={t('browser.windowOptions')}
-                  className={themeColor ? '' : 'bg-background shadow-minimal hover:bg-foreground/5'}
-                  style={themeColor ? { color: 'var(--tb-fg)' } : undefined}
+                  className="bg-background shadow-minimal hover:bg-foreground/5"
                 />
               </DropdownMenuTrigger>
 
@@ -209,11 +1425,22 @@ function BrowserToolbarApp() {
                 minWidth="min-w-44"
                 className="titlebar-no-drag z-[110] max-h-none overflow-visible"
               >
-                <StyledDropdownMenuItem onSelect={handleHideWindow}>
+                <StyledDropdownMenuItem
+                  onPointerDown={(event) => {
+                    if (event.button === 0) runWindowMenuAction(handleHideWindow)
+                  }}
+                  onSelect={() => runWindowMenuAction(handleHideWindow)}
+                >
                   <EyeOff className="h-3.5 w-3.5" />
                   {t('browser.hideWindow')}
                 </StyledDropdownMenuItem>
-                <StyledDropdownMenuItem variant="destructive" onSelect={handleCloseWindowEntirely}>
+                <StyledDropdownMenuItem
+                  variant="destructive"
+                  onPointerDown={(event) => {
+                    if (event.button === 0) runWindowMenuAction(handleCloseWindowEntirely)
+                  }}
+                  onSelect={() => runWindowMenuAction(handleCloseWindowEntirely)}
+                >
                   <XCircle className="h-3.5 w-3.5" />
                   {t('browser.closeWindowEntirely')}
                 </StyledDropdownMenuItem>
@@ -221,11 +1448,50 @@ function BrowserToolbarApp() {
             </DropdownMenu>
           </div>
         )}
-        themeColor={themeColor}
         urlBarClassName="max-w-[600px]"
-        className="titlebar-drag-region bg-background"
-      />
-    </>
+        className="titlebar-drag-region"
+            />
+          </div>
+        </div>
+
+        {/*
+          Full-window outside-tap catcher while a menu is open.
+          Critical for draggable titlebar windows (Windows) where outside-click
+          dismissal can be unreliable if events fall into app-region: drag zones.
+          One catcher for both menus: either way the tap means "put it away".
+        */}
+        {(windowMenuOpen || downloadsMenuOpen) && (
+          <div
+            className="fixed inset-0 z-[90] titlebar-no-drag bg-black/[0.0039215686]"
+            onPointerDown={(event) => {
+              event.preventDefault()
+              setWindowMenuOpen(false)
+              setDownloadsMenuOpen(false)
+            }}
+          />
+        )}
+
+        {/*
+          Under the title bar: the rail down the left edge, and the page's slot beside it. Folded
+          away, the rail is not drawn at all — its room is the window's now, and the page has
+          already been placed without it.
+        */}
+        <div className="flex min-h-0 flex-1">
+          {!railCollapsed && (
+            <TabRail
+              tabs={state.tabs ?? []}
+              sessionLabels={state.sessionLabels ?? {}}
+              onSelect={handleSelectTab}
+              onClose={handleCloseTab}
+              onNewFor={handleNewTabForWork}
+              onRelease={handleReleaseLock}
+            />
+          )}
+
+          {/* The page's slot: the page is a view of its own, on top of this document. */}
+          <div className="min-w-0 flex-1" />
+        </div>
+    </div>
   )
 }
 

@@ -3,7 +3,9 @@
  *
  * CRUD operations for workspaces.
  * Workspaces can be stored anywhere on disk via rootPath.
- * Default location: ~/.craft-agent/workspaces/
+ * Default location: CONFIG_DIR/workspaces — which is `~/.craft-agent/workspaces` unless
+ * `CRAFT_CONFIG_DIR` moved the config directory, and it must move this with it: otherwise an
+ * instance started with its own config dir still writes workspaces into the shared one.
  */
 
 import {
@@ -101,6 +103,24 @@ export function getWorkspaceSessionsPath(rootPath: string): string {
  */
 export function getWorkspaceSkillsPath(rootPath: string): string {
   return join(rootPath, 'skills');
+}
+
+/**
+ * Directory name (under a workspace root) holding the tweaks that act on other
+ * people's web pages.
+ *
+ * Workspace level, like the sessions directory, because a tweak is a standing
+ * arrangement rather than something one conversation owns: it has to be findable by
+ * whatever is about to load a page, long after the conversation that wrote it ended.
+ */
+export const TWEAKS_DIRNAME = 'tweaks';
+
+/**
+ * Get path to the workspace tweaks directory.
+ * @param rootPath - Absolute path to workspace root folder
+ */
+export function getWorkspaceTweaksPath(rootPath: string): string {
+  return join(rootPath, TWEAKS_DIRNAME);
 }
 
 // ============================================================
@@ -307,7 +327,7 @@ export function generateUniqueWorkspacePath(name: string, baseDir: string): stri
 export function createWorkspaceAtPath(
   rootPath: string,
   name: string,
-  defaults?: WorkspaceConfig['defaults']
+  defaults?: WorkspaceConfig['defaults'],
 ): WorkspaceConfig {
   const now = Date.now();
   const slug = generateSlug(name);
@@ -476,6 +496,40 @@ export function setWorkspaceColorTheme(rootPath: string, themeId: string | undef
   } else {
     delete config.defaults.colorTheme;
   }
+
+  saveWorkspaceConfig(rootPath, config);
+}
+
+/**
+ * The browser profile this workspace's new tabs run in.
+ *
+ * `undefined` means "not chosen": the caller resolves that to the built-in `default` profile, which
+ * is also the profile the session lived in before profiles existed — so an unchanged workspace
+ * keeps its logins.
+ */
+export function getWorkspaceBrowserProfile(rootPath: string): string | undefined {
+  return loadWorkspaceConfig(rootPath)?.defaults?.browserProfile;
+}
+
+/**
+ * Set (or clear) the workspace's default browser profile.
+ *
+ * A profile id becomes part of a partition name, so it is validated like a slug rather than trusted:
+ * an id with a separator or whitespace in it would name a partition nobody else can reach.
+ */
+export function setWorkspaceBrowserProfile(rootPath: string, profileId: string | undefined): void {
+  const config = loadWorkspaceConfig(rootPath);
+  if (!config) return;
+
+  if (profileId && !/^[A-Za-z0-9_-]{1,64}$/.test(profileId)) {
+    console.warn(`[workspace-storage] Invalid browser profile id rejected: ${profileId}`);
+    return;
+  }
+
+  if (!config.defaults) config.defaults = {};
+
+  if (profileId) config.defaults.browserProfile = profileId;
+  else delete config.defaults.browserProfile;
 
   saveWorkspaceConfig(rootPath, config);
 }

@@ -13,7 +13,7 @@
 import { useState, useCallback, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import * as ContextMenu from '@radix-ui/react-context-menu'
-import { Check, Copy, ExternalLink, FolderOpen, type LucideIcon } from 'lucide-react'
+import { Check, Copy, ExternalLink, FolderOpen, Globe, type LucideIcon } from 'lucide-react'
 import { PreviewHeader, PreviewHeaderBadge, type PreviewBadgeVariant } from '../ui/PreviewHeader'
 import {
   DropdownMenu,
@@ -48,6 +48,15 @@ export interface FullscreenOverlayBaseHeaderProps {
   headerActions?: ReactNode
   /** When provided, renders a built-in copy button (matching close button style) */
   copyContent?: string
+  /**
+   * Open this file in a browser — a menu item on the file badge, beside "Open" and "Reveal".
+   *
+   * In the menu rather than in the header's action row because it belongs to the **file**, not to
+   * the window: where a document goes is answered in one place, and a page — which can also be
+   * *read* by a browser — is the only one that has a third answer. As a header button it competed
+   * for space with the actions that belong to what is on screen (edit, source, page count).
+   */
+  onOpenInBrowser?: (filePath: string) => void
 }
 
 /**
@@ -88,6 +97,8 @@ const contextMenuItemClasses = cn(
 
 interface FilePathBadgeProps {
   filePath: string
+  /** A page can be handed to a browser; the other formats have nothing to open there. */
+  onOpenInBrowser?: (filePath: string) => void
 }
 
 /**
@@ -99,9 +110,11 @@ interface FilePathBadgeProps {
  * viewing a file in an overlay, "Open" should launch the system editor directly,
  * not re-trigger the in-app preview interceptor.
  */
-function FilePathBadge({ filePath }: FilePathBadgeProps) {
+function FilePathBadge({ filePath, onOpenInBrowser }: FilePathBadgeProps) {
+  const { t } = useTranslation()
   const { onOpenFileExternal, onRevealInFinder, fileManagerName } = usePlatform()
   const revealLabel = `Reveal in ${fileManagerName || 'Finder'}`
+  const browserLabel = t('preview.openInBrowser')
 
   const handleOpen = useCallback(() => {
     onOpenFileExternal?.(filePath)
@@ -111,8 +124,12 @@ function FilePathBadge({ filePath }: FilePathBadgeProps) {
     onRevealInFinder?.(filePath)
   }, [onRevealInFinder, filePath])
 
+  const handleBrowser = useCallback(() => {
+    onOpenInBrowser?.(filePath)
+  }, [onOpenInBrowser, filePath])
+
   // Shared menu items — same content rendered by both dropdown and context menu
-  const hasMenuItems = !!onOpenFileExternal || !!onRevealInFinder
+  const hasMenuItems = !!onOpenFileExternal || !!onRevealInFinder || !!onOpenInBrowser
 
   const dropdownItems = (
     <>
@@ -120,6 +137,12 @@ function FilePathBadge({ filePath }: FilePathBadgeProps) {
         <StyledDropdownMenuItem onSelect={handleOpen}>
           <ExternalLink />
           Open
+        </StyledDropdownMenuItem>
+      )}
+      {onOpenInBrowser && (
+        <StyledDropdownMenuItem onSelect={handleBrowser}>
+          <Globe />
+          {browserLabel}
         </StyledDropdownMenuItem>
       )}
       {onRevealInFinder && (
@@ -137,6 +160,12 @@ function FilePathBadge({ filePath }: FilePathBadgeProps) {
         <ContextMenu.Item className={contextMenuItemClasses} onSelect={handleOpen}>
           <ExternalLink />
           Open
+        </ContextMenu.Item>
+      )}
+      {onOpenInBrowser && (
+        <ContextMenu.Item className={contextMenuItemClasses} onSelect={handleBrowser}>
+          <Globe />
+          {browserLabel}
         </ContextMenu.Item>
       )}
       {onRevealInFinder && (
@@ -201,6 +230,7 @@ export function FullscreenOverlayBaseHeader({
   subtitle,
   headerActions,
   copyContent,
+  onOpenInBrowser,
 }: FullscreenOverlayBaseHeaderProps) {
   const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
@@ -246,7 +276,7 @@ export function FullscreenOverlayBaseHeader({
         />
       )}
       {filePath ? (
-        <FilePathBadge filePath={filePath} />
+        <FilePathBadge filePath={filePath} onOpenInBrowser={onOpenInBrowser} />
       ) : title ? (
         <PreviewHeaderBadge label={title} onClick={onTitleClick} shrinkable />
       ) : null}

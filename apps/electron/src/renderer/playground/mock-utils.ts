@@ -228,6 +228,16 @@ export const mockElectronAPI = {
     return null
   },
 
+  openLocalFolderDialog: async () => {
+    console.log('[Playground] openLocalFolderDialog called')
+    return null
+  },
+
+  // The composer checks a *server* (remote) working directory before offering it. Without this the
+  // whole InputContainer story throws into its error boundary, which is how a missing mock looks
+  // like a broken feature.
+  checkServerDirectory: async (_dirPath: string) => true,
+
   getTaskOutput: async (taskId: string) => {
     console.log('[Playground] getTaskOutput called:', taskId)
     return `Output for task ${taskId}:\n\nThis is a mock output in the playground.\nIn the real app, this would show the actual task output.`
@@ -259,6 +269,9 @@ export const mockElectronAPI = {
   browserPane: {
     focus: async (instanceId: string) => {
       console.log('[Playground] browserPane.focus called:', instanceId)
+    },
+    tabAction: async (input: { instanceId: string; action: string; tabId?: string }) => {
+      console.log('[Playground] browserPane.tabAction called:', input)
     },
   },
 
@@ -298,8 +311,6 @@ export const mockElectronAPI = {
   },
 
   // FreeFormInput required mocks
-  getAutoCapitalisation: async () => false,
-
   getPendingPlanExecution: async (sessionId: string) => {
     console.log('[Playground] getPendingPlanExecution called:', sessionId)
     return null

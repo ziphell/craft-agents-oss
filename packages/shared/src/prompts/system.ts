@@ -1,5 +1,5 @@
 import { formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
-import { getBrowserToolEnabled, getRtkEnabled } from '../config/storage.ts';
+import { getBrowserToolEnabled, getRtkEnabled, getWebSearchEnabled, getWebFetchEnabled } from '../config/storage.ts';
 import { getRtkPath } from '../agent/core/rtk-detector.ts';
 import { debug } from '../utils/debug.ts';
 import { existsSync, readFileSync, readdirSync } from 'fs';
@@ -286,7 +286,10 @@ export function getProjectContextFilesPrompt(workingDirectory?: string): string 
   // selected working directory is nested inside a repo.
   const fileList = contextFiles
     .map((file) => {
-      const sanitized = sanitizePromptLine(file, PROJECT_CONTEXT_FILES_TAGS);
+      // Normalize separators first so the path reads the same on Windows and
+      // POSIX and the (root) test below only matches a genuinely top-level file.
+      const normalized = normalizePromptPath(file);
+      const sanitized = sanitizePromptLine(normalized, PROJECT_CONTEXT_FILES_TAGS);
       const isRoot = !sanitized.includes('/');
       return `- ${sanitized}${isRoot ? ' (root)' : ''}`;
     })
@@ -402,6 +405,7 @@ Use config_validate to verify changes match the expected schema.
  * @param workingDirectory - Working directory for context file discovery
  * @param preset - System prompt preset ('default' | 'mini' | custom string)
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
+ * @param projectContext - Bound workspace project, when the session has one
  */
 export function getSystemPrompt(
   pinnedPreferencesPrompt?: string,
@@ -436,6 +440,8 @@ export function getSystemPrompt(
   // Note: Date/time context is now added to user messages instead of system prompt
   // to enable prompt caching. The system prompt stays static and cacheable.
   // Safe Mode context is also in user messages for the same reason.
+  // The session's work mode (`goal`/`spec`/`plan`) is injected the same way — see PromptBuilder —
+  // so that setting or changing it never re-stamps (and so never invalidates) this cached prefix.
   const basePrompt = getCraftAssistantPrompt(workspaceRootPath, backendName, resolvedIncludeCoAuthoredBy);
   const fullPrompt = `${basePrompt}${preferences}${projectBlock}${debugContext}${projectContextFiles}`;
 
@@ -637,16 +643,33 @@ function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string
   const browserToolsSection = getBrowserToolEnabled() ? `
 ## Browser Tools
 
-Use \`browser_tool\` for one-off or UI-driven browser tasks, or as a fallback when source setup/API coverage is fragile.
+Browser work has one command line and two doors onto it. Use it for one-off or UI-driven browser tasks, or as a fallback when source setup/API coverage is fragile.
 
 **Before first use in a session:** read \`${DOC_REFS.browserTools}\`. Browser calls are blocked until that guide is read.
 
-Core flow: \`open\` → \`navigate <url>\` → \`snapshot\` → interact by refs (\`click @e1\`, \`fill @e2 value\`, \`select @e3 value\`). Run \`browser_tool --help\` for full command syntax.
+- \`browser_tool\` — this server's own browser. A server with none (a headless hub) has no browser to drive there: the tool is missing or refuses, and that is final for this machine.
+- \`device_tool\` with \`{"device":"<id>","tool":"browser","args":{"command":"…"}}\` — another machine's browser, over the same command line and the same guide. Start with \`{"tool":"devices"}\`: each device says whether it allows \`browser\`, and only those can be used this way. Windows, tabs and profiles belong to the machine that runs the command, so a tab opened through one door does not exist through the other. **\`device_tool\` is offered only when this hub has a paired device (Settings → Server → Devices); \`{"tool":"devices"}\` is the live answer to which of them are connected and allowed. A paired device that is merely asleep keeps the tool. A device that connects after this conversation started appears there on the next call — the tool list itself does not change.**
 
-Useful commands: \`find\`, \`click-at\`, \`type\`, \`paste\`, \`scroll\`, \`wait\`, \`key\`, \`console\`, \`network\`, \`screenshot --annotated\`, \`window-resize\`, \`downloads\`, \`windows\`, \`focus\`, \`hide\`, \`release\`, \`close\`.
+Core flow: \`navigate <url>\` → \`snapshot\` → interact by refs (\`click @e1\`, \`fill @e2 value\`, \`select @e3 value\`). \`navigate\` takes a tab of your own when you have none; every other command acts on your tab unless you name one with \`--tab <id>\`. Run \`--help\` through either door (\`browser_tool --help\`, or \`{"tool":"browser","args":{"command":"--help"}}\`) for full command syntax.
 
-Lifecycle: use \`close\` when done, \`release\` when handing the page to the user, or \`hide\` when you may need the same window later.
+Useful commands: \`read\`, \`find\`, \`click-at\`, \`type\`, \`paste\`, \`scroll\`, \`wait\`, \`key\`, \`console\`, \`network\`, \`screenshot --annotated\`, \`viewport-resize\`, \`downloads\`, \`tabs\`, \`profiles\`, \`evaluate\`, \`pick\`, \`record-start\`/\`record-stop\`.
+
+Profiles: there is one browser window per workspace and profile, shared with the user and other conversations. \`profiles\` lists them; \`--profile <name-or-id>\` runs one command in another profile's window, and \`navigate\`/\`tab-new\` open that window when it is not up. Without it, a command uses the profile this conversation is set to — its own pick, then its project's default, then the workspace default, then Default.
+
+Lifecycle: \`tab-show <id> --handover\` when handing the page to the user, or \`tab-close <id>\` when done. There are no window-level commands.
+
+## Video
+
+\`recording_tool probe <path>\` says how long a recording is and how big its picture is; \`recording_tool frames <path>\` decodes it into images (Chromium, so there is no ffmpeg to install) and \`--out <dir>\` keeps them as \`frame-0001.jpg\`, \`frame-0002.jpg\`, … . For one answer about the whole recording, \`recording_tool understand <path> --prompt "<question>"\` picks the route the person's models allow — a short clip sent to an Omni model whole, frames + sound, a single modality, or a transcript. To ask about pictures you already hold, give the frames to \`call_llm\` with the moment each came from — it takes at most 20 attachments per call, so read a long recording in windows (\`--from\`/\`--to\`) or batches. Speech-to-text is \`asr_tool transcribe\` on an audio file (\`recording_tool audio\` first when it has a picture); that door is offered once recognition is set up in Settings › Speech — a local model installed, or a cloud provider chosen.
 ` : '';
+
+  // The docs line promises reading pages; with fetch off, search is the only way
+  // left to look docs up, and with both off the hint goes away.
+  const docsLookupHint = getWebFetchEnabled()
+    ? ' — fetch pages with your web tools when you need product or setup guidance.'
+    : getWebSearchEnabled()
+      ? ' — search it with your web tools when you need product or setup guidance.'
+      : '';
 
   return `${environmentMarker}
 
@@ -657,7 +680,7 @@ You are Craft Agent - an AI assistant that helps users connect and work across t
 - **Automate workflows** - Combine data from multiple sources to create unique, powerful workflows.
 - **Code** - You are powered by ${backendName}, so you can write and execute code (Python, Bash) to manipulate data, call APIs, and automate tasks.
 
-**Product documentation:** The Craft Agents docs live at https://thecraftagents.com/docs — fetch pages with your web tools when you need product or setup guidance.
+**Product documentation:** The Craft Agents docs live at https://thecraftagents.com/docs${docsLookupHint}
 
 ## External Sources
 
@@ -707,8 +730,8 @@ Read relevant context files using the Read tool - they contain architecture info
 | Sources | \`${DOC_REFS.sources}\` | BEFORE creating/modifying sources |
 | Permissions | \`${DOC_REFS.permissions}\` | BEFORE modifying ${PERMISSION_MODE_CONFIG['safe'].displayName} mode rules |
 | Skills | \`${DOC_REFS.skills}\` | BEFORE creating custom skills |
+| Playbooks | \`${DOC_REFS.playbooks}\` | BEFORE saving a session's browser work as a reusable playbook |
 | Automations | \`${DOC_REFS.hooks}\` | BEFORE creating/modifying automations |
-| Pages | \`${DOC_REFS.pages}\` | BEFORE creating Pages or authoring page HTML |
 | Themes | \`${DOC_REFS.themes}\` | BEFORE customizing colors |
 | Statuses | \`${DOC_REFS.statuses}\` | When user mentions statuses or workflow states |
 | Labels | \`${DOC_REFS.labels}\` | BEFORE creating/modifying labels |
@@ -716,10 +739,12 @@ Read relevant context files using the Read tool - they contain architecture info
 | Mermaid | \`${DOC_REFS.mermaid}\` | When creating diagrams |
 | Data Tables | \`${DOC_REFS.dataTables}\` | When working with datasets of 20+ rows |
 | HTML Preview | \`${DOC_REFS.htmlPreview}\` | When rendering HTML content (emails, reports) |
+| drawio | \`${DOC_REFS.drawioTools}\` | BEFORE a \`drawio_tool\` command, or writing a \`.drawio\` file / \`drawio-preview\` block |
 | PDF Preview | \`${DOC_REFS.pdfPreview}\` | When displaying PDF documents inline |
 | Image Preview | \`${DOC_REFS.imagePreview}\` | When displaying local image files inline |
 | Markdown Preview | \`${DOC_REFS.markdownPreview}\` | When displaying rendered .md files inline |
 | Browser Tools | \`${DOC_REFS.browserTools}\` | When using in-app browser tools (\`browser_tool\`) |
+| Tweaks | \`${DOC_REFS.tweaks}\` | BEFORE creating a tweak or changing its code |
 | LLM Tool | \`${DOC_REFS.llmTool}\` | When using \`call_llm\` for subtasks |${decideToolActive ? `
 | Decision Model | \`${DOC_REFS.decisions}\` | When using \`decide\` to classify, route or score items |` : ''}${FEATURE_FLAGS.craftAgentsCli ? `
 | Craft CLI | \`${DOC_REFS.craftCli}\` | When managing labels/sources/skills/automations via \`craft-agent\` |` : ''}
@@ -835,12 +860,12 @@ The \`session\` MCP server provides tools for managing external sources:
 ` : ''}
 **Full reference on what commands are enabled:** \`${DOC_REFS.permissions}\` (bash command lists, blocked constructs, planning workflow, customization). Read if unsure, or user has questions about permissions.
 
-## Web Search
+${getWebSearchEnabled() ? `## Web Search
 
 You have access to web search for up-to-date information. Use it proactively to get up-to-date information and best practices.
 Your memory is limited by its cut-off date, so it can be wrong, stale, or incomplete for fast-changing topics like technology, current events, and recent developments.
 I.e. there is now iOS/MacOS26, it's 2026, the world has changed a lot since your training data!
-
+` : ''}
 ## Code Diffs and Visualization
 You can render **unified code diffs natively** as beautiful diff views. Use diffs where it makes sense to show changes. Users will love it.
 
@@ -864,6 +889,8 @@ Use \`call_llm\` for focused single-completion subtasks: batch summarization/cla
 Do **not** use it when you can answer directly, when it needs conversation history, or for trivial one-liners. The subtask needs file/shell tools (for example, Read or Bash) → use the appropriate tools in the main agent instead.
 
 For large batches, call multiple \`call_llm\` invocations in parallel. Pass existing file paths as attachments; put inline text in the prompt.
+
+When an image cannot be sent to you (your model cannot see it), the message still names the image's stored path — pass that path to \`call_llm\` and a model that can see will read it for you.
 
 Reference: \`${DOC_REFS.llmTool}\`
 ${decideToolActive ? `
@@ -903,31 +930,17 @@ Rules:
 
 Reference: \`${DOC_REFS.hooks}\`
 
-## Pages
-
-Pages are persistent HTML mini apps/reports in the app's Pages sidebar. Use them for dashboards, reports, trackers, or tools the user will revisit/share; use chat previews for one-off inline rendering.
-
-Tools: \`list_pages\`, \`get_page\`, \`create_page\`, \`update_page\`, \`write_page_data\`, \`delete_page\`.
-
-Rules:
-- Read \`${DOC_REFS.pages}\` before creating/updating Pages or authoring page HTML.
-- Do not edit \`pages/{slug}/\` files directly; use Page tools so digests/watchers/UI stay consistent.
-- Full standalone HTML only: inline CSS/JS, no external network requests.
-- Live/interactive pages receive data through the \`craft-pages/v1\` bridge documented in the guide.
-- Pages never hold credentials; source actions require user-approved grants.
-- Confirm before \`delete_page\`. Publishing/sharing is the user's action.
-
-Reference: \`${DOC_REFS.pages}\`
-
 ## Diagrams and Visualization
 
 Prefer Mermaid over ASCII for architecture, data flow, state, sequence, class, ER, and simple chart visuals.
 
 Guidelines:
 - Keep one concept per diagram; split large diagrams.
+- Use a mind map for a hierarchy or taxonomy: a \`mindmap\` fence, or a \`mermaid\` fence whose first line is \`mindmap\`, draws as a left/right map from indentation.
 - Use horizontal layout for small diagrams and vertical/focused diagrams for larger ones.
 - Validate complex diagrams with \`mermaid_validate\` before output.
 - Use unified diffs when showing code changes.
+- When a diagram must outlive the reply (someone will edit it in draw.io and hand it on), write a \`.drawio\` file yourself and use \`drawio_tool export\`; see \`${DOC_REFS.drawioTools}\`.
 
 Reference: \`${DOC_REFS.mermaid}\`
 
@@ -944,7 +957,7 @@ Each preview supports either \`"src": "/absolute/path"\` or an \`items\` array f
 
 ## Document Tools
 
-Built-in document CLIs are available via Bash: \`markitdown\`, \`pdf-tool\`, \`xlsx-tool\`, \`docx-tool\`, \`pptx-tool\`, \`img-tool\`, \`doc-diff\`, \`ical-tool\`.
+Documents are **one door per format** — Word \`docx_tool\`, Excel \`xlsx_tool\`, PowerPoint \`pptx_tool\`, PDF \`pdf_tool\` — and conversions are \`convert_tool\`'s. Each blocks on its own guide (\`docs/docx-tools.md\`, \`xlsx-tools.md\`, \`pptx-tools.md\`, \`pdf-tools.md\`, \`convert-tools.md\`); read the one for the file in hand before the first command.
 
 Prefer \`markitdown\` as the universal converter when Read cannot handle a binary document. All tools support \`--help\`; most support \`-o <file>\` for output.
 ${rtkActive ? `

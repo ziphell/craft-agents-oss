@@ -111,7 +111,8 @@ export interface AppShellContextType {
 
   // File/URL handlers - these can open in tabs or external apps
   onOpenFile: (path: string) => void
-  onOpenUrl: (url: string) => void
+  /** `sessionId` is the conversation the link was clicked in, when the caller knows it. */
+  onOpenUrl: (url: string, sessionId?: string) => void
 
   // Workspace
   onSelectWorkspace: (id: string, openInNewWindow?: boolean) => void | Promise<void>
@@ -128,6 +129,12 @@ export interface AppShellContextType {
 
   // Input draft callback
   onInputChange: (sessionId: string, value: string) => void
+
+  /**
+   * Put a brief in Craft Bot's composer and bring that conversation up, leaving the panel you
+   * are in alone. Text only — nothing is sent; the person presses Enter.
+   */
+  onHandOffToBot?: (brief: string) => void | Promise<void>
 
   // Attachment draft callback — persists attachment refs per session
   onAttachmentsChange: (sessionId: string, attachments: FileAttachment[]) => void

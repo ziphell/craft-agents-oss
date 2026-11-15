@@ -44,19 +44,24 @@ sips -z 512 512 "$SOURCE" --out icon.png > /dev/null
 # If not, we'll create individual PNGs that can be converted online
 if command -v convert &> /dev/null; then
     echo "Creating icon.ico for Windows..."
+    # Windows app icons fill their canvas. The source art is inset (authored for macOS,
+    # where icons sit inside a margin), so the transparent margin is cropped away first —
+    # otherwise the icon reads as smaller than every neighbour in the taskbar.
+    # macOS (.icns) and Linux (.png) keep the inset.
+    convert "$SOURCE" -trim +repage icon_trimmed.png
     # Create multiple sizes for ICO
-    sips -z 16 16 "$SOURCE" --out icon_16.png > /dev/null
-    sips -z 24 24 "$SOURCE" --out icon_24.png > /dev/null
-    sips -z 32 32 "$SOURCE" --out icon_32.png > /dev/null
-    sips -z 48 48 "$SOURCE" --out icon_48.png > /dev/null
-    sips -z 64 64 "$SOURCE" --out icon_64.png > /dev/null
-    sips -z 128 128 "$SOURCE" --out icon_128.png > /dev/null
-    sips -z 256 256 "$SOURCE" --out icon_256.png > /dev/null
+    sips -z 16 16 icon_trimmed.png --out icon_16.png > /dev/null
+    sips -z 24 24 icon_trimmed.png --out icon_24.png > /dev/null
+    sips -z 32 32 icon_trimmed.png --out icon_32.png > /dev/null
+    sips -z 48 48 icon_trimmed.png --out icon_48.png > /dev/null
+    sips -z 64 64 icon_trimmed.png --out icon_64.png > /dev/null
+    sips -z 128 128 icon_trimmed.png --out icon_128.png > /dev/null
+    sips -z 256 256 icon_trimmed.png --out icon_256.png > /dev/null
 
     convert icon_16.png icon_24.png icon_32.png icon_48.png icon_64.png icon_128.png icon_256.png icon.ico
 
     # Clean up temp files
-    rm -f icon_16.png icon_24.png icon_32.png icon_48.png icon_64.png icon_128.png icon_256.png
+    rm -f icon_trimmed.png icon_16.png icon_24.png icon_32.png icon_48.png icon_64.png icon_128.png icon_256.png
 else
     echo "Warning: ImageMagick not installed. Skipping .ico generation."
     echo "Install with: brew install imagemagick"

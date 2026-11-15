@@ -104,6 +104,15 @@ describe('toDraftRef', () => {
     // Track P: just path+name, content never inlined — cap doesn't apply
     expect(ref).toEqual({ path: '/Users/me/huge.png', name: 'huge.png' })
   })
+
+  it('tags a server-picked file so hydrate reads it through the hub, not the local disk', () => {
+    const ref = toDraftRef(makeAttachment({
+      path: '/home/me/data.csv',
+      name: 'data.csv',
+      fromServer: true,
+    }))
+    expect(ref).toEqual({ path: '/home/me/data.csv', name: 'data.csv', fromServer: true })
+  })
 })
 
 describe('attachmentFromContentRef', () => {

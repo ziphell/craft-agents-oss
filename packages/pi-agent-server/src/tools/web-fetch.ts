@@ -1,12 +1,14 @@
 import { Type } from '@earendil-works/pi-ai';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
-import TurndownService from 'turndown';
-import { parse as parseHtml } from 'node-html-parser';
 import { join } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { lookup } from 'node:dns/promises';
 import { randomUUID } from 'node:crypto';
+import type { WebFetchMode } from '../../../shared/src/config/types.ts';
+import { buildWebSnapshot } from '../../../shared/src/sources/web-snapshot.ts';
+
+const DEEPSEEK_FETCH_URL = 'https://api.deepseek.com/v1/tools/fetch';
 
 const schema = Type.Object({
   url: Type.String({ description: 'URL to fetch' }),
@@ -17,14 +19,6 @@ const schema = Type.Object({
     }),
   ),
 });
-
-const turndown = new TurndownService({
-  headingStyle: 'atx',
-  codeBlockStyle: 'fenced',
-});
-
-const NOISE_ELEMENTS = ['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'iframe', 'svg'];
-turndown.remove(NOISE_ELEMENTS);
 
 const MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024; // 50MB
 const MAX_TEXT_LENGTH = 50_000;
@@ -267,29 +261,24 @@ async function handleImage(
   );
 }
 
-function handleHtml(
+/**
+ * Extract the article from fetched HTML with Defuddle — the same extractor
+ * `browser_tool read` uses, over the HTML an HTTP fetch returned rather than a
+ * rendered window.
+ */
+async function handleHtml(
   html: string,
   url: string,
   prompt: string | undefined,
-): AgentToolResult<{ isError?: boolean }> {
-  const root = parseHtml(html);
-  // Strip noise elements from the DOM before selecting mainContent.
-  root
-    .querySelectorAll(NOISE_ELEMENTS.join(', '))
-    .forEach((el) => el.remove());
-
-  const mainContent =
-    root.querySelector('main, article, [role="main"], .content, #content') ||
-    root.querySelector('body') ||
-    root;
-
-  const markdown = turndown.turndown(mainContent.innerHTML);
+): Promise<AgentToolResult<{ isError?: boolean }>> {
+  const snapshot = await buildWebSnapshot({ html, url });
+  const body = snapshot.markdown || '(No extractable content.)';
 
   const prefix = prompt
     ? `Content from ${url} (asked: "${prompt}"):\n\n`
     : `Content from ${url}:\n\n`;
 
-  return result(prefix + truncate(markdown));
+  return result(prefix + truncate(body));
 }
 
 function handleJson(
@@ -312,12 +301,43 @@ function handleText(
   return result(`Content from ${url}:\n\n${truncate(raw)}`);
 }
 
+/**
+ * Ask DeepSeek's fetch tool for the page as Markdown.
+ *
+ * Only used for HTML: the API returns `{title, content}` and nothing else, so
+ * PDFs, images and JSON keep the local path that can hand back a file.
+ */
+async function fetchViaDeepSeek(url: string, apiKey: string): Promise<string> {
+  const response = await fetch(DEEPSEEK_FETCH_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ url }),
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`DeepSeek Fetch failed (HTTP ${response.status})`);
+  }
+
+  const data = (await response.json()) as { title?: string; content?: string };
+  if (!data.content?.trim()) {
+    throw new Error('DeepSeek Fetch returned no content');
+  }
+  return data.content;
+}
+
 // ============================================================
 // Factory
 // ============================================================
 
 export function createWebFetchTool(
   getSessionPath: () => string | null,
+  isEnabled: () => boolean = () => true,
+  getMode: () => WebFetchMode = () => 'direct',
+  getDeepSeekKey: () => Promise<string | null> = async () => null,
 ): ToolDefinition<typeof schema> {
   async function saveBinary(buffer: Buffer, url: string, ext: string): Promise<string> {
     const sessionPath = getSessionPath();
@@ -343,6 +363,12 @@ export function createWebFetchTool(
       'Use web_fetch to retrieve and extract content from a URL. Supports HTML (converted to markdown), PDF (text extraction), images (saved to disk), JSON (pretty-printed), and plain text. Pass url (required) and optional prompt to focus extraction.',
     parameters: schema,
     async execute(toolCallId, params) {
+      // Checked per call so turning fetch off applies to a session that was
+      // already running — hiding the tool only reaches the next session.
+      if (!isEnabled()) {
+        return result('Web fetch is turned off in Settings → AI.', true);
+      }
+
       const { url, prompt } = params;
 
       // SSRF protection: block non-HTTP schemes and private/reserved IPs
@@ -403,6 +429,20 @@ export function createWebFetchTool(
       const text = await readResponseText(response, MAX_DOWNLOAD_SIZE);
 
       if (contentType.includes('html')) {
+        if (getMode() === 'deepseek') {
+          const apiKey = await getDeepSeekKey();
+          if (apiKey) {
+            try {
+              const markdown = await fetchViaDeepSeek(finalUrl, apiKey);
+              const prefix = prompt
+                ? `Content from ${finalUrl} (asked: "${prompt}"):\n\n`
+                : `Content from ${finalUrl}:\n\n`;
+              return result(prefix + truncate(markdown));
+            } catch {
+              // DeepSeek could not read it — fall through to the local path.
+            }
+          }
+        }
         return handleHtml(text, finalUrl, prompt);
       }
 

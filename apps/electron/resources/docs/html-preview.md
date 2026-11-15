@@ -286,6 +286,11 @@ transform_data({
 ### Fullscreen Overlay
 - Click expand button for **full-height rendering** with scrollable content
 - **Copy HTML** button copies the raw HTML source to clipboard
+- **Open in browser** opens this HTML for real: the same file, in a browser, as a tab at its own
+  address — the app's own browser window by default, the system browser when the person has asked
+  for that (Settings → Links). Worth knowing why it is there: this preview was handed the file's
+  *text*, not its address, so it has no origin of its own — relative references, scripts and
+  `fetch` do not work inside it. What needs those is opened from here.
 - **"HTML" badge** in header identifies the content type
 
 ### Visual Details

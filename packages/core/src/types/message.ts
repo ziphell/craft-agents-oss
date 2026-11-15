@@ -85,7 +85,7 @@ export interface MessageAttachment {
  */
 export interface ContentBadge {
   /** Badge type - used for fallback icon if iconBase64 not available */
-  type: 'source' | 'skill' | 'context' | 'command' | 'file' | 'folder';
+  type: 'source' | 'skill' | 'context' | 'command' | 'file' | 'folder' | 'tab' | 'element';
   /** Display label (e.g., "Linear", "Commit") */
   label: string;
   /** Original text pattern (e.g., "@linear", "@commit") */
@@ -180,7 +180,7 @@ export type AnnotationSelector =
       y: number;
       w: number;
       h: number;
-      page?: number;
+      website?: number;
       rotation?: number;
     }
   | {
@@ -277,6 +277,14 @@ export interface Message {
   attachments?: StoredAttachment[];
   // Content badges for inline display (sources, skills)
   badges?: ContentBadge[];
+  /**
+   * Set on a **user** message when it answers another one.
+   *
+   * The excerpt is for the reader, not the model: the message being answered is almost always still
+   * in the conversation the model receives, and injecting a copy makes it answer the quote instead
+   * of the request. The one case where it matters — after compaction — is a separate decision.
+   */
+  replyTo?: MessageReply;
   /** Annotation payloads for this message */
   annotations?: AnnotationV1[];
   isError?: boolean;
@@ -289,12 +297,33 @@ export interface Message {
   isQueued?: boolean;
   // Intermediate text (commentary between tool calls, not final response)
   isIntermediate?: boolean;
+  // Model reasoning (chain-of-thought) for this assistant message. Always paired
+  // with isIntermediate so it can never leak into final-response consumers.
+  isThinking?: boolean;
   // Hidden: a system-generated message that must reach the model (it drives a
   // turn) but must NOT render as a bubble in the transcript — e.g. the WS2
   // background-task-completion nudge that wakes an idle session to present a
   // finished background agent's result. Filtered out in groupMessagesByTurn so
   // it never appears as a user/assistant bubble (desktop + viewer).
   hidden?: boolean;
+  /**
+   * Who produced this message. Three kinds, and the distinction is a **fact**, not a rendering
+   * choice (that is `hidden`):
+   *
+   * - `user` (also the default for older rows) — a person at the composer;
+   * - `agent` — another conversation (`send_agent_message`). It drives a turn like a person's
+   *   message, but it is **not the person's text**: it must not sit in their draft tray, and it
+   *   cannot be edited into their words;
+   * - `system` — the app itself (a finished task's report, a nudge). Always paired with `hidden`.
+   *
+   * The producer and the renderer used to be one flag, which is why an inter-session message ended
+   * up in the person's queue: `hidden` answers "do I draw this", and there was no field left to
+   * answer "who said it".
+   */
+  origin?: 'user' | 'agent' | 'system';
+  /** `origin: 'agent'`: the conversation that sent it, so the bubble can be attributed. */
+  fromSessionId?: string;
+  fromSessionName?: string;
   // Turn ID: Correlation ID from the API's message.id, groups all messages in an assistant turn
   turnId?: string;
   // Status type for special status messages (retrying is transient renderer state)
@@ -343,6 +372,23 @@ export interface Message {
  * Stored message format (persistence)
  * Excludes transient runtime-only fields (isStreaming, isPending)
  */
+/**
+ * The message a person is answering.
+ *
+ * Structured rather than pasted text, for one reason: the quote is a **pointer**. A pasted `> …`
+ * block is indistinguishable from something the person typed, cannot be clicked back to, and
+ * grows the prompt with a copy of words the model already has.
+ *
+ * Nothing here is sent to the model on its own — see `Message.replyTo`.
+ */
+export interface MessageReply {
+  messageId: string
+  /** Who wrote the message being answered, so the quote can show it. */
+  role: MessageRole
+  /** The start of that message, short enough to sit in a strip. */
+  excerpt: string
+}
+
 export interface StoredMessage {
   id: string;
   type: MessageRole;
@@ -371,10 +417,14 @@ export interface StoredMessage {
   attachments?: StoredAttachment[];
   /** Content badges for inline display (sources, skills) */
   badges?: ContentBadge[];
+  /** The message this one answers, when the person picked one. */
+  replyTo?: MessageReply;
   /** Annotations persisted at message level */
   annotations?: AnnotationV1[];
   // Turn grouping - critical for TurnCard rendering after reload
   isIntermediate?: boolean;
+  /** Model reasoning block (rendered as its own step, never as a reply) */
+  isThinking?: boolean;
   turnId?: string;
   // Status type (retry progress is not persisted by the session manager)
   statusType?: 'compacting' | 'compaction_complete' | 'retrying';
@@ -572,6 +622,7 @@ export type AgentEvent =
   | { type: 'info'; message: string; compactionTrigger?: 'manual' | 'auto' }
   | { type: 'text_delta'; text: string; turnId?: string; parentToolUseId?: string }
   | { type: 'text_complete'; text: string; isIntermediate?: boolean; turnId?: string; parentToolUseId?: string; sdkMessageId?: string }
+  | { type: 'thinking_complete'; text: string; turnId?: string; parentToolUseId?: string }
   | { type: 'pi_turn_anchor'; sdkMessageId: string; sdkTurnAnchor: string }
   | { type: 'tool_start'; toolName: string; toolUseId: string; input: Record<string, unknown>; intent?: string; displayName?: string; turnId?: string; parentToolUseId?: string; toolDisplayMeta?: ToolDisplayMeta }
   | { type: 'tool_result'; toolUseId: string; toolName?: string; result: string; isError: boolean; input?: Record<string, unknown>; turnId?: string; parentToolUseId?: string }

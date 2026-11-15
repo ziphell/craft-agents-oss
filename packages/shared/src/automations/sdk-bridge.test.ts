@@ -19,8 +19,8 @@ describe('sdk-bridge', () => {
 
     it('should include process.env variables', () => {
       const env = buildEnvFromSdkInput('PreToolUse', input());
-      // PATH should be inherited from process.env
-      expect(env.PATH).toBeDefined();
+      // PATH should be inherited from process.env (Windows names it "Path").
+      expect(env.PATH ?? env.Path).toBeDefined();
     });
 
     it('should not include undefined values from process.env', () => {
@@ -118,8 +118,8 @@ describe('sdk-bridge', () => {
       it('should return minimal env for events with no specific mappings', () => {
         const env = buildEnvFromSdkInput('Stop' as any, input());
         expect(env.CRAFT_EVENT).toBe('Stop');
-        // Should still have process.env vars
-        expect(env.PATH).toBeDefined();
+        // Should still have process.env vars (Windows names it "Path")
+        expect(env.PATH ?? env.Path).toBeDefined();
       });
     });
 

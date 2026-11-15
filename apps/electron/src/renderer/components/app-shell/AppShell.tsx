@@ -21,7 +21,6 @@ import {
   DatabaseZap,
   Zap,
   Inbox,
-  Globe,
   FolderOpen,
   Cake,
   Calendar,
@@ -33,7 +32,9 @@ import {
   Info,
   MailOpen,
   FolderKanban,
-  PanelsTopLeft,
+  Wand2,
+  Bookmark,
+  Mail,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -41,12 +42,12 @@ import { TopBar } from "./TopBar"
 import { SquarePenRounded } from "../icons/SquarePenRounded"
 import { McpIcon } from "../icons/McpIcon"
 import { cn } from "@/lib/utils"
-import { isMac } from "@/lib/platform"
+import { isMac, isWebUI } from "@/lib/platform"
 import { Button } from "@/components/ui/button"
 import { HeaderIconButton } from "@/components/ui/HeaderIconButton"
 import { resolveInheritedFilterParams, type FilterMode } from "./inherited-filter-params"
 import { Separator } from "@/components/ui/separator"
-import { Tooltip, TooltipTrigger, TooltipContent, DocumentFormattedMarkdownOverlay } from "@craft-agent/ui"
+import { Tooltip, TooltipTrigger, TooltipContent, DocumentFormattedMarkdownOverlay, MentionIcon } from "@craft-agent/ui"
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -76,6 +77,9 @@ import { SessionList, type ChatGroupingMode } from "./SessionList"
 import { MainContentPanel } from "./MainContentPanel"
 import { BoardListToggle } from "./kanban/BoardListToggle"
 import { PanelStackContainer } from "./PanelStackContainer"
+import { BotWorkbenchDock } from "./bot/BotWorkbenchDock"
+import { botWorkbenchOpenAtom } from "@/atoms/bot-workbench"
+import { RemoteBrowserPanel } from "../browser/RemoteBrowserPanel"
 import { CompactSessionListFilter } from "./CompactSessionListFilter"
 import type { ChatDisplayHandle } from "./ChatDisplay"
 import { LeftSidebar } from "./LeftSidebar"
@@ -90,13 +94,18 @@ import { useFocusZone } from "@/hooks/keyboard"
 import { useFocusContext } from "@/context/FocusContext"
 import { getSessionTitle } from "@/utils/session"
 import { useSetAtom } from "jotai"
-import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
+import { chromeFocusRequestAtom } from '@/atoms/chrome-focus'
+import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter, BrowserInstanceInfo } from "../../../shared/types"
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
+import { filterInstancesForWorkspace, openBrowserViewAtom } from "@/atoms/browser-pane"
+import { DEFAULT_BROWSER_PROFILE_ID } from "@/atoms/browser-profiles"
+import { windowIsRemoteAtom, windowServerScopeAtom } from "@/atoms/window-mode"
 import { sourcesAtom } from "@/atoms/sources"
 import { DECISION_SETTINGS_CHANGED_EVENT, guardedModeAvailableAtom } from "@/atoms/permission-modes"
 import { DEFAULT_PERMISSION_MODES } from "@craft-agent/shared/agent/modes"
 import { RtkUpdatePrompt } from "@/components/RtkUpdateDialog"
 import { skillsAtom } from "@/atoms/skills"
+import { parseRouteToNavigationState } from "../../../shared/route-parser"
 import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
 import { useStatuses } from "@/hooks/useStatuses"
@@ -121,7 +130,9 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   isProjectsNavigation,
-  isPagesNavigation,
+  isTweaksNavigation,
+  isCreationsNavigation,
+  isBotNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -129,15 +140,18 @@ import { SourcesListPanel } from "./SourcesListPanel"
 import { SkillsListPanel } from "./SkillsListPanel"
 import { AutomationsListPanel } from "../automations/AutomationsListPanel"
 import { ProjectsListPanel } from "./ProjectsListPanel"
+import { TweaksListPanel } from "./TweaksListPanel"
 import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO_FILTER_KIND } from "../automations/types"
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
-import { usePages } from "@/hooks/usePages"
+import { useTweaks } from "@/hooks/useTweaks"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
+import { ConnectServerDialog } from "./ConnectServerDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
+import { useBrowserToolbarActions, type AddElementRequest } from "@/hooks/useBrowserToolbarActions"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
@@ -153,7 +167,9 @@ import {
 } from "./panel-constants"
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
-import { dispatchFocusInputEvent } from "./input/focus-input-events"
+import { dispatchFocusInputEvent, dispatchRestoreInput } from "./input/focus-input-events"
+import { appendRestoredInput } from "@/lib/input-text"
+import { buildElementMention, buildTabMention, type TabRef } from "@craft-agent/shared/mentions"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -531,6 +547,8 @@ function AppShellContent({
     onOpenSettings,
     onOpenKeyboardShortcuts,
     onOpenStoredUserPreferences,
+    onInputChange,
+    getDraft,
     onReset,
     onSendMessage,
     openNewChat,
@@ -566,6 +584,23 @@ function AppShellContent({
   const shellWidth = useContainerWidth(shellRef)
   const MOBILE_THRESHOLD = 768
   const isAutoCompact = shellWidth > 0 && shellWidth < MOBILE_THRESHOLD
+
+  /**
+   * Whether the workbench can afford to be a column.
+   *
+   * It is a fixed 320px next to the assistant's panel, and a panel refuses to go below
+   * `PANEL_MIN_WIDTH` (440) — so a column needs roughly sidebar + 440 + 320 before anything has to
+   * overflow. Below that the honest answer is not a squeezed column but the same sheet compact
+   * mode uses: the workbench draws over the panel instead of shoving it off the right edge.
+   */
+  // sidebar 220 + panel 440 (its floor) + workbench 320 + the two gaps — measured, not guessed.
+  const WORKBENCH_COLUMN_MIN_WIDTH = 1020
+  const workbenchAsColumn = !isAutoCompact && shellWidth >= WORKBENCH_COLUMN_MIN_WIDTH
+  // Too narrow for a column? Then it comes **over** the panel rather than beside it — still its own
+  // width (a drawer on the right), never full-bleed: a 990px-wide workbench is a worse layout than
+  // one that covers what it has to.
+  const workbenchAsDrawer = !isAutoCompact && !workbenchAsColumn
+  const workbenchAsSheet = isAutoCompact
 
   const effectiveSidebarAndNavigatorHidden = isSidebarAndNavigatorHidden || isAutoCompact
 
@@ -603,6 +638,13 @@ function AppShellContent({
   const panelStack = useAtomValue(panelStackAtom)
   const panelCount = useAtomValue(panelCountAtom)
   const focusedSessionId = useAtomValue(focusedSessionIdAtom)
+  // The saved server this window works on, so its browser windows are never another hub's.
+  const serverScope = useAtomValue(windowServerScopeAtom)
+  /** A remote window's browser is on its server; the panel is this machine's view of it. */
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
+  /** The webui is a thin client too — there is no local browser window to raise. */
+  const usesServerBrowser = isRemoteWindow || isWebUI
+  const openBrowserView = useSetAtom(openBrowserViewAtom)
 
   // Navigate the focused panel to a session.
   // If the session is already open in another panel, focus that panel instead.
@@ -637,9 +679,32 @@ function AppShellContent({
   // so the navigator (and its resize handle) collapse to zero width while it's active.
   const isBoardView = isSessionsNavigation(navState) && navState.viewMode === 'board'
 
-  // Pages behaves the same way: both the library grid and an open page render
-  // full-width in the content area — there is no pages navigator list.
-  const isPagesView = isPagesNavigation(navState)
+  // Creations renders full-width in the content area — there is no navigator list to its left.
+  const isDesignsView = isCreationsNavigation(navState)
+  // Same for Craft Bot: its content is a conversation, and the list of what it started lives in its
+  // own workbench. Leaving the session-list column standing there (with no branch matching, so
+  // nothing in it) is an empty 32% of the window between the sidebar and the chat.
+  const isBotView = isBotNavigation(navState)
+  // The dock belongs to the assistant: leaving the view puts it away. The open/closed choice is
+  // remembered, so coming back shows the same thing.
+  const workbenchOpen = useAtomValue(botWorkbenchOpenAtom)
+  // It belongs to the **panel**, not to what is focused. Keyed on `isBotView` it vanished the
+  // moment you clicked a card in it — opening work made the list you opened it from disappear,
+  // which is the one thing this column must never do.
+  const hasAssistantPanel = panelStack.some(
+    entry => parseRouteToNavigationState(entry.route)?.navigator === 'bot',
+  )
+  const workbenchDockVisible = workbenchOpen && hasAssistantPanel
+
+  // The workbench takes the session list's place, like the assistant's own view does. With a fixed
+  // 320px column and a panel that refuses to go below 440, the list is what has to give: otherwise
+  // opening work **from** the workbench pushes the new panel off the right edge — a worse answer
+  // than a list you get back with one click.
+  const navigatorColumnWidth = isAutoCompact
+    ? sessionListWidth
+    : (effectiveSidebarAndNavigatorHidden || isBoardView || isDesignsView || isBotView || workbenchDockVisible
+        ? 0
+        : sessionListWidth)
 
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
@@ -823,6 +888,11 @@ function AppShellContent({
   const [searchActive, setSearchActive] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState('')
 
+  /** "Connect to Server…" — a hub window is an action, not a settings page. */
+  const [connectServerOpen, setConnectServerOpen] = React.useState(false)
+  /** Opening windows is the desktop app's business; a browser tab has no windows to open. */
+  const isElectronRuntime = window.electronAPI.getRuntimeEnvironment() === 'electron'
+
   // Grouping mode for chat list: per-view (stored in viewFiltersMap), forced to 'date' for state sub-views
   const isStateSubView = sessionFilter?.kind === 'state'
 
@@ -942,7 +1012,111 @@ function AppShellContent({
   } = useAutomations(activeWorkspaceId)
 
   const { projects } = useProjects(activeWorkspaceId)
-  const { pages } = usePages(activeWorkspaceId)
+
+  // The workspace's project files tree is watched so anything that follows external edits to it
+  // (`useProjectFilesWatch`, used by the diagram and HTML editors) keeps receiving
+  // `projects:filesChanged`. The watcher is per-client and must be owned by exactly one component.
+  useEffect(() => {
+    if (!activeWorkspaceId) return
+    window.electronAPI.watchProjectFiles().catch((err: unknown) => {
+      console.error('[AppShell] Failed to start project files watcher:', err)
+    })
+    return () => {
+      window.electronAPI.unwatchProjectFiles().catch((err: unknown) => {
+        console.error('[AppShell] Failed to stop project files watcher:', err)
+      })
+    }
+  }, [activeWorkspaceId])
+
+  /**
+   * Put a chip in a conversation's draft, and bring the composer up on it.
+   *
+   * The two-step write both reference flows share — the draft for when the session is
+   * mounted later, the event for when it is already open — because neither step alone
+   * lands in every case, and both carry the whole text so the second cannot drop what
+   * the first wrote.
+   *
+   * With no conversation to put it in — nothing selected, or a window of its own — one
+   * is opened rather than the reference being dropped: adding something to a
+   * conversation is how a user starts talking about it. The chip is written only once
+   * the session exists, so a failed create leaves no half-written draft behind.
+   */
+  const appendChipToConversation = useCallback(async (chip: string, sessionId: string | null) => {
+    let targetSessionId = sessionId
+    if (!targetSessionId) {
+      if (!activeWorkspaceId) return
+      try {
+        targetSessionId = (await contextValue.onCreateSession(activeWorkspaceId)).id
+      } catch (err) {
+        console.error('[AppShell] Failed to open a conversation for a browser reference:', err)
+        toast.error(t('browserEdit.newSessionFailed'))
+        return
+      }
+    }
+
+    const next = appendRestoredInput(getDraft(targetSessionId), chip)
+    onInputChange(targetSessionId, next)
+    window.dispatchEvent(
+      new CustomEvent('craft:restore-input', {
+        detail: { sessionId: targetSessionId, text: next },
+      }),
+    )
+    // The reference was added from elsewhere (another window, a menu), so the caret is
+    // not in the composer; put it there, where the user now has a chip to write after.
+    dispatchFocusInputEvent({ sessionId: targetSessionId })
+    navigate(routes.view.allSessions(targetSessionId))
+  }, [activeWorkspaceId, contextValue.onCreateSession, getDraft, onInputChange, navigate, t])
+
+  /**
+   * Hand an element to a conversation.
+   *
+   * The element is inserted as a chip — a marker in the composer's text that the input renders
+   * as an inline badge and that the message keeps, so the chip survives the send and the agent
+   * can rewrite it into a readable reference (see element-mention). It carries the tab it was
+   * picked on — its id and its address — because the picker stays on across the window's tabs,
+   * so the element alone does not say which one the change is meant for. It is *appended*:
+   * picking an element adds a reference to the question being written, so the question has to
+   * survive the pick.
+   */
+  const handleAddElementToConversation = useCallback((request: AddElementRequest) => {
+    const { origin } = request
+    const chip = `${buildElementMention({
+      selector: request.element.selector,
+      text: request.element.text,
+      ...(origin.url ? { url: origin.url } : {}),
+      tabId: origin.tabId,
+    })} `
+
+    void appendChipToConversation(chip, request.sessionId)
+  }, [appendChipToConversation])
+
+  /**
+   * Hand a whole tab to a conversation.
+   *
+   * The same chip machinery, for a tab instead of an element: "look at this screen"
+   * is a thing to say about a window somebody else may be driving, and the reference
+   * is what saves describing it in words. It goes where an element pick goes — the
+   * conversation the user is looking at — because that is who is asking, and it leaves
+   * the window where it is: nothing here switches tabs (that is the window's own rail,
+   * or the tab list in the top bar).
+   */
+  const handleAddTabToConversation = useCallback((tab: TabRef) => {
+    void appendChipToConversation(`${buildTabMention(tab)} `, focusedSessionId ?? session.selected ?? null)
+  }, [appendChipToConversation, focusedSessionId, session.selected])
+
+  useBrowserToolbarActions({
+    /**
+     * Where a pick goes: the conversation the user is looking at.
+     *
+     * Not the window's own owner — that is whoever is driving the window, and the
+     * window is shared.
+     */
+    activeSessionId: focusedSessionId ?? session.selected,
+    onAddElementToConversation: handleAddElementToConversation,
+  })
+
+  const { tweaks } = useTweaks(activeWorkspaceId)
+
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
     [projects],
@@ -1264,6 +1438,19 @@ function AppShellContent({
   // Focus mode toggle (CMD+.) - hides both sidebars
   useAction('view.toggleFocusMode', () => setIsSidebarAndNavigatorHidden(v => !v))
 
+  /**
+   * The side panel's focus mode asks for the same layout as Ctrl+.: the conversation is covered,
+   * so the sidebar and navigator are in the way. A request carries a timestamp, so the same
+   * value asked for twice still lands.
+   */
+  const chromeFocusRequest = useAtomValue(chromeFocusRequestAtom)
+  const lastChromeFocusAt = React.useRef(0)
+  React.useEffect(() => {
+    if (!chromeFocusRequest || chromeFocusRequest.at === lastChromeFocusAt.current) return
+    lastChromeFocusAt.current = chromeFocusRequest.at
+    setIsSidebarAndNavigatorHidden(chromeFocusRequest.hidden)
+  }, [chromeFocusRequest])
+
   // Panel focus navigation (CMD+SHIFT+[ / ])
   const focusNextPanel = useSetAtom(focusNextPanelAtom)
   const focusPrevPanel = useSetAtom(focusPrevPanelAtom)
@@ -1283,8 +1470,14 @@ function AppShellContent({
   // New window
   useAction('app.newWindow', () => window.electronAPI.menuNewWindow())
 
-  // Quit (note: also handled by native menu on macOS)
-  useAction('app.quit', () => window.electronAPI.menuQuit())
+  // Connect to a hub (opens its own window)
+  useAction('app.connectServer', () => setConnectServerOpen(true))
+
+  // Quit (note: also handled by native menu on macOS). The webui has no app to quit.
+  useAction('app.quit', () => {
+    if (isWebUI) return
+    window.electronAPI.menuQuit()
+  })
 
   // History navigation
   useAction('nav.goBack', goBack)
@@ -1430,6 +1623,14 @@ function AppShellContent({
   // Use session metadata from Jotai atom (lightweight, no messages)
   // This prevents closures from retaining full message arrays
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  // The assistant's conversation is hidden from the list, so its unread state has nowhere to show
+  // except its own row. Without this, it can answer and the person never learns.
+  const botHasUnread = React.useMemo(
+    () => [...sessionMetaMap.values()].some(
+      meta => meta.role === 'bot' && meta.hasUnread === true && (!activeWorkspaceId || meta.workspaceId === activeWorkspaceId),
+    ),
+    [sessionMetaMap, activeWorkspaceId],
+  )
   const setSessionMetaMap = useSetAtom(sessionMetaMapAtom)
 
   const hasPendingPrompt = React.useCallback((sessionId: string) => {
@@ -1455,16 +1656,11 @@ function AppShellContent({
 
   // Filter session metadata by active workspace
   // Also exclude hidden sessions (mini-agent sessions) from all counts and lists
-  // For remote workspaces, sessions have the remote workspace ID (not the local one),
-  // so we match against both the local and remote workspace IDs.
-  const remoteWorkspaceId = activeWorkspace?.remoteServer?.remoteWorkspaceId
   const workspaceSessionMetas = useMemo(() => {
     const metas = Array.from(sessionMetaMap.values())
     if (!activeWorkspaceId) return metas.filter(s => !s.hidden)
-    return metas.filter(s =>
-      !s.hidden && (s.workspaceId === activeWorkspaceId || (remoteWorkspaceId && s.workspaceId === remoteWorkspaceId))
-    )
-  }, [sessionMetaMap, activeWorkspaceId, remoteWorkspaceId])
+    return metas.filter(s => !s.hidden && s.workspaceId === activeWorkspaceId)
+  }, [sessionMetaMap, activeWorkspaceId])
 
   // Active sessions exclude archived - use this for all counts and filters except archived view
   const activeSessionMetas = useMemo(() => {
@@ -1561,10 +1757,10 @@ function AppShellContent({
 
   // Count sources by type for the Sources dropdown subcategories
   const sourceTypeCounts = useMemo(() => {
-    const counts = { api: 0, mcp: 0, local: 0 }
+    const counts = { api: 0, mcp: 0, local: 0, web: 0, email: 0 }
     for (const source of sources) {
       const t = source.config.type
-      if (t === 'api' || t === 'mcp' || t === 'local') {
+      if (t === 'api' || t === 'mcp' || t === 'local' || t === 'web' || t === 'email') {
         counts[t]++
       }
     }
@@ -1853,8 +2049,16 @@ function AppShellContent({
     navigate(routes.view.sourcesMcp())
   }, [])
 
+  const handleSourcesEmailClick = useCallback(() => {
+    navigate(routes.view.sourcesEmail())
+  }, [])
+
   const handleSourcesLocalClick = useCallback(() => {
     navigate(routes.view.sourcesLocal())
+  }, [])
+
+  const handleSourcesWebClick = useCallback(() => {
+    navigate(routes.view.sourcesWeb())
   }, [])
 
   // Handler for skills view
@@ -1872,9 +2076,14 @@ function AppShellContent({
     navigate(routes.view.projects())
   }, [])
 
-  // Handler for pages view
-  const handlePagesClick = useCallback(() => {
-    navigate(routes.view.pages())
+  // Handler for tweaks view
+  const handleTweaksClick = useCallback(() => {
+    navigate(routes.view.tweaks())
+  }, [])
+
+  // Handler for creations view
+  const handleCreationsClick = useCallback(() => {
+    navigate(routes.view.creations())
   }, [])
 
   const handleAutomationsScheduledClick = useCallback(() => {
@@ -1914,8 +2123,8 @@ function AppShellContent({
   // State to control which EditPopover is open (triggered from context menus).
   // We use controlled popovers instead of deep links so the user can type
   // their request in the popover UI before opening a new chat window.
-  // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-local
-  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'labels' | 'views' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-local' | 'add-skill' | 'add-label' | 'automation-config' | 'add-project' | null>(null)
+  // add-source variants: add-source (generic), add-source-api, add-source-mcp, add-source-email, add-source-local, add-source-web
+  const [editPopoverOpen, setEditPopoverOpen] = useState<'statuses' | 'labels' | 'views' | 'add-source' | 'add-source-api' | 'add-source-mcp' | 'add-source-email' | 'add-source-local' | 'add-source-web' | 'add-skill' | 'add-label' | 'automation-config' | 'add-project' | null>(null)
 
   // Stores the Y position of the last right-clicked sidebar item so the EditPopover
   // appears near it rather than at a fixed location. Updated synchronously before
@@ -2014,7 +2223,7 @@ function AppShellContent({
   // Handler for "Add Source" context menu action
   // Opens the EditPopover for adding a new source
   // Optional sourceType param allows filter-aware context (from subcategory menus or filtered views)
-  const openAddSource = useCallback((sourceType?: 'api' | 'mcp' | 'local') => {
+  const openAddSource = useCallback((sourceType?: 'api' | 'mcp' | 'local' | 'web' | 'email') => {
     captureContextMenuPosition()
     const key = sourceType ? `add-source-${sourceType}` as const : 'add-source' as const
     setTimeout(() => setEditPopoverOpen(key), 50)
@@ -2086,19 +2295,73 @@ function AppShellContent({
     setTimeout(() => focusZone('chat', { intent: 'programmatic' }), 50)
   }, [activeWorkspace, focusZone, navigate, resolveInheritedNewSessionParams])
 
-  // Create a brand new dedicated browser window and focus it.
-  // Intentionally unbound: this action should always create a NEW window.
-  const handleNewBrowserWindow = useCallback(async () => {
+  // Open the browser.
+  //
+  // One window per workspace and profile is the model, so this brings the window up rather than
+  // adding a tab to it: a window this workspace already has is raised (and un-minimized) instead
+  // of being joined by a second. Only when there is none does a window get made — and it
+  // comes back with the pages it had last time when the restore setting is on, and with the
+  // single empty-state tab when it is not. The host decides both (see `createInstance`),
+  // which is why nothing about tabs is asked for here.
+  //
+  // Which profile: the one the caller names (the top bar's profile menu), else the profile this
+  // conversation works in — the same chain the composer's picker and the agent's unnamed
+  // commands use — else the workspace's default. So "open the browser" from a conversation set
+  // to a profile opens *that* profile, instead of silently opening Default.
+  const handleOpenBrowser = useCallback(async (profileId?: string) => {
+    let wantedProfileId = profileId
+    if (!wantedProfileId && effectiveSessionId) {
+      try {
+        const resolved = await window.electronAPI.browserProfiles.resolve(effectiveSessionId)
+        wantedProfileId = resolved.effectiveProfileId ?? undefined
+      } catch {
+        // No registry answer (or no browser profiles on this host): the workspace's default is
+        // still the right window, and `create` resolves it.
+      }
+    }
+
+    const profileOf = (item: BrowserInstanceInfo) => item.profileId ?? DEFAULT_BROWSER_PROFILE_ID
+
     try {
+      const instances = await window.electronAPI.browserPane.list()
+      const visible = filterInstancesForWorkspace(instances, activeWorkspaceId, serverScope)
+      const existing = wantedProfileId
+        ? visible.find((item) => profileOf(item) === wantedProfileId)
+        : visible[0]
+
+      // A remote window's browser is the workspace's browser on its server, and this click is a
+      // *viewing* act: the window is created hidden and stays that way — nothing comes up on the
+      // hub's desktop and nothing takes the focus from the person sitting there. Its tab lives in
+      // the parking window, which is where the stream is taken from, exactly as an agent opening
+      // the browser does it. The hub's own click (below) still raises a real window.
+      if (usesServerBrowser) {
+        const instanceId = existing?.id ?? await window.electronAPI.browserPane.create({
+          show: false,
+          ...(wantedProfileId ? { profileId: wantedProfileId } : {}),
+        })
+        // Read the window again: a fresh one answers with its first tab here.
+        const next = await window.electronAPI.browserPane.list()
+        const instance = next.find((item) => item.id === instanceId)
+        const tabId = instance?.tabs?.find((tab) => tab.active)?.id ?? instance?.tabs?.[0]?.id
+        if (tabId) openBrowserView({ instanceId, tabId })
+        else openBrowserView()
+        return
+      }
+
+      if (existing) {
+        await window.electronAPI.browserPane.focus(existing.id)
+        return
+      }
       const instanceId = await window.electronAPI.browserPane.create({
         show: true,
+        ...(wantedProfileId ? { profileId: wantedProfileId } : {}),
       })
       await window.electronAPI.browserPane.focus(instanceId)
     } catch (error) {
-      console.error('[Chat] Failed to create browser window:', error)
+      console.error('[Chat] Failed to open the browser:', error)
       toast.error(t('toast.failedToCreateBrowser'))
     }
-  }, [])
+  }, [activeWorkspaceId, effectiveSessionId, serverScope, t, usesServerBrowser, openBrowserView])
 
   // Delete Source - simplified since agents system is removed
   const handleDeleteSource = useCallback(async (sourceSlug: string) => {
@@ -2164,17 +2427,18 @@ function AppShellContent({
     }
     flattenTree(labelTree)
 
-    // 3. Sources, Skills, Projects, Pages, Automations, Settings (visual order)
+    // 3. Sources, Skills, Projects, Tweaks, Pages, Automations, Settings (visual order)
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
     result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
-    result.push({ id: 'nav:pages', type: 'nav', action: handlePagesClick })
+    result.push({ id: 'nav:tweaks', type: 'nav', action: handleTweaksClick })
+    result.push({ id: 'nav:creations', type: 'nav', action: handleCreationsClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handlePagesClick, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handleAutomationsClick, handleTweaksClick, handleCreationsClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2298,9 +2562,19 @@ function AppShellContent({
       return t("sidebar.allProjects")
     }
 
-    // Pages navigator
-    if (isPagesNavigation(navState)) {
-      return t("sidebar.allPages")
+    // Craft Bot navigator
+    if (isBotNavigation(navState)) {
+      return t("sidebar.bot")
+    }
+
+    // Tweaks navigator
+    if (isTweaksNavigation(navState)) {
+      return t("sidebar.allTweaks")
+    }
+
+    // Creations navigator
+    if (isCreationsNavigation(navState)) {
+      return t("sidebar.creations")
     }
 
     // Automations navigator
@@ -2404,7 +2678,8 @@ function AppShellContent({
           onWorkspaceRemoved={() => onRefreshWorkspaces?.()}
           activeSessionId={effectiveSessionId}
           onNewChat={() => handleNewChat()}
-          onNewWindow={() => window.electronAPI.menuNewWindow()}
+          onNewWindow={isElectronRuntime ? () => window.electronAPI.menuNewWindow() : undefined}
+          onConnectServer={isElectronRuntime ? () => setConnectServerOpen(true) : undefined}
           onOpenSettings={onOpenSettings}
           onOpenSettingsSubpage={handleSettingsClick}
           onOpenKeyboardShortcuts={onOpenKeyboardShortcuts}
@@ -2416,9 +2691,13 @@ function AppShellContent({
           onToggleSidebar={handleToggleSidebar}
           onToggleFocusMode={() => setIsSidebarAndNavigatorHidden(prev => !prev)}
           onAddSessionPanel={() => handleNewChat(true)}
-          onAddBrowserPanel={() => { void handleNewBrowserWindow() }}
+          onAddBrowserPanel={(profileId) => { void handleOpenBrowser(profileId) }}
+          onAddTabToConversation={handleAddTabToConversation}
           isCompact={isAutoCompact}
         />
+
+        {/* The remote window's view of its server's browser — nothing in a local window. */}
+        <RemoteBrowserPanel />
 
       {/* === OUTER LAYOUT: Unified Panel Stack | Right Sidebar === */}
       <div
@@ -2594,7 +2873,9 @@ function AppShellContent({
                           id: "nav:sources:api",
                           title: t("sidebar.apis"),
                           label: String(sourceTypeCounts.api),
-                          icon: Globe,
+                          // The same mark a source chip shows (see @craft-agent/ui → mention-icons):
+                          // the globe is the browser tab's, an API is a connection.
+                          icon: <MentionIcon kind="source" className="h-3.5 w-3.5" />,
                           variant: (sourceFilter?.kind === 'type' && sourceFilter.sourceType === 'api') ? "default" : "ghost",
                           onClick: handleSourcesApiClick,
                           contextMenu: {
@@ -2617,6 +2898,20 @@ function AppShellContent({
                           },
                         },
                         {
+                          id: "nav:sources:email",
+                          title: t("sidebar.mailboxes"),
+                          label: String(sourceTypeCounts.email),
+                          icon: Mail,
+                          variant: (sourceFilter?.kind === 'type' && sourceFilter.sourceType === 'email') ? "default" : "ghost",
+                          onClick: handleSourcesEmailClick,
+                          contextMenu: {
+                            type: 'sources' as const,
+                            onAddSource: () => openAddSource('email'),
+                            // No sourceType: there is no per-type docs page for mailboxes, so
+                            // "Learn More" falls back to the general sources page.
+                          },
+                        },
+                        {
                           id: "nav:sources:local",
                           title: t("sidebar.localFolders"),
                           label: String(sourceTypeCounts.local),
@@ -2627,6 +2922,22 @@ function AppShellContent({
                             type: 'sources' as const,
                             onAddSource: () => openAddSource('local'),
                             sourceType: 'local',
+                          },
+                        },
+                        {
+                          id: "nav:sources:web",
+                          title: t("sidebar.webPages"),
+                          label: String(sourceTypeCounts.web),
+                          // A bookmark: a url kept. Not the globe — that one is the browser tab's
+                          // (see @craft-agent/ui → mention-icons).
+                          icon: Bookmark,
+                          variant: (sourceFilter?.kind === 'type' && sourceFilter.sourceType === 'web') ? "default" : "ghost",
+                          onClick: handleSourcesWebClick,
+                          contextMenu: {
+                            type: 'sources' as const,
+                            onAddSource: () => openAddSource('web'),
+                            // No sourceType: the site has no web-source docs page, so "Learn More"
+                            // falls back to the general sources page rather than a broken link.
                           },
                         },
                       ],
@@ -2668,23 +2979,23 @@ function AppShellContent({
                       })),
                     },
                     {
-                      id: "nav:pages",
-                      title: t("sidebar.pages"),
-                      label: String(pages.length),
-                      icon: PanelsTopLeft,
-                      // Highlight on the library grid only, not when a page is open (mirrors Projects)
-                      variant: (isPagesNavigation(navState) && !navState.details) ? "default" : "ghost",
-                      onClick: handlePagesClick,
-                      expandable: pages.length > 0,
-                      expanded: isExpanded('nav:pages'),
-                      onToggle: () => toggleExpanded('nav:pages'),
-                      items: pages.map(p => ({
-                        id: `nav:pages:${p.config.id}`,
-                        title: p.config.name,
-                        icon: PanelsTopLeft,
-                        variant: (isPagesNavigation(navState) && navState.details?.pageSlug === p.config.slug) ? "default" as const : "ghost" as const,
-                        onClick: () => navigate(routes.view.pages(p.config.slug)),
-                      })),
+                      // Works the agent produced — the entry point that replaced the design
+                      // library. No count and no children: the list is not a navigation tree,
+                      // because a work is a file rather than something you route into.
+                      id: "nav:creations",
+                      title: t("sidebar.creations"),
+                      icon: FolderOpen,
+                      variant: isCreationsNavigation(navState) ? "default" : "ghost",
+                      onClick: handleCreationsClick,
+                    },
+                    {
+                      id: "nav:tweaks",
+                      title: t("sidebar.tweaks"),
+                      label: String(tweaks.length),
+                      icon: Wand2,
+                      // Highlight only when on the Tweaks view itself (its list is the navigator)
+                      variant: isTweaksNavigation(navState) ? "default" : "ghost",
+                      onClick: handleTweaksClick,
                     },
                     {
                       id: "nav:automations",
@@ -2741,18 +3052,18 @@ function AppShellContent({
                       onClick: () => handleSettingsClick(),
                     },
                     // --- What's New ---
-                    {
-                      id: "nav:whats-new",
-                      title: t("sidebar.whatsNew"),
-                      icon: hasUnseenReleaseNotes ? (
-                        <span className="relative">
-                          <Cake className="h-3.5 w-3.5" />
-                          <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
-                        </span>
-                      ) : Cake,
-                      variant: "ghost" as const,
-                      onClick: handleWhatsNewClick,
-                    },
+                    // {
+                    //   id: "nav:whats-new",
+                    //   title: t("sidebar.whatsNew"),
+                    //   icon: hasUnseenReleaseNotes ? (
+                    //     <span className="relative">
+                    //       <Cake className="h-3.5 w-3.5" />
+                    //       <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
+                    //     </span>
+                    //   ) : Cake,
+                    //   variant: "ghost" as const,
+                    //   onClick: handleWhatsNewClick,
+                    // },
                   ]}
                 />
                 {/* Agent Tree: Hierarchical list of agents */}
@@ -3570,6 +3881,15 @@ function AppShellContent({
                 selectedProjectSlug={isProjectsNavigation(navState) ? navState.details?.projectSlug ?? null : null}
               />
             )}
+            {isTweaksNavigation(navState) && (
+              /* Tweaks List — one row per tweak; a tweak's own page is in the content panel */
+              <TweaksListPanel
+                tweaks={tweaks}
+                onTweakClick={(slug) => navigate(routes.view.tweaks(slug))}
+                onAskAgent={() => navigate(routes.action.newSession({ input: t('tweaks.askAgentPrompt') }))}
+                selectedTweakSlug={isTweaksNavigation(navState) ? navState.details?.tweakSlug ?? null : null}
+              />
+            )}
             {isAutomationsNavigation(navState) && (
               /* Automations List - filtered by type if automationFilter is active */
               <AutomationsListPanel
@@ -3658,12 +3978,34 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView || isPagesView ? 0 : sessionListWidth)}
+          navigatorWidth={navigatorColumnWidth}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={false}
+          botDockSlot={workbenchDockVisible && workbenchAsColumn ? <BotWorkbenchDock /> : undefined}
           isCompact={isAutoCompact}
           isResizing={!!isResizing}
         />
+
+        {/* A window too narrow for the column gets a **drawer**: the workbench keeps its own width
+            and covers the panel's right edge, instead of stretching across a 990px sheet or
+            shoving the panel off-screen. */}
+        {workbenchDockVisible && workbenchAsDrawer && (
+          // `absolute` inside the outer layout, not `fixed` to the window: the panels start below
+          // the top bar and stop at the edge inset, and a drawer that ignored both was taller than
+          // the thing it covers — it reached into the title strip above and past the bottom.
+          <div
+            className="absolute inset-y-0 right-0 z-[60] flex"
+            style={{ paddingRight: PANEL_EDGE_INSET, paddingBottom: PANEL_EDGE_INSET }}
+          >
+            <BotWorkbenchDock className="h-full" />
+          </div>
+        )}
+        {/* Compact (phone-sized): the same component as a full-screen sheet. */}
+        {workbenchDockVisible && workbenchAsSheet && (
+          <div className="fixed inset-0 z-[60] flex flex-col bg-background">
+            <BotWorkbenchDock className="w-full rounded-none" />
+          </div>
+        )}
 
         {/* Sidebar Resize Handle (absolute, hidden in focused mode) */}
         {!effectiveSidebarAndNavigatorHidden && (
@@ -3698,8 +4040,8 @@ function AppShellContent({
         </div>
         )}
 
-        {/* Session List Resize Handle (absolute, hidden in focused mode, board view, and pages) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isPagesView && (
+        {/* Session List Resize Handle (absolute, hidden in focused mode and board view) */}
+        {!effectiveSidebarAndNavigatorHidden && !isBoardView && !isDesignsView && !isBotView && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}
@@ -3823,9 +4165,9 @@ function AppShellContent({
             {...getEditConfig('edit-views', activeWorkspace.rootPath)}
           />
           {/* Add Source EditPopovers - one for each variant (generic + filter-specific)
-           * editPopoverOpen can be: 'add-source', 'add-source-api', 'add-source-mcp', 'add-source-local'
+           * editPopoverOpen can be: 'add-source', 'add-source-api', 'add-source-mcp', 'add-source-email', 'add-source-local', 'add-source-web'
            * Each variant uses its corresponding EditContextKey for filter-aware agent context */}
-          {(['add-source', 'add-source-api', 'add-source-mcp', 'add-source-local'] as const).map((variant) => (
+          {(['add-source', 'add-source-api', 'add-source-mcp', 'add-source-email', 'add-source-local', 'add-source-web'] as const).map((variant) => (
             <EditPopover
               key={variant}
               open={editPopoverOpen === variant}
@@ -3965,6 +4307,10 @@ function AppShellContent({
 
       {/* Asks to update rtk when Token Optimization is on but the installed rtk corrupts output */}
       <RtkUpdatePrompt workspaceId={activeWorkspaceId} />
+
+      {/* Connect to a hub — opened from the app menu. */}
+      <ConnectServerDialog open={connectServerOpen} onOpenChange={setConnectServerOpen} />
+
     </AppShellProvider>
   )
 }

@@ -21,6 +21,21 @@ describe('parseMarkdownPreviewSpec', () => {
     })
   })
 
+  // `page` is the diagram blocks' field: which of the file's pages to open on. It belongs to the
+  // *file* and not to an item — a diagram preview names one file, and the file's pages are the tabs
+  // it draws — so it has to survive parsing without leaking into the item shape.
+  it('keeps the page a spec names on the spec, and not on an item', () => {
+    const named = JSON.stringify({ src: '/tmp/flow.drawio', title: 'Flow', page: 'v2 split payment' })
+    expect(parseMarkdownPreviewSpec(named)).toEqual({
+      src: '/tmp/flow.drawio',
+      title: 'Flow',
+      page: 'v2 split payment',
+    })
+    expect(normalizePreviewItems(parseMarkdownPreviewSpec(named))).toEqual([
+      { src: '/tmp/flow.drawio' },
+    ])
+  })
+
   it('parses a valid multi-item spec', () => {
     const code = JSON.stringify({
       title: 'Versions',

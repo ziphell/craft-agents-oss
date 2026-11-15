@@ -8,7 +8,7 @@
  * See docs/adr-transport-locality.md for the locality boundary definition.
  */
 
-export const BROWSER_CAPABILITY_VERSION = 1
+import type { TabBelongsTo } from '@craft-agent/shared/protocol'
 
 /**
  * Names map 1:1 to `IBrowserPaneManager` methods.
@@ -18,23 +18,28 @@ export type BrowserCapabilityMethod =
   // Lifecycle / instances
   | 'createForSession'
   | 'getOrCreateForSession'
-  | 'focusBoundForSession'
   | 'destroyInstance'
   | 'destroyForSession'
   | 'getInstance'
   | 'listInstances'
-  | 'bindSession'
+  // Tabs
+  | 'createTab'
+  | 'activateTab'
+  | 'setSessionTab'
+  | 'closeTab'
+  | 'assignTab'
+  | 'listTabs'
   | 'unbindAllForSession'
   | 'setAgentControl'
   | 'clearAgentControl'
   | 'clearAgentControlForInstance'
   | 'clearVisualsForSession'
   | 'focus'
-  | 'hide'
   // Navigation
   | 'navigate'
   | 'goBack'
   | 'goForward'
+  | 'reload'
   // Interaction
   | 'getAccessibilitySnapshot'
   | 'clickElement'
@@ -47,15 +52,32 @@ export type BrowserCapabilityMethod =
   | 'scroll'
   | 'waitFor'
   | 'evaluate'
+  | 'fetchResource'
+  | 'pickElement'
+  // Persistent injection
+  | 'addInitScript'
+  | 'clearInitScripts'
+  // Video frames
+  | 'extractVideoFrames'
+  // A recording's sound, as a WAV
+  | 'extractAudio'
+  // Recording a tab for a conversation
+  | 'startRecordingForSession'
+  | 'stopRecordingForSession'
+  | 'waitForRecordingEnd'
+  | 'endRecordingsForSession'
+  // Diagrams
+  | 'renderDrawio'
   // Clipboard
   | 'setClipboard'
   | 'getClipboard'
   // Capture / introspection
   | 'screenshot'
   | 'screenshotRegion'
+  | 'printPdf'
   | 'getConsoleLogs'
   | 'getNetworkLogs'
-  | 'windowResize'
+  | 'resizeViewport'
   | 'getDownloads'
   | 'uploadFile'
   | 'detectSecurityChallenge'
@@ -66,10 +88,42 @@ export interface BrowserCapabilityRequest {
   method: BrowserCapabilityMethod
   /** Positional args matching `IBrowserPaneManager[method]` signature. */
   args: unknown[]
-  /** Owning session — used for owner-key namespacing on the client dispatcher. */
+  /** Owning session — who is asking, and whose cursor and driven-by mark a tab is written under. */
   sessionId: string
-  /** Owning workspace — combined with `sessionId` to form the owner-key prefix. */
+  /** Owning workspace — the boundary a call may act inside. */
   workspaceId: string
+  /**
+   * The browser profile the caller works in — which cookie jar a new tab or window lands in.
+   *
+   * Routing context next to `sessionId`/`workspaceId`, and resolved on **this** side because the
+   * desktop client cannot read a session: the conversation's own pick, its workspace's default, then
+   * the built-in profile. Absent means "the desktop side's default", which is what a person's own new
+   * tab means.
+   */
+  profileId?: string
+  /**
+   * The **work** the asking session is part of.
+   *
+   * Identity next to `sessionId` rather than in `args`, for the same reason `createTab`'s
+   * `by` is stamped by the dispatcher rather than read from the wire: a tab's
+   * `belongsTo` has to be the caller's own work, and a request that named somebody else's
+   * would be writing a tab's declaration on their behalf. A session that is part of no
+   * task is its own work — so this is `{ kind: 'session', sessionId }` for an ordinary
+   * conversation, and the task's node for a Conductor child.
+   */
+  work: TabBelongsTo
+  /**
+   * The tab of the window this call acts on, when the caller resolved one.
+   *
+   * Routing context, next to `sessionId` and `workspaceId` rather than in `args`, because
+   * it says the same kind of thing: not *what* to do but *where*. The caller resolves it
+   * with `pickCommandTarget` — the conversation's own cursor tab — and refuses the command
+   * when it has none rather than falling back to the tab on screen. It passes the id here, so
+   * the dispatcher never has to guess from what the person happens to be looking at. Absent
+   * means the tab on screen: a caller with no routing (the person's own toolbar calls never
+   * come through here at all) and the commands that are about a window rather than a tab.
+   */
+  tabId?: string
 }
 
 /**
@@ -79,8 +133,17 @@ export interface BrowserCapabilityRequest {
  * which doesn't survive structured cloning over WS. The dispatcher converts
  * `Buffer → Uint8Array` here, and `RemoteBrowserPaneManager` converts it back.
  */
+/** Wire shape for `printPdf`: bytes rather than a `Buffer`, which does not survive structured clone. */
+export interface PdfResultWire {
+  pdfBytes: Uint8Array | number[] | ArrayBufferLike
+  bytes: number
+}
+
 export interface ScreenshotResultWire {
   imageFormat: 'png' | 'jpeg'
+  /** Pixel size of the image, in CSS pixels (1:1 with `click-at` coordinates). */
+  imageWidth: number
+  imageHeight: number
   imageBytes: Uint8Array
   metadata?: Record<string, unknown>
 }

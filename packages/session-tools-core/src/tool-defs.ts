@@ -11,13 +11,15 @@
  * one entry in SESSION_TOOL_DEFS.
  */
 
-import { z } from 'zod';
+import { z } from 'zod'
+import { OFFICE_DOMAINS } from './office-domains.ts';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { SessionToolContext } from './context.ts';
 import type { ToolResult } from './types.ts';
 
 // Handlers
 import { handleSubmitPlan } from './handlers/submit-plan.ts';
+import { handleReelTool } from './handlers/reel.ts';
 import { handleConfigValidate } from './handlers/config-validate.ts';
 import { handleSkillValidate } from './handlers/skill-validate.ts';
 import { handleMermaidValidate } from './handlers/mermaid-validate.ts';
@@ -41,16 +43,14 @@ import { handleListSessions } from './handlers/list-sessions.ts';
 import { handleListBackgroundTasks } from './handlers/list-background-tasks.ts';
 import { handleCreateTask } from './handlers/create-task.ts';
 import {
-  handleListPages,
-  handleGetPage,
-  handleCreatePage,
-  handleUpdatePage,
-  handleWritePageData,
-  handleDeletePage,
-} from './handlers/pages.ts';
+  handleListTweaks,
+  handleGetTweak,
+  handleCreateTweak,
+  handleUpdateTweak,
+  handleDeleteTweak,
+} from './handlers/tweaks.ts';
 import { handleArchiveSession } from './handlers/archive-session.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
-import { handleListMessagingChannels, handleUnbindMessagingChannel } from './handlers/messaging.ts';
 import { handleDecide } from './handlers/decide.ts';
 
 // ============================================================
@@ -114,7 +114,6 @@ export const CallLlmSchema = z.object({
       endLine: z.number().optional().describe('Last line (1-indexed)'),
     }),
   ])).optional().describe('File paths on disk to attach (max 20). NOT for inline text — put text in prompt instead. Use {path, startLine, endLine} for large files.'),
-  model: z.string().optional().describe('Model ID or short name. Defaults to a fast model.'),
   systemPrompt: z.string().optional().describe('Optional system prompt'),
   maxTokens: z.number().optional().describe('Max output tokens (1-64000). Defaults to 4096'),
   temperature: z.number().optional().describe('Sampling temperature 0-1'),
@@ -193,6 +192,94 @@ export const BrowserToolSchema = z.object({
   ]).describe('Browser command as a string (e.g., "click @e1") or array (e.g., ["evaluate", "var x = 1; x + 2"]). Array mode preserves semicolons and whitespace in arguments.'),
 });
 
+// Device tool schema — one meta-tool: name the device, then the tool to run there.
+export const DeviceToolSchema = z.object({
+  tool: z
+    .enum(['devices', 'bash', 'read', 'write', 'edit', 'list', 'stat', 'glob', 'grep', 'browser', 'computer'])
+    .describe('The tool to run. Use "devices" first to see the devices you can reach.'),
+  device: z
+    .string()
+    .optional()
+    .describe('Device id (preferred) or display name, as "devices" reports them. Omit only for tool: "devices".'),
+  args: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      'Arguments for the nested tool. bash: {command, cwd?, timeoutMs?}. ' +
+      'read: {path, offset?, limit?}. write: {path, content}. edit: {path, oldString, newString, replaceAll?}. ' +
+      'list/stat: {path}. glob: {path, pattern}. grep: {path, pattern, glob?, ignoreCase?, maxResults?}. ' +
+      'browser: {command} — the same command line browser_tool takes. ' +
+      // That device's own desktop — this process's desktop is the separate `computer_tool`.
+      'computer: {command} — that device\'s desktop (docs/computer-use.md).',
+    ),
+});
+
+// Desktop tool schema — the same CLI-like shape, one command per call (no batching).
+export const ComputerToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Desktop command as a string (e.g., "snapshot") or array (e.g., ["windows", "snapshot"]). One command per call.'),
+});
+
+// Drawio tool schema — the same CLI-like shape, one command per call (no batching).
+export const OfficeToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Document command as a string (e.g., "create notes.md --out notes.docx") or array (e.g., ["create", "notes.md", "--out", "notes.docx"]). One command per call — batches are not supported here.'),
+});
+
+export const DrawioToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Drawio command as a string (e.g., "export flow.drawio --to flow.png --format png") or array (e.g., ["export", "flow.drawio", "--to", "flow.png", "--format", "png"]). One command per call — batches are not supported here.'),
+});
+
+export const MediaToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Media command as a string (e.g., "generate --prompt @brief.md --out out.png") or array. One command per call — batches are not supported here.'),
+});
+
+export const AsrToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Transcription command as a string (e.g., "transcribe words.wav") or array. One command per call — batches are not supported here.'),
+});
+
+export const RecordingToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Recording command as a string (e.g., "probe demo.mp4" or "frames demo.mp4 --out frames/demo") or array. One command per call — batches are not supported here.'),
+});
+
+export const ReelToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Reel command as a string (e.g., "apply --ops @ops.json") or array. One command per call.'),
+});
+
+export const HtmlToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('HTML command as a string (e.g., "elements page.html") or array (e.g., ["elements", "page.html"]). One command per call — batches are not supported here.'),
+});
+
+export const MarkdownToolSchema = z.object({
+  command: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Markdown command as a string (e.g., "blocks docs/spec.md") or array (e.g., ["frontmatter", "SKILL.md"]). One command per call — batches are not supported here.'),
+});
+
+
 export const SpawnSessionSchema = z.object({
   help: z.boolean().optional().describe('If true, returns available connections, models, and sources instead of creating a session'),
   prompt: z.string().optional().describe('Instructions for the new session (required when not in help mode)'),
@@ -243,59 +330,44 @@ export const CreateTaskSchema = z.object({
   projectId: z.string().optional().describe("Project ID to bind the task to (defaults to the invoking session's project)"),
 });
 
-// Pages tools
-const PageRefreshSpecInputSchema = z.object({
-  cron: z.string().describe('5-field cron expression evaluated once per minute (e.g. "*/15 * * * *")'),
-  script: z.string().describe('Script path relative to the workspace root (must stay inside it). Bun runtime.'),
-  args: z.array(z.string()).optional().describe('Extra argv appended after the script path'),
-  timezone: z.string().optional().describe('IANA timezone for cron evaluation (system local when omitted)'),
-  timeoutMs: z.number().optional().describe('Per-run timeout in ms (default 60000, clamped to 1s–15min)'),
-  enabled: z.boolean().optional().describe('Set false to pause scheduling without deleting the spec'),
+// ---------------------------------------------------------------------------
+// Tweaks
+// ---------------------------------------------------------------------------
+
+export const ListTweaksSchema = z.object({});
+
+export const GetTweakSchema = z.object({
+  slug: z.string().describe('Tweak slug (from list_tweaks or create_tweak)'),
 });
 
-export const ListPagesSchema = z.object({
-  projectId: z.string().optional().describe('Only return pages bound to this project ID'),
-});
-
-export const GetPageSchema = z.object({
-  slug: z.string().describe('Page slug (from list_pages or create_page)'),
-  includeContent: z.boolean().optional().describe('Also return the full index.html content (can be large). Default false — the response always includes contentPath for reading it from disk instead.'),
-});
-
-export const CreatePageSchema = z.object({
-  name: z.string().describe('Page name shown on the tile (also drives the slug)'),
-  description: z.string().optional().describe('Short description shown in lists'),
-  kind: z.enum(['static', 'interactive', 'live'])
+export const CreateTweakSchema = z.object({
+  name: z.string().describe('Tweak name (also drives the slug)'),
+  description: z.string().optional().describe('Short note on what it is for'),
+  matches: z
+    .array(z.string())
+    .describe(
+      'Chrome match patterns for the pages this tweak runs on, e.g. ["*://*.example.com/admin/*"]. At least one is required.',
+    ),
+  enabled: z
+    .boolean()
     .optional()
-    .describe('Runtime capability class: static = no JS, interactive = JS allowed, live = JS + receives data snapshot updates while open. Default: interactive.'),
-  projectId: z.string().optional().describe('Stable Project ID to bind the page to'),
-  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read ~/.craft-agent/docs/pages.md for the authoring guide and data-bridge snippet BEFORE writing page HTML.'),
-  refresh: PageRefreshSpecInputSchema.optional().describe('Scheduled data refresh: cron + workspace-relative Bun script that updates the page data store'),
+    .describe(
+      'Leave out unless the user asked for this change to take effect: a tweak injects into pages they are signed in to. Default false.',
+    ),
+  css: z.string().optional().describe('Written to tweak.css — the stylesheet the matching pages get'),
+  js: z.string().optional().describe('Written to tweak.js — JS that runs on every matching page'),
 });
 
-export const UpdatePageSchema = z.object({
-  slug: z.string().describe('Slug of the page to update'),
-  name: z.string().optional().describe('New page name (slug stays stable)'),
-  description: z.string().nullable().optional().describe('New description. Pass null to clear.'),
-  kind: z.enum(['static', 'interactive', 'live']).optional().describe('New runtime capability class'),
-  projectId: z.string().nullable().optional().describe('New Project ID. Pass null to unbind from its project.'),
-  content: z.string().optional().describe('Replacement index.html (full document). Re-digests the content — existing source-action grants become stale by design and need re-approval.'),
-  refresh: PageRefreshSpecInputSchema.nullable().optional().describe('New refresh spec. Pass null to remove scheduled refresh.'),
+export const UpdateTweakSchema = z.object({
+  slug: z.string().describe('Tweak slug'),
+  name: z.string().optional().describe('New name'),
+  description: z.string().nullable().optional().describe('New note (null clears it)'),
+  matches: z.array(z.string()).optional().describe('Replace the match patterns'),
+  enabled: z.boolean().optional().describe('Switch the tweak on or off'),
 });
 
-export const WritePageDataSchema = z.object({
-  slug: z.string().describe('Slug of the page whose data store to write'),
-  set: z.record(z.string(), z.unknown()).optional().describe('KV upserts: key → any JSON value (objects/arrays allowed)'),
-  delete: z.array(z.string()).optional().describe('KV keys to delete'),
-  appendSeries: z.record(z.string(), z.array(z.object({
-    t: z.number().optional().describe('Timestamp epoch ms (defaults to now). Writing an existing (series, t) overwrites its value — re-runs are idempotent.'),
-    v: z.number().describe('Numeric value'),
-  }))).optional().describe('Timeseries appends: series name → array of points'),
-  pruneSeries: z.record(z.string(), z.number()).optional().describe('Timeseries prunes: series name → deleteBefore timestamp (points with t < value are removed)'),
-});
-
-export const DeletePageSchema = z.object({
-  slug: z.string().describe('Slug of the page to delete'),
+export const DeleteTweakSchema = z.object({
+  slug: z.string().describe('Slug of the tweak to delete'),
 });
 
 export const ListSessionsSchema = z.object({
@@ -321,19 +393,126 @@ export const SendAgentMessageSchema = z.object({
   })).optional().describe('Files to include with the message'),
 });
 
-export const ListMessagingChannelsSchema = z.object({
-  sessionId: z.string().optional().describe('Session ID to list bindings for. Defaults to current session.'),
-});
-
-export const UnbindMessagingChannelSchema = z.object({
-  platform: z.enum(['telegram', 'whatsapp']).optional().describe('Platform to unbind. If omitted, unbinds all.'),
-});
-
 // ============================================================
 // Canonical Tool Descriptions (base — no DOC_REFS)
 // ============================================================
 
 export const TOOL_DESCRIPTIONS = {
+
+  // The five document doors. The table in `office-domains.ts` says which tool answers what;
+  // the briefs live here with every other tool's, because a brief is prompt text and this is where
+  // prompt text is kept.
+  docx_tool: `Make and change **Word** documents. One command per call — string or array input, no batching. A flag this tool does not
+read is an error, never a silent default; a relative path counts from the session.
+
+A \`.docx\` is a file, not a reply: reach for it when the deliverable is something a person opens in
+Word or in the app's own editor. **You never write its bytes** — it is a zip of XML parts that must
+agree, and a file that half-agrees opens in one program and not the next, days later. The engine
+writes it; this is the door. Read \`docs/docx-tools.md\` before your first command.
+
+\`create <source.md> --out <file.docx> [--force]\` — write the Markdown first; headings, lists, tables,
+code and links carry over, and an existing \`--out\` is refused without \`--force\`.
+\`read <file.docx>\` — its blocks, numbered. Those ids are what \`apply\` addresses: a guessed index
+lands in the wrong paragraph without complaint.
+\`apply <file.docx> --ops <ops.json> [--dry-run] [--track]\` — structured edits in place; \`--track\`
+makes them revisions of an author a person accepts or rejects, which is the right call on a document
+you did not write. Only what you change is rewritten.
+\`edit-selection <file> --from N --to M --expect "…" --text "…"\` — one span, changed **inside the
+editor showing the file**: one undo step, nothing on disk until the person saves.
+\`merge <template.docx> --data <json|file> --out <file>\` — fill \`{{key}}\` placeholders.
+\`compare <a.docx> <b.docx> --out <redline.docx>\` — the difference, as tracked revisions.
+\`check <file.docx>\` — stale TOC, broken refs, leftover placeholders; changes nothing.
+\`render <file.docx> [--page n]\` — a page as a picture, drawn by the document's own editor (no print, no PDF).
+
+Another format is another tool: \`.xlsx\` → \`xlsx_tool\`, \`.pptx\` → \`pptx_tool\`, \`.pdf\` → \`pdf_tool\`.
+Turning one format into another, including \`--to pdf\`, is \`convert_tool\`.`,
+  xlsx_tool: `Make and change **Excel** workbooks. One command per call — string or array input, no batching. A flag this tool does not
+read is an error, never a silent default; a relative path counts from the session.
+
+A \`.xlsx\` is a file, not a reply, and **you never write its bytes** — the engine does, through the
+same write path the app's editor uses. Read \`docs/xlsx-tools.md\` before your first command.
+
+\`create <source.csv|source.json> --out <file.xlsx> [--header] [--force]\` — the first row is the
+header; a \`.json\` is a 2-D array of rows or \`{"sheets":[{"name","rows"}]}\`, and a string starting
+with \`=\` is a formula. **A Markdown table is not read** — write the CSV first.
+\`sheets from <file.md|file.html> --out <file.xlsx>\` — the tables a document holds, one sheet each.
+\`read <file.xlsx> [--sheet <n>] [--stats]\` — sheets, used ranges, formulas; cells as \`A1:B2\`.
+\`apply <file.xlsx> --ops <ops.json> [--dry-run] [--track]\` — cell, range and sheet ops.
+\`write-range <file.xlsx> --range A1:B2 --values <rows.json> [--expect-empty | --expect <rows.json>]\`
+— one block of cells, written **inside the editor showing the workbook**: one undoable step, and the
+fingerprint is required, because a block that no longer holds what you read must not be overwritten.
+\`merge <template.xlsx> --data <json|file> --out <file>\` — fill \`{{key}}\` placeholders.
+\`check <file.xlsx>\` — formula errors and broken names; changes nothing.
+\`shot <file.xlsx> [--sheet <name>] [--range A1] [--out <file>]\` — a picture of the grid in the reply: column widths, conditional colours, whether it reads as a table. It scrolls to that cell and photographs the window; a sheet has no pages, so this is not \`render\` and the picture is not the whole sheet.
+
+Another format is another tool: \`.docx\` → \`docx_tool\`, \`.pptx\` → \`pptx_tool\`, \`.pdf\` → \`pdf_tool\`;
+conversions are \`convert_tool\`.`,
+  pptx_tool: `Make and change **PowerPoint** decks. One command per call — string or array input, no batching. A flag this tool does not
+read is an error, never a silent default; a relative path counts from the session.
+
+A \`.pptx\` is a file, not a reply, and **you never write its bytes** — the engine does. Prose is not a
+deck: the builder will not decide a layout for you. Read \`docs/pptx-tools.md\` before your first
+command.
+
+\`create --ops <ops.json> --out <file.pptx>\` — a JSON array of slide ops (\`guide slides\` prints them).
+\`create --spec <spec.json|dir> --out <file.pptx>\` — pages of px-positioned elements on a 1280×720
+canvas (\`guide slides spec\`). Up to about five slides, one \`create\` is enough.
+\`read <file.pptx> [--slide n]\` — slides and element ids; those ids are what \`apply\` addresses.
+\`apply <file.pptx> --ops <ops.json> [--dry-run]\` — text, element, table and slide ops.
+\`replace-slide-text <file.pptx> --slide N --find "…" --replace "…" --count <n>\` — one phrase, changed
+**inside the editor showing the deck**: one undo step, formatting kept, and \`--count\` is the
+fingerprint that stops a half-replacement.
+\`merge <template.pptx> --data <json|file> --out <file>\` — fill \`{{key}}\` placeholders.
+\`check <file.pptx>\` — overflow, out-of-bounds, overlaps; changes nothing.
+\`render <file.pptx> [--slide n]\` — a slide as a picture, drawn by the deck editor's own slideshow (no print, no PDF).
+
+A deck someone will present is built in stages, one page at a time, and the folder is the state:
+\`deck_start <dir> --style <style.md> --outline <outline.json>\`, then \`deck_page <dir> --index <n>
+--page <page.json>\` per page, then \`deck_build <dir>\`; \`deck_replace\` rebuilds one slide. A page
+that fails its check is not kept. The staged flow is in the guide.
+
+Another format is another tool, and conversions are \`convert_tool\`.`,
+  pdf_tool: `Read, split and mark **PDF** files. One command per call — string or array input, no batching. A flag this tool does not
+read is an error, never a silent default; a relative path counts from the session.
+
+None of this needs a renderer: pdfium and pdf-lib do the work in this process, so a host with no
+Chromium can still read and assemble pages. Read \`docs/pdf-tools.md\` before your first command.
+
+\`pdf <file.pdf> [--page n | --range a-b] [--password <pw>]\` — the text layer, page by page (1-based),
+with the page size and title. A scanned page comes back empty: that is a scan — ask \`pdf ocr\` for
+one page, or a vision model for what it means.
+\`pdf ocr <file.pdf> --page n [--json] [--out <file>] [--force]\` — the words on one page, read by this
+machine's OCR (no upload). One page per call; \`--out\` writes .txt, .md or .json. A page whose own
+text layer already says enough is answered with that text instead (\`engine: "text-layer"\`), and only
+a scan — no text, or one picture across most of the page — is read from its pixels; \`--force\` reads
+them anyway.
+\`pdf help\` — every page-and-mark verb: \`info\`, \`split\`, \`reorder\`, \`duplicate\`, \`crop\`, \`nup\`,
+\`merge\`, \`rotate\`, \`watermark\`, \`header-footer\`, \`from-image\`, \`fill-form\`. One file in, one file
+out, \`--out\` required, pages counted from 1.
+\`render <file.pdf> [--page n] [--scale n]\` — a page as a picture, from pdfium, no window.
+
+A form's fields are \`pdf info\` and \`pdf fill-form\`; text this tool *draws* (a watermark, a header)
+uses a standard Latin-1 font, so Chinese comes back as \`?\` — the app's editor embeds your fonts and
+is the way to get Chinese onto a page. No encryption writing and no redaction here; those are the
+app's.
+
+Making a PDF from something else is \`convert_tool\`'s job, not this one.`,
+  convert_tool: `Turn one document format into another. One command per call — string or array input, no batching. A flag this tool does not
+read is an error, never a silent default; a relative path counts from the session.
+
+\`convert <file> --to pdf|docx|xlsx|pptx|md|html|csv [--out <file>] [--sheet <n>] [--password <pw>]\`
+
+This is the one door whose source and target disagree, which is why conversions live here and not in
+the format tools: whichever way you go, there is nothing to look up. Read \`docs/convert-tools.md\`
+before your first command — it is the matrix, and it names the directions that do not exist.
+
+What runs where: \`md\`, \`csv\` and the other text targets are engine work and run anywhere. \`--to pdf\`,
+and \`--to html\` from a Word file, are **prints** — something has to lay the document out, and that is
+the app on a desktop or a headless Chromium on a hub. When this host has neither, the command says
+so by name instead of half-doing it.
+
+The output format also decides who reads the result next: a \`.xlsx\` you just made is \`xlsx_tool\`'s to
+change, a \`.docx\` is \`docx_tool\`'s.`,
   SubmitPlan: `Submit a plan for user review.
 
 Call this after you have written your plan to a markdown file using the Write tool.
@@ -373,6 +552,7 @@ Checks:
 
 Use this when:
 - Creating complex diagrams with many nodes/relationships
+- Writing a mind map (\`mindmap\`), which is validated here too
 - Unsure about syntax for a specific diagram type
 - Debugging a diagram that failed to render
 
@@ -486,24 +666,126 @@ Use this when a source provides HTML templates for rich rendering of its data (e
 
 Templates use Mustache syntax — the tool handles rendering and writes the output HTML to the session data folder.`,
 
+  device_tool: `Run a tool on a named device — this machine or another one connected to this hub.
+
+If \`browser_tool\` is not in your tool list, this server has no browser of its own: the \`browser\`
+proxy below is the browser door here, and \`{"command":"--help"}\` is its command reference.
+
+Two kinds of call, and they are never mixed:
+- **Meta** — \`{"tool":"devices"}\` — what devices exist: id, name, platform, which capabilities each
+  one allows (shell / files / browser / computer), and the workspace directories that may be touched.
+  Names no device.
+- **Proxy** — \`{"device":"…","tool":"bash"|…,"args":{…}}\` — runs exactly on the device that was
+  named, and nowhere else.
+
+**A proxy call never falls back.** The hub does not choose a device from who is asking, from the
+client that sent the conversation's last message, or from whatever else happens to be connected. If
+the named device is offline, its name fits more than one machine, or it does not allow that
+capability, the call fails and says so rather than running somewhere else. For the server's own
+machine, name that device's id exactly as \`devices\` reports it.
+
+Nested proxy tools (all in \`args\`):
+- \`bash\` — \`{command, cwd?, timeoutMs?}\` — run a shell command, cwd inside a workspace root
+- \`read\` — \`{path, offset?, limit?}\` — read a text file (offset/limit are 1-based lines)
+- \`write\` — \`{path, content}\` — write a file, creating parent directories
+- \`edit\` — \`{path, oldString, newString, replaceAll?}\` — replace text in a file
+- \`list\` — \`{path}\` — one directory's entries
+- \`stat\` — \`{path}\` — type, size and mtime
+- \`glob\` — \`{path, pattern}\` — files below \`path\` matching a glob (\`**\` supported)
+- \`grep\` — \`{path, pattern, glob?, ignoreCase?, maxResults?}\` — regex search in files
+- \`browser\` — \`{command}\` — the Browser Tools command line (same syntax, same guide, same
+  \`--help\`), run on that device's browser. Only a device whose \`devices\` row lists \`browser\` can
+  answer it; the connection does not fall back to this machine's browser when it cannot.
+
+Paths must be absolute and inside one of the roots \`devices\` reports for that machine — the folders
+it authorized for this hub. The device checks this itself and refuses anything else. Omitting \`cwd\`
+runs in the fixed per-hub directory \`devices\` reports as \`default\`, which is always usable but is
+not one of the granted roots. Use the local shell/file tools when the work is on this machine — this
+one earns its keep when the machine is another one, or when two machines are compared.
+
+Examples:
+- \`{"tool":"devices"}\`
+- \`{"device":"office-mac","tool":"bash","args":{"command":"git status --short","cwd":"…/repo"}}\`
+- \`{"device":"office-mac","tool":"grep","args":{"path":"…/repo","pattern":"TODO","glob":"*.ts"}}\`
+- \`{"device":"build-pc","tool":"browser","args":{"command":"navigate https://example.com"}}\``,
+
   browser_tool: `Run browser actions using a CLI-like command (string or array input).
+
+This tool drives **this server's** browser only. Another machine's browser is \`device_tool\` with
+\`{"tool":"browser"}\` — same commands, but the machine is named and never chosen for you.
 
 All browser interactions use this single tool with strict validation and actionable feedback.
 String mode supports batching with semicolons: \`fill @e1 value; fill @e2 value; click @e3\`
-Batch stops after navigation commands (click, navigate, back, forward) since page state may change.
+Batch stops after navigation commands (click, navigate, back, forward, reload) since page state may change.
 
 Array mode bypasses string parsing and preserves raw arguments exactly (recommended for semicolons, tabs, and newlines):
 - \`["evaluate", "var x = 1; var y = 2; x + y"]\`
 - \`["paste", "Name\\tAge\\nAlice\\t30"]\`
 
+\`evaluate\` is the one command that reads its argument **verbatim** either way: the expression is source
+code, so quotes inside it are part of the program (\`evaluate document.title + ' | ' + location.href\` runs
+that, quotes and all). A string argument is otherwise parsed like a shell line, which is why a value with
+spaces in it needs its quotes.
+
+\`evaluate --file <path>\` runs a script that is kept in a file instead of in the command (a relative path
+counts from the workspace root): write it once with the Write tool and name it here, so the same code is
+never spelled out a second time in a command. Use it for anything longer than a one-line probe. What it
+runs is **not registered**, so a reload drops it.
+Detailed rules and the full command reference: docs/browser-tools.md — read it before using this tool.
+
+The window is one profile's and its tabs are many: every command can name the tab it acts on with \`--tab <id>\`
+(\`tabs\` lists them). Without one it acts on **your** tab — the tab you have been working from, which
+\`tabs\` marks as \`your tab\` and \`tab-select <id>\` sets. With none yet, \`navigate <url>\` **gives you one of
+your own** (a new tab behind the person's — or the tab the window was born with, when the command is what
+opens it) — that is the usual first command, and it
+is the recommended one because it is **idempotent**: calling it again acts in the same tab, where
+\`tab-new <url>\` adds a tab every time. If the page you need is already open on the person's tab, \`tabs\` shows
+it — \`tab-select <id>\` first, or \`--tab <id>\` on the command itself, works in *their* tab, as something said
+rather than something that happened by itself. Every other command, with no tab of yours, says so instead of
+picking one and names the ways out. What the person happens to be looking at never decides where your commands
+land. A session spawned by another one takes no tab of its own choosing: it works in the tab the parent
+handed over (\`tab-assign\`) or opens one with \`tab-new <url>\`.
+
+There is **one browser window per workspace and browser profile**, shared by every conversation
+working in that profile and by the user — so \`tab-new\` adds a tab to the window you are working in instead
+of making a window (a profile with no window gets one when a tab is first opened), and the window is not yours
+to close: use \`tab-close <id>\` for
+the tabs of your task (the ones you opened, the ones handed to you, and the tabs opened from them — a Task's
+node tabs included, so a finished DAG can be tidied up). \`tab-show <id>\` makes a tab the one the window
+shows, without raising the window — your reply is what tells the person to look; \`tab-show <id> --handover\`
+also drops your overlay and hold, so the page is theirs to use until your next command takes it back. \`tabs\` says
+what each tab is, whose work it is in and who is working on it — another conversation's **work** is refused
+(a tab the person opened is nobody's work, and another conversation working from it does not
+change that), and \`tab-assign <tab-id> <session>\` is how a parent hands one of its own tabs to a session it spawned,
+so that parallel sessions each work in their own tab. A tab's work outlives the session that opened it: a
+Task node's tab belongs to that node, so a re-run of a node finds its predecessor's tab in \`tabs\` — read it
+before opening one, because \`tab-new\` always gives you a tab of your own (when it is what opens the window it
+opens into the tab that window was born with; a window that already exists gets one more).
+
+Every command can also name the **profile** it works in: \`--profile <name-or-id>\` (\`profiles\` lists them by
+name and id) moves that one command to that profile's window; \`navigate\`/\`tab-new\` open that window when it
+is not up, while the other commands report that there is no window instead of opening one. A command that
+names no profile uses the profile this conversation is set to — its own pick, then its project's default,
+then the workspace default, then Default — and does not fall back to Default while another one is selected.
+A name that does not exist is refused rather than mapped to Default. That is how **one conversation can drive
+two profiles at once**. \`tabs\`
+lists every window with its profile; a tab id is unique inside one window, so two profiles can both have a
+\`tab-1\`, and \`--profile\` says which one \`--tab\` means.
+A spawned session inherits its parent's browser profile the way it inherits the parent's working directory, so
+its unnamed commands keep working in that profile.
+
 Examples:
 - \`--help\`
-- \`open\`
-- \`navigate https://example.com\`
+- \`navigate https://example.com\` — go there in your tab, taking one if you have none yet (this also opens the window)
+- \`tab-new https://example.com\` — one more page, in a tab of its own behind the person's
+- \`profiles\` — the browser profiles a command can name
+- \`navigate https://app.example.com --profile Work\` — work in that profile's window (opened if needed)
 - \`snapshot\`
+- \`read --save notes/my-page.md\` — read the page as an article (markdown + the facts it states); \`--save\` keeps it in a file, and \`--images\` also keeps its images beside it in \`notes/my-page.assets/\`; without \`--save\` the note comes back instead of being written
 - \`find login button\` — search elements by keyword
 - \`click @e12\`
 - \`click-at 350 200\` — click at pixel coordinates (for canvas elements)
+- \`drag 100 200 300 400\` — drag from (100,200) to (300,400)
 - \`fill @e5 user@example.com\`
 - \`type Hello World\` — type into currently focused element (no ref needed)
 - \`select @e3 optionValue\`
@@ -511,34 +793,253 @@ Examples:
 - \`set-clipboard Name\\tAge\\nAlice\\t30\` — write text to clipboard
 - \`get-clipboard\` — read clipboard text content
 - \`paste Name\\tAge\\nAlice\\t30\` — set clipboard and trigger Ctrl/Cmd+V
+- \`upload @e3 /path/to/file.pdf\` — attach local file(s) to a file input
 - \`scroll down 800\`
+- \`reload\` — reload this page. A page of ours is rendered from disk, so an edit to it shows up on the next render; nothing waits for the load, so \`wait network-idle\` before reading it, and re-\`snapshot\` (every ref is stale)
 - \`evaluate document.title\`
+- \`evaluate --file scripts/probe.js\` — a script kept in a file
+- \`pick\` — ask the user to click an element; returns a stable selector + geometry
+- \`tabs\` — which tabs this window has, each with what it is and whose work it is in
+- \`snapshot --tab tab-3\` — act on a named tab (it becomes the tab you work from; the window is not moved)
+- \`tab-new https://example.com\` — one more tab for you, behind the person's
+- \`tab-select tab-3\` — make a tab the one you work from (the window shows what it showed)
+- \`tab-show tab-3\` — make it the tab the window shows, without raising the window
+- \`tab-show tab-3 --handover\` — make it the shown tab and drop your overlay and hold so they can use it
+- \`tab-assign tab-3 260915-brave-fox\` — hand one of your own tabs to a session you spawned
+- \`tab-close tab-2\` — close one tab (closing the last one closes the window)
 - \`console 50 error\`
 - \`screenshot\` — raw screenshot
 - \`screenshot --annotated\` — screenshot with @eN labels overlaid on interactive elements
 - \`screenshot-region 100 200 640 480\`
 - \`screenshot-region --ref @e12 --padding 8\`
 - \`screenshot-region --selector div[data-testid="chart"]\`
-- \`window-resize 1440 900\`
+- \`viewport-resize 1440 900\` — give the tab you act on this viewport. The window follows when that tab is the one on screen (its viewport *is* the window's page area); a tab working behind the person keeps its new size to itself, and their window is not touched
 - \`network 50 failed\`
 - \`wait network-idle 8000\`
 - \`key Enter\`
 - \`key k meta\`
 - \`downloads wait 15000\`
-- \`focus [windowId]\` — focus existing browser window (no new window)
-- \`windows\` — list current browser windows and ownership state
-- \`release\` — dismiss the agent control overlay when done
-- \`close\` — close and destroy the browser window
-- \`hide\` — hide the window while preserving state`,
+
+**A screenshot may be scaled before the model sees it.** A large image can be downscaled by the
+vision input, which makes the coordinates read off it inaccurate. If a coordinate seems off, shrink
+the shot — \`viewport-resize\`, or a \`screenshot-region\` — and take it again.
+
+**Recording a tab.** \`record-start --tab <id> --ttl <dur> [--wait]\` records one named tab for at
+most <dur> and stops on its own when that is up (the ceiling is ten minutes). \`record-stop --tab
+<id>\` ends one early. Both name the tab: nothing is recorded by default, and a stop that guessed
+would land on a different recording than the one it meant.
+
+A recording is not part of a turn. It ends when its time runs out, when the tab or its window goes
+away, or when you stop it — never because a turn ended — and its length is settled when it starts,
+so nothing has to be kept open or closed by hand. Without \`--wait\` the answer comes back as soon
+as it is recording; with it, the answer *is* the finished recording. Recording two tabs at once is
+ordinary: start one, work, start another, and the first keeps going. The tab you are recording is
+recorded whether or not you are looking at it.
+
+A recording is two files: the film, and \`<stem>.events.jsonl\` beside it — navigations, requests,
+clicks and fills, each stamped on the film's own clock. Read the sidecar first. For the film
+itself, understanding is one call (\`recording_tool understand <file> --prompt "<question>"\`); a
+transcript is \`recording_tool audio <file> --out words.wav\` then \`asr_tool transcribe words.wav\`;
+pictures you already hold are \`recording_tool frames\` then \`call_llm\`. Recording first and working
+out what to ask afterwards is the normal order.
+
+Examples:
+- \`record-start --tab tab-3 --ttl 30s\`
+- \`record-start --tab tab-3 --ttl 1m --wait\`
+- \`record-stop --tab tab-3\``,
+
+  computer_tool: `Drive this machine's desktop — read a window's accessibility tree, act on an element
+by the token that snapshot printed, and fall back to coordinates only where no tree exists
+(one command per call — string or array input, no batching).
+
+Read **docs/computer-use.md** before the first call: command table, token rules, and the sessions
+that refuse input (locked, remote). \`status\` answers what this session can do before you plan.
+
+  computer_tool "status"
+  computer_tool "snapshot"
+  computer_tool ["click s00000001:12", "snapshot"]`,
+
+
+  reel_tool: `A conversation's cuts — a timeline the person and you both edit, stored as one JSON document at <project>/reels/<slug>.reel.
+
+Commands: list · create · state [--json] · probe --src <path> · snapshot [--at <s>] [--out <path>] [--clip <id> [--edge first|last]] · export [--out <path>] [--status [<id>]] · subtitles [--out <path>] · fcpxml [--out <path>] · apply --ops <json|@file>.
+
+A clip is { id, src, start, in, duration }: src is project-relative (\`assets/a.mp4\`), start is where it sits on the timeline, in/duration are the source window it uses — omit duration and the host reads it from the file. Overlays above the picture carry subtitles, 花字 and picture-in-picture.
+
+Beat-synced cuts: \`beats --src <path> --clip <id> --json\` gives BPM and beat/downbeat times; \`auto_edit\` fills a track from them.
+
+Read first: state prints settings, duration, every clip and overlay id. apply writes against the revision you read, and a stale one is refused — re-read, then retry. One call is one batch of 1–50 ops, applied whole or not at all. An open panel takes a new revision as one undo step.
+
+\`reel_tool help\` is the compact reference — commands, units, op groups, transition rules; \`reel_tool help all\` lists every op shape and field. Read the short one before the first write, the long one when an op's fields are unclear.`,
+  media_tool: `Make a media file through a configured account. One command per call. Nothing that writes a file runs without an account.
+
+\`channels\` — which accounts exist, what each one can make (one account may make several kinds), the models each capability can reach, and the values each model accepts. \`models --channel <id> [--kind <k>] [--model <m>]\` is the detailed guide for one account: parameter names, voices, formats, limits and usage.
+
+\`generate --prompt <text|@file> [--out <path>] [flags]\` — one prompt, one file. \`--out\` is optional: omitted, the file lands under \`<contentRoot>/assets/<timestamp>-<slug>.<ext>\` (ext picked from \`--kind\`), already an asset with its source note beside it. The content root is the project this conversation is in, or its own session folder when it is in none. A path may be a handle (\`assets/x.png\`, \`session:\`, \`project:\`, \`cwd:\`, \`workspace:\`) or absolute; replies print the absolute path. The provider's bytes are written as they arrive (or, when the channel answers with a task id, later — the call returns as soon as it is submitted). A note is left beside the result recording the prompt, the references and the channel.
+
+\`--prompt\` takes the text itself, or \`@briefs/shot.md\` to read it from a file. It is repeatable: the values are joined in order, so a brief can be one argument and the direction for this shot the next.
+
+\`--input\` a reference file to send with the prompt, repeatable. Images, videos and audios may be mixed; text is not a reference (put it in \`--prompt\`). Order matters: \`{{ref 1}}\` in the prompt names the first input, and the channel rewrites it to its own wording (\`图片1\`, \`Image 1\`…). \`--first-frame\` / \`--last-frame\` pick those two frame roles for a clip.
+
+Reading a **picture** or a **recording** is not this door's: what a picture *shows* goes to \`call_llm\` with its path as an attachment, while the **words printed on one** are \`img-tool text\` (local, exact characters, no account). A recording is understood with \`recording_tool understand\`, or transcribed with \`recording_tool audio\` then \`asr_tool transcribe\`.
+
+Local pixel changes (crop, rotate, flip, resize, convert, watermark, composite) are \`img-tool\`'s.
+
+\`task --out <path>\` — how the task behind that file is doing: running, failed with its reason, or gone because the file landed.
+\`tasks [--kind image|video|music|tts] [--status <s>]\` — every unfinished job under the conversation's content root, with the path each will land at, so a path can be found again.
+\`detach --out <path>\` — stop waiting. Most providers cannot stop a job they already accepted, so the file may still arrive later; this only changes whether anything is watching.
+
+\`--channel\` an id from \`channels\`; omitted, the first account that makes this kind. One account may make several kinds, so the same id can answer for a picture and for a clip.
+\`--model\`   a model that channel lists; omitted, the channel's default.
+\`--kind\`    \`image\` (default), \`video\`, \`music\` or \`tts\`. A speech channel reads text aloud through an account that offers it; without one, \`tts\` is refused.
+\`--duration\`, \`--quality\`, \`--ratio\`, \`--lyrics\`, \`--voice\`, \`--format\` — the choices \`channels\` lists for that account. Omitted: its default. \`--lyrics\` is \`--kind music\` only and takes text or \`@song.txt\`; the prompt is the style brief.
+\`--param\`   a parameter the model lists, \`key=value\`, repeatable; \`channels\` prints the names and values each one accepts.
+
+Failures name their layer — 上传失败 / 审核不通过 / 生成失败 / 下载失败 — because the four are fixed differently: a rejected asset is not retried, a failed download is not regenerated.
+
+A generation writes a file. The asset library and the project graph read the folder, so the result appears without a second write: do not write an index for it.`,
+
+  asr_tool: `Read an audio file into words. One command per call.
+
+\`transcribe <audio> [--out <path>] [--format text|srt|json] [--language auto|zh|en|ja|ko|yue]\` — the words. Without \`--out\` the reply is text by default, or SRT/JSON when \`--format\` asks for it; \`--out\` writes them, and the name decides (.txt, .md, .srt, .json) unless \`--format\` overrides.
+
+wav and mp3 are read everywhere; other containers only where this machine's side can decode them. A video is not audio: \`recording_tool audio <file> --out words.wav\` first.`,
+
+  recording_tool: `Read a recording — what it is, the frames inside it, its sound, and one answer about it. One command per call.
+
+\`probe <path>\` — duration and picture size, header only (no frames).
+
+\`frames <path> [--out <dir>] [flags]\` — decode frames. Without \`--out\` they are the reply, as images; with it they are written as \`frame-0001.jpg\`, … and named in the reply. \`--every <dur>\` sets the spacing (default 1s), \`--changes\` keeps only frames that moved (with \`--threshold <0-1>\`), \`--from\` / \`--to\` bound the window (\`--to\` omitted means the end), \`--first\` / \`--last\` pick the two ends instead of a scan, \`--max <n>\` is the ceiling (default 1000; a longer recording is read more coarsely, not cut short), \`--max-edge <n>\` caps the longest edge (default: the recording's own size).
+
+\`audio <path> --out <file> [--format wav|mp3] [--bitrate <kbps>]\` — the recording's sound as 16 kHz mono WAV (the file \`asr_tool transcribe\` reads) or MP3 (32 kbps by default); the name decides, \`--format\` overrides. A clip or an audio-only file (m4a, ogg, flac) both work; a file with no audio track is refused by name.
+
+\`understand <path> --prompt "<question>" [--frames <n|off>] [--audio off] [--mode <route>]\` — one answer about the whole recording. The route is chosen from the person's settings (a short clip whole, frames + sound, one modality, or a transcript); \`--mode\` overrides it, and \`--audio off\` / \`--frames off\` drop a modality. Up to 30 minutes.
+
+The decoder is Chromium's — no ffmpeg. mp4 (H.264), webm and most mov read; HEVC needs a hardware decoder, ProRes not at all.
+
+For pictures you already hold, compose: \`frames\` then \`call_llm\` with the images and the moment each came from. Speech-to-text is \`asr_tool transcribe\`.`,
+
+
+  html_tool: `Read and change an HTML file the way the editor sees it (one command per call).
+
+The visual editor changes a page one **element** at a time, addressed by its path of element-child indices — the same
+address this tool takes. That is what lets a change land in the page's own source without reformatting it.
+
+\`elements <file>\` lists the page's elements in document order: the path, the tag, and the first words of the element's
+own text. A path nobody printed is a path that was guessed, so read this first. Text is shown only for elements that
+hold text and nothing else.
+
+\`set <file> --path <p> --html "<markup>"\` replaces one element — its tags and everything inside — and keeps every other
+byte of the file, indentation included. The markup is inserted as written.
+
+\`edit <file> --expect "<text>" --text "<text>"\` changes **one occurrence**, and only when it is unambiguous. If the page
+is open in the app, the change lands in that editor rather than the disk. An \`--expect\` that is no longer there, or
+appears twice, is refused.
+
+\`shot <file> [--width n] [--height n] [--out <dir>]\` draws the page and puts the picture in the reply — the file
+itself, at its own address, with **its scripts run**, so the picture is the page a person opens: a chart it builds with a
+CDN library is in the picture, and so is a stylesheet beside it. The draw waits for the page's own resources and for the
+work its scripts started; a page that never settles is photographed after four seconds anyway.
+
+Paths count from the conversation's content root (the project folder, or the session folder).
+
+Examples:
+- \`elements previews/report.html\`
+- \`set previews/report.html --path 1/1/0 --html "<p>新的第一段。</p>"\`
+- \`edit previews/report.html --expect "旧标题" --text "新标题"\`
+`,
+
+  markdown_tool: `Read and change a markdown file the way the editor sees it (one command per call).
+
+A \`.md\` file is written with \`Write\`/\`Edit\`, like any other file of your work. What those cannot say is how the
+file is **divided** — which top-level blocks it has, and which part of it is frontmatter rather than document. This
+tool speaks that way, so a change can name a block instead of a string.
+
+\`blocks <file>\` lists the file's top-level blocks in order, numbered from 0. Each line names the block's kind and its
+first line. Read it before naming a block: a number nobody printed is a number that was guessed.
+
+\`set <file> --block <n> --text "<markdown>"\` replaces one top-level block **in place**: every byte around it is kept,
+so a table's own column alignment and the blank lines between blocks survive. A \`--text\` that would become two
+blocks is refused rather than written, because it would renumber everything you were told about.
+
+\`edit <file> --expect "<text>" --text "<text>"\` changes **one occurrence**, and only when it is unambiguous. If the
+document is open in the app, the change lands in that editor — one step of the person's undo, with their caret
+mapped through it, and their unsaved work intact. If nothing is showing the file, the same edit is applied to the
+bytes and written. An \`--expect\` that is no longer there, or appears twice, is refused: an edit that could mean two
+places is not an edit.
+
+\`frontmatter <file>\` prints the YAML above the body, without its fences; \`--set "<yaml>"\` replaces it and \`--remove\`
+takes it off. Frontmatter is not a block and never appears in \`blocks\`.
+
+\`shot <file> [--width n] [--height n] [--out <dir>]\` draws the document **as an outside reader sees it** and puts the
+picture in the reply: what the file says — headings, tables, code, and the fences whose content is in the fence
+(\`mermaid\`, \`latex\`, \`datatable\`, \`diff\`, \`json\`, \`image-preview\`) — without the fences that only mean "open this in
+Craft". Those are not standard markdown, so anyone opening the file in another editor gets a code block; the picture
+shows exactly that, which is how you check what you are about to hand over.
+
+Paths count from the conversation's content root (the project folder, or the session folder).
+
+Examples:
+- \`blocks docs/spec.md\`
+- \`set docs/spec.md --block 3 --text "## 新标题"\`
+- \`edit docs/spec.md --expect "旧的一句。" --text "新的一句。"\`
+- \`frontmatter SKILL.md --set "name: daily\ndescription: 日报"\`
+`,
+
+  drawio_tool: `Make and draw diagrams (one command per call — string or array input, no batching).
+
+A \`.drawio\` file is written by you, with \`Write\`/\`Edit\`, like every other file of your work — the
+format, and the rules that fail silently, are in \`docs/drawio-tools.md\`. What this tool does is
+*draw* one.
+
+\`pages <diagram-file>\` lists the pages the file holds — a \`.drawio\` file, or an SVG exported with a
+copy of its document inside (\`--editable\`). What it prints is what \`--page\` takes, in the order the
+document has them; read it before naming a page, because the name is the document's own and cannot be
+guessed.
+
+\`export <diagram-file> --to <path> [--format svg|png|html|drawio] [--editable] [--page <name>] [--scale <n>] [--theme <t>]\`
+draws a \`.drawio\` file into a file that travels. \`svg\` (the default) is the picture and nothing else —
+what you show someone. Add \`--editable\` and the picture carries the drawing's own document as well, so
+whoever might have to change it opens that file in draw.io as the real diagram — its pages and shapes,
+not a picture of one — and hands it back; it is the bigger file, because the document rides along.
+\`drawio\` is not a drawing at all: the document itself, written out with every page uncompressed — how
+a file someone else saved compressed is made readable again (\`pages\` says when that is the case), and
+the one format whose suffix matters, because a diagram is opened by its \`.drawio\` name. A \`--to\` path
+that names no suffix gets the format's. \`--theme\` (svg and png) says what the drawing is made for:
+\`auto\` (the default), \`light\`, or \`dark\` — an svg states it in the file, so it follows whoever shows
+it or is pinned; a png is drawn that way.
+
+\`render <diagram-file> [--page <name>] [--scale <n>] [--theme <t>]\` draws it as a picture and puts the
+picture in the reply, writing nothing. Reach for it to check what you drew: XML that is well-formed
+is not a diagram that reads well, and a wall of overlapping boxes can only be seen.
+
+A file can hold several pages, and drawing is always one of them: \`--page <name>\` names it the way
+the document does, and with no \`--page\` it is the first page. A name no page has — or one that two
+pages share — is refused rather than drawn.
+
+The drawing is the drawio webapp the app already ships, in a hidden window of its own — no window of
+yours is involved, nothing is installed, and no diagram reaches the network. A relative path counts
+from the conversation's content root (the project folder, or the session folder).
+
+Read \`docs/drawio-tools.md\` before your first drawio command: it is the whole guide — the file
+format and the rules that fail silently, where the shapes come from, and how a diagram takes part in
+a spec.
+
+Examples:
+- \`--help\`
+- \`export flows/checkout.drawio --to out/checkout.svg\`
+- \`export flows/checkout.drawio --to out/checkout.png --format png --scale 2\`
+- \`render flows/checkout.drawio\``,
 
   call_llm: `Invoke a secondary LLM for focused subtasks. Use for:
-- Cost optimization: use a smaller model for simple tasks (summarization, classification)
+- Cost optimization: the session's fast model answers, not the main one
 - Structured output: JSON schema compliance via prompt instructions
 - Parallel processing: call multiple times in one message - all run simultaneously
 - Context isolation: process content without polluting main context
 
 Put text/content directly in the 'prompt' parameter. Do NOT pass inline text via attachments.
 Only use 'attachments' for existing file paths on disk - the tool loads file content automatically.
+Images are supported: give an image's file path and a vision-capable model reads it (the connection's vision model, or the main model when it can see). Use this when the image cannot be sent to you directly.
 For large files (>2000 lines), use {path, startLine, endLine} to select a portion.`,
 
   decide: `Ask the decision model (Jev, TypeSafe System One) typed questions about text or JSON. It answers with probabilities, never prose: 'choice' picks one of your named options, 'score' places the state on an ordered rubric, 'noul' gives a yes/no probability. Fast (~0.1–0.5 s per call) and cheap; batch mode judges up to 200 items in one call.
@@ -592,32 +1093,31 @@ Provide title + description (the description becomes the task goal and the initi
 
 Returns { slug, orchestratorSessionId, taskLabelId, warnings } — unknown source/skill slugs are reported as warnings, not errors. Use it when the user asks to capture or queue work as a task; to execute work right now, use the current session or spawn_session instead.`,
 
-  list_pages: `List the workspace's Pages — persistent, agent-authored HTML mini dashboards/documents rendered in the app's Pages section (sidebar) and optionally shared via password-protected public links.
+  list_tweaks: `List the workspace's tweaks — standing edits that run on pages nobody here owns (an admin console, a vendor's dashboard, a tool that is almost right). Each one is a folder at tweaks/{slug}/: a tweak.json naming the pages it is for, and tweak.css and/or tweak.js holding what it does. A tweak that is off does nothing anywhere.
 
-Returns compact summaries: slug, name, kind (static/interactive/live), project, refresh schedule, last refresh outcome, share state, and folder path. Optionally filter by projectId. Use get_page for full details on one page.`,
+Returns compact summaries: slug, name, the match patterns it is for, whether it is on, and whether it has code to inject. Use get_tweak for one in detail, including whether what it is aimed at has stopped matching.`,
 
-  get_page: `Get full details for one Page by slug: config, content digest/length/path, a data summary (KV keys + per-series point counts and latest values), source-action grants, and share state.
+  get_tweak: `Get one tweak: its config, the files it has, when its javascript runs, every selector it declares with a \`@target\` comment, and when each last matched.
 
-The response includes absolute paths (contentPath, data.snapshotPath) — Read those files for the full HTML or the complete data snapshot. Pass includeContent: true only when you need the HTML inline.`,
+A target with \`stale: true\` matched before and did not the last time the tweak ran — the page moved and the selector needs updating. Read \`cssPath\`/\`jsPath\` to see the code itself; nothing here returns it inline.`,
 
-  create_page: `Create a new Page: a persistent, self-contained HTML document stored at pages/{slug}/ in the workspace, shown as a tile in the app's Pages section, and rendered in a sandboxed iframe.
+  create_tweak: `Create a tweak: the standing edit for the pages you name. Give it the match patterns and the code (\`css\`, \`js\`, or both).
 
-IMPORTANT — read ~/.craft-agent/docs/pages.md BEFORE authoring page HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — shared copies get network egress blocked); to display data from the page's data store, listen for the 'craft-pages/v1' bridge messages (init/data) documented there; kind 'live' pages receive replacement data snapshots automatically while open.
+Read \`~/.craft-agent/docs/tweaks.md\` before your first tweak: it is the whole guide — the folder, when a tweak runs and what a reload is for, the \`@target\` markers, and how a tweak reaches a browser this app is not in.
 
-Use Pages (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit or share, a tracker fed by write_page_data. Returns the created page details including the slug.`,
+**It is created off.** A tweak injects into pages the user is signed in to, so naming those pages is not the same consent as agreeing to run this code in them. Switch it on (\`update_tweak\` with \`enabled: true\`) when the user asked for the change to take effect, and say plainly that it is off when they have not.
 
-  update_page: `Update an existing Page: metadata (name, description, kind, projectId), the scheduled refresh spec, and/or replace its HTML content.
+**Seeing it.** The code is read on the next load of each matching page, so nothing here reaches a page that is already open — not the code, and not switching it on either. \`browser_tool\`'s \`reload\` is how to look at a change, and it is also the check worth trusting: a reload gives a clean document, where the one already open has been through other things.
 
-Only provided fields change; pass null to clear description/projectId/refresh. Replacing content re-computes the content digest, so existing source-action grants go stale by design (the user must re-approve them). The slug never changes.`,
+\`matches\` is Chrome's own grammar — \`*://*.example.com/admin/*\` — which is also what the loadable extension needs, so the same tweak works both ways. Write the code for the way it runs: every load of every matching page, in a browser that is not this app, so it must not depend on anything here. Its stylesheet is inserted before the DOM exists; its javascript runs at \`document_end\` (the DOM is complete) unless the code declares otherwise with a \`/* @run-at document_start|document_end|document_idle */\` comment — the browser's own three moments, which the exported extension maps straight through. Mark what it is aimed at with a \`/* @target <selector> */\` comment: that is what lets "stopped matching" be told from "never matched" later.`,
 
-  write_page_data: `Write to a Page's data store: KV upserts/deletes plus numeric timeseries appends/prunes, applied in one transaction. The data snapshot (data/snapshot.json) is regenerated and pushed to open renders — 'live' pages update on screen without a reload.
+  update_tweak: `Update an existing tweak: its name, description, the pages it matches, and whether it is on.
 
-Data model: kv is key → any JSON value; series are named lists of { t: epoch ms, v: number } points with idempotent (series, t) upserts — re-running the same write is safe. Use timeseries for anything you may want charted over time (metrics, counts, prices). Composes with scheduled refresh scripts writing the same store.`,
+Switching it on is the same judgement as creating it on: a tweak runs in pages the user is signed in to, so enable it when they asked for the change to take effect, not by default. Only provided fields change; \`description: null\` clears it.
 
-  delete_page: `Delete a Page permanently — removes its folder including content, data store, and grants. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.
+The code is read on the next load of each matching page, so nothing here reaches a page that is already open — not an edit, not a switch-off, and not switching it on either. Use \`browser_tool\`'s \`reload\` to see it (and see \`create_tweak\` for why a reload is the check worth trusting).`,
 
-A published page is unpublished first (best effort); the result reports publicCopyMayRemain when the remote copy could not be confirmed removed.`,
-
+  delete_tweak: `Delete a tweak — its folder, its code and its record. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.`,
   get_session_info: `Get metadata about the current session or a specific session by ID.
 
 Returns labels, status, name, permission mode, projectId (if the session is bound to a project), workingDirectory, and other details.
@@ -649,12 +1149,6 @@ Use this to coordinate with spawned sessions, send follow-up instructions, or re
 Use list_sessions to find session IDs, or use the sessionId returned by spawn_session.
 
 The target session receives your message with a sender envelope containing your session ID, so it can use send_agent_message to reply.`,
-
-  list_messaging_channels: `List messaging channels (Telegram, WhatsApp) bound to a session.
-Shows which external chat apps are connected and can send/receive messages.`,
-
-  unbind_messaging_channel: `Disconnect a messaging channel from the current session.
-Messages will no longer be forwarded between the chat app and this session.`,
 } as const;
 
 // ============================================================
@@ -722,26 +1216,50 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   // Browser tool (backend-specific — requires BrowserPaneManager in Electron)
   // Single CLI-like tool that handles all browser actions via command string.
   { name: 'browser_tool', description: TOOL_DESCRIPTIONS.browser_tool, inputSchema: BrowserToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Device tool (backend-specific — reaches shell/files/browser on any connected device)
+  { name: 'device_tool', description: TOOL_DESCRIPTIONS.device_tool, inputSchema: DeviceToolSchema, executionMode: 'backend', safeMode: 'block', handler: null },
+  // Media tool (backend — accounts only: generate / tasks)
+  { name: 'media_tool', description: TOOL_DESCRIPTIONS.media_tool, inputSchema: MediaToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Transcription (backend — recordings into words, routed by the person's setting)
+  { name: 'asr_tool', description: TOOL_DESCRIPTIONS.asr_tool, inputSchema: AsrToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Video tool (backend — local decoding: probe / frames; needs the app's Chromium)
+  { name: 'recording_tool', description: TOOL_DESCRIPTIONS.recording_tool, inputSchema: RecordingToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Desktop door (backend-specific — needs this machine's accessibility session)
+  { name: 'computer_tool', description: TOOL_DESCRIPTIONS.computer_tool, inputSchema: ComputerToolSchema, executionMode: 'backend', safeMode: 'block', handler: null },
+  { name: 'drawio_tool', description: TOOL_DESCRIPTIONS.drawio_tool, inputSchema: DrawioToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // HTML tool (backend — the element vocabulary the visual editor patches by)
+  { name: 'html_tool', description: TOOL_DESCRIPTIONS.html_tool, inputSchema: HtmlToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Reel tool (registry — a cut is a file; this reads and writes it without an editor open)
+  { name: 'reel_tool', description: TOOL_DESCRIPTIONS.reel_tool, inputSchema: ReelToolSchema, executionMode: 'registry', safeMode: 'allow', handler: handleReelTool },
+  // Markdown tool (backend — the same block vocabulary the editor saves by)
+  { name: 'markdown_tool', description: TOOL_DESCRIPTIONS.markdown_tool, inputSchema: MarkdownToolSchema, executionMode: 'backend', safeMode: 'allow', handler: null },
+  // Document tool (backend-specific — file-level; the GenOffice command line does the work)
+  // The document doors — five tools, one dispatcher. Names, briefs and guide files come from
+  // `office-domains.ts`, so a sixth format is a row there rather than five edits here.
+  ...OFFICE_DOMAINS.map((entry) => ({
+    name: entry.toolName,
+    description: (TOOL_DESCRIPTIONS as Record<string, string>)[entry.toolName] as string,
+    inputSchema: OfficeToolSchema,
+    executionMode: 'backend' as const,
+    safeMode: 'allow' as const,
+    handler: null,
+  })),
   // Session self-management tools (registry — use context callbacks to reach SessionManager)
   { name: 'set_session_labels', description: TOOL_DESCRIPTIONS.set_session_labels, inputSchema: SetSessionLabelsSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionLabels },
   { name: 'set_session_status', description: TOOL_DESCRIPTIONS.set_session_status, inputSchema: SetSessionStatusSchema, executionMode: 'registry', safeMode: 'block', handler: handleSetSessionStatus },
   { name: 'archive_session', description: TOOL_DESCRIPTIONS.archive_session, inputSchema: ArchiveSessionSchema, executionMode: 'registry', safeMode: 'block', handler: handleArchiveSession },
   { name: 'create_task', description: TOOL_DESCRIPTIONS.create_task, inputSchema: CreateTaskSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreateTask },
-  // Pages tools (registry — use the grouped ctx.pages callbacks from SessionManager)
-  { name: 'list_pages', description: TOOL_DESCRIPTIONS.list_pages, inputSchema: ListPagesSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListPages },
-  { name: 'get_page', description: TOOL_DESCRIPTIONS.get_page, inputSchema: GetPageSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetPage },
-  { name: 'create_page', description: TOOL_DESCRIPTIONS.create_page, inputSchema: CreatePageSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreatePage },
-  { name: 'update_page', description: TOOL_DESCRIPTIONS.update_page, inputSchema: UpdatePageSchema, executionMode: 'registry', safeMode: 'block', handler: handleUpdatePage },
-  { name: 'write_page_data', description: TOOL_DESCRIPTIONS.write_page_data, inputSchema: WritePageDataSchema, executionMode: 'registry', safeMode: 'block', handler: handleWritePageData },
-  { name: 'delete_page', description: TOOL_DESCRIPTIONS.delete_page, inputSchema: DeletePageSchema, executionMode: 'registry', safeMode: 'block', handler: handleDeletePage },
+  // Tweaks tools (registry — grouped ctx.tweaks callbacks)
+  { name: 'list_tweaks', description: TOOL_DESCRIPTIONS.list_tweaks, inputSchema: ListTweaksSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListTweaks },
+  { name: 'get_tweak', description: TOOL_DESCRIPTIONS.get_tweak, inputSchema: GetTweakSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetTweak },
+  { name: 'create_tweak', description: TOOL_DESCRIPTIONS.create_tweak, inputSchema: CreateTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleCreateTweak },
+  { name: 'update_tweak', description: TOOL_DESCRIPTIONS.update_tweak, inputSchema: UpdateTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleUpdateTweak },
+  { name: 'delete_tweak', description: TOOL_DESCRIPTIONS.delete_tweak, inputSchema: DeleteTweakSchema, executionMode: 'registry', safeMode: 'block', handler: handleDeleteTweak },
   { name: 'get_session_info', description: TOOL_DESCRIPTIONS.get_session_info, inputSchema: GetSessionInfoSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleGetSessionInfo },
   { name: 'list_sessions', description: TOOL_DESCRIPTIONS.list_sessions, inputSchema: ListSessionsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListSessions },
   { name: 'list_background_tasks', description: TOOL_DESCRIPTIONS.list_background_tasks, inputSchema: ListBackgroundTasksSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListBackgroundTasks },
   // Inter-session messaging
   { name: 'send_agent_message', description: TOOL_DESCRIPTIONS.send_agent_message, inputSchema: SendAgentMessageSchema, executionMode: 'registry', safeMode: 'block', handler: handleSendAgentMessage },
-  // Messaging gateway tools
-  { name: 'list_messaging_channels', description: TOOL_DESCRIPTIONS.list_messaging_channels, inputSchema: ListMessagingChannelsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListMessagingChannels },
-  { name: 'unbind_messaging_channel', description: TOOL_DESCRIPTIONS.unbind_messaging_channel, inputSchema: UnbindMessagingChannelSchema, executionMode: 'registry', safeMode: 'block', handler: handleUnbindMessagingChannel },
 ];
 
 export interface SessionToolFilterOptions {
@@ -753,7 +1271,27 @@ export interface SessionToolFilterOptions {
    * forgets the option hides it instead of advertising a tool that cannot run.
    */
   includeDecide?: boolean;
+  /**
+   * Whether this conversation is bound to a project.
+   *
+   * `false` hides the tools whose work belongs to a project's own store — cuts — so a conversation
+   * without one is never invited to call them. `undefined` keeps them for callers that do not know
+   * the binding (tests, hosts). Media generation is not here: a file and its source note are
+   * meaningful wherever the conversation lives.
+   */
+  hasProject?: boolean;
+  /**
+   * Whether this hub has any paired device (online or offline).
+   *
+   * `false` hides `device_tool`: a hub that has never paired a machine pays for its brief and
+   * schema on every request for a door that can only report "no devices". `undefined` keeps it for
+   * callers that do not know the pairing state (tests, hosts).
+   */
+  hasDevices?: boolean;
 }
+
+/** Tools whose output is project-scoped; they are not offered without a project. */
+const PROJECT_SCOPED_TOOL_NAMES = new Set(['reel_tool']);
 
 /**
  * Return session tools with optional feature filtering.
@@ -764,12 +1302,18 @@ export interface SessionToolFilterOptions {
 export function getSessionToolDefs(options?: SessionToolFilterOptions): SessionToolDef[] {
   const includeDeveloperFeedback = options?.includeDeveloperFeedback ?? true;
   const includeDecide = options?.includeDecide ?? false;
-
+  const hasProject = options?.hasProject !== false;
   return SESSION_TOOL_DEFS.filter(def => {
     if (!includeDeveloperFeedback && def.name === 'send_developer_feedback') {
       return false;
     }
     if (!includeDecide && def.name === 'decide') {
+      return false;
+    }
+    if (!hasProject && PROJECT_SCOPED_TOOL_NAMES.has(def.name)) {
+      return false;
+    }
+    if (options?.hasDevices === false && def.name === 'device_tool') {
       return false;
     }
     return true;
@@ -885,9 +1429,18 @@ export function getToolDefsAsJsonSchema(opts?: {
   prefix?: string;
   includeDeveloperFeedback?: boolean;
   includeDecide?: boolean;
+  /** False hides project-scoped tools; see `SessionToolFilterOptions`. */
+  hasProject?: boolean;
+  /** False hides `device_tool`; see `SessionToolFilterOptions`. */
+  hasDevices?: boolean;
 }): JsonSchemaToolDef[] {
   const prefix = opts?.prefix || '';
-  const defs = getSessionToolDefs({ includeDeveloperFeedback: opts?.includeDeveloperFeedback, includeDecide: opts?.includeDecide });
+  const defs = getSessionToolDefs({
+    includeDeveloperFeedback: opts?.includeDeveloperFeedback,
+    includeDecide: opts?.includeDecide,
+    hasProject: opts?.hasProject,
+    hasDevices: opts?.hasDevices,
+  });
 
   return defs.map(def => {
     // Explicit `as any` avoids TS2589 ("type instantiation is excessively deep")

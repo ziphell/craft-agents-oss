@@ -1,4 +1,10 @@
 #!/bin/sh
 ENTRY="${CRAFT_COMMANDS_ENTRY:-$CRAFT_CLI_ENTRY}"
+if [ -z "$ENTRY" ] || [ ! -f "$ENTRY" ]; then
+  echo "craft-agent: this build has no craft-agent CLI (labels, sources, skills, automations, permissions, theme)." >&2
+  echo "  Looked for: ${ENTRY:-<no entry configured>}" >&2
+  echo "  Write those files directly instead - see ~/.craft-agent/docs/ (skills.md, automations.md, labels.md, sources.md, permissions.md, themes.md)." >&2
+  exit 2
+fi
 export CRAFT_CLI_JSON_ONLY="${CRAFT_CLI_JSON_ONLY:-1}"
 exec "${CRAFT_BUN:-bun}" run "$ENTRY" "$@"

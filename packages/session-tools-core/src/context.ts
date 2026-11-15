@@ -144,9 +144,7 @@ export interface ValidatorInterface {
 /**
  * Main context interface for session tools.
  *
- * Both Claude and Codex create their own implementation of this interface:
- * - Claude: createClaudeContext() with direct access to Electron internals
- * - Codex: createCodexContext() with callback IPC and limited capabilities
+ * Claude's implementation (`createClaudeContext()`) has direct access to Electron internals.
  */
 export interface SessionToolContext {
   // ============================================================
@@ -176,6 +174,13 @@ export interface SessionToolContext {
   // ============================================================
 
   callbacks: SessionToolCallbacks;
+
+  /**
+   * Wake this conversation with a system note when something it started in the background
+   * settles — a render, for instance. Absent when the host cannot (the tool then tells the agent
+   * to poll), and a host that is mid-turn may decline to interrupt the running answer.
+   */
+  notifyBackgroundResult?(message: string): void;
 
   // ============================================================
   // File System
@@ -287,6 +292,14 @@ export interface SessionToolContext {
    */
   testGoogleSource?(source: SourceConfig): Promise<ApiTestResult>;
 
+  /**
+   * Test a mailbox: IMAP login and SMTP verify.
+   *
+   * Implemented where the mail libraries live (shared), because this package
+   * must stay dependency-free for the renderer.
+   */
+  testEmailSource?(source: SourceConfig): Promise<ApiTestResult>;
+
   // ============================================================
   // Preferences (for update_user_preferences)
   // ============================================================
@@ -294,7 +307,7 @@ export interface SessionToolContext {
   /**
    * Submit developer feedback. Injected by each backend:
    * - Claude: writes JSON files to ~/.craft-agent/feedback/
-   * - Codex/Pi: could send over IPC or write directly
+   * - Pi: could send over IPC or write directly
    */
   submitFeedback?(feedback: import('./types.ts').DeveloperFeedback): void;
 
@@ -347,19 +360,13 @@ export interface SessionToolContext {
    */
   createTask?(input: CreateTaskInput): Promise<CreateTaskResult>;
 
-  // ============================================================
-  // Pages (list_pages / get_page / create_page / update_page /
-  //        write_page_data / delete_page)
-  // ============================================================
-
   /**
-   * Pages tool callbacks — workspace-scoped mini dashboards. Grouped in one
-   * object (unlike the flat session-management callbacks) because the six
-   * operations always ship together. Injected by the backend (SessionManager);
-   * undefined in backends that don't run alongside it — handlers degrade
-   * gracefully.
+   * Tweaks tool callbacks — standing edits to pages nobody here owns, with two carriers
+   * (this app's browser window, and a loadable extension). Grouped because the
+   * operations ship together. Injected by the backend
+   * (SessionManager); undefined elsewhere, where the handlers degrade gracefully.
    */
-  pages?: PagesToolCallbacks;
+  tweaks?: TweakToolCallbacks;
 
   // ============================================================
   // Decision model (decide)
@@ -405,23 +412,6 @@ export interface SessionToolContext {
     reason?: string;
     availability?: 'next-turn';
   }>;
-
-  // ============================================================
-  // Messaging Gateway (for list/unbind messaging channels)
-  // ============================================================
-
-  /** Get messaging bindings for a session. Injected by backend when messaging is configured. */
-  getMessagingBindings?(sessionId: string): Array<{
-    platform: string;
-    channelId: string;
-    /** Telegram supergroup forum topic id; undefined for DMs / non-Telegram. */
-    threadId?: number;
-    channelName?: string;
-    enabled: boolean;
-  }>;
-
-  /** Unbind messaging channels from a session. Returns count of removed bindings. */
-  unbindMessagingChannel?(sessionId: string, platform?: string): number;
 
   // ============================================================
   // Session Paths (for transform_data / render_template)
@@ -511,156 +501,105 @@ export interface CreateTaskResult {
 }
 
 // ============================================================
-// Pages Types
+// Tweaks (standing edits to pages nobody here owns)
 // ============================================================
-// Plain JSON shapes mirroring @craft-agent/core page types — duplicated here
-// on purpose so this package stays dependency-free (same rule as
-// CreateTaskInput). The backend maps real PageConfig/LoadedPage onto these.
 
-/** Scheduled refresh spec for a page (5-field cron → workspace-relative script). */
-export interface PageToolRefreshSpec {
-  /** 5-field cron expression evaluated once per minute */
-  cron: string;
-  /** Script path relative to the workspace root (must stay within it) */
-  script: string;
-  /** Extra argv appended after the script path */
-  args?: string[];
-  /** IANA timezone for cron evaluation (system local when omitted) */
-  timezone?: string;
-  /** Per-run timeout in ms (default 60_000, clamped to [1_000, 900_000]) */
-  timeoutMs?: number;
-  /** false pauses scheduling without deleting the spec */
-  enabled?: boolean;
-}
-
-/** Compact page entry (returned by list_pages). */
-export interface PageToolSummary {
+/** One tweak as the agent sees it in a list. */
+export interface TweakToolSummary {
   slug: string;
   name: string;
   description?: string;
-  /** 'static' | 'interactive' | 'live' */
-  kind: string;
-  projectId?: string;
+  /** Chrome match patterns: the pages this tweak runs on. */
+  matches: string[];
+  /** Off means it does nothing anywhere — see `create_tweak`. */
+  enabled: boolean;
+  /** False when the folder has neither tweak.css nor tweak.js, so there is nothing to inject. */
+  hasCode: boolean;
+  /** Absolute path to the tweak's folder. */
+  folderPath: string;
   createdAt: number;
   updatedAt: number;
-  /** Whether index.html exists yet */
-  hasContent: boolean;
-  refresh?: PageToolRefreshSpec;
-  /** Outcome of the most recent data refresh (scheduled or agent write) */
-  lastRefresh?: { at: number; ok: boolean; durationMs: number; error?: string };
-  /** Whether the page is currently published (share link exists) */
-  shared: boolean;
-  /** Absolute path to the page folder (pages/{slug}/) */
-  folderPath: string;
-}
-
-/** Summary of a page's data snapshot (kv keys + per-series stats, not full points). */
-export interface PageToolDataSummary {
-  generatedAt: number;
-  kvKeys: string[];
-  series: Array<{ name: string; points: number; latest?: { t: number; v: number } }>;
-  /** Absolute path to data/snapshot.json — Read it for the full contents */
-  snapshotPath: string;
-}
-
-/** Full page details (returned by get_page / create_page / update_page). */
-export interface PageToolDetails extends PageToolSummary {
-  id: string;
-  /** sha256 hex of index.html (grants and render leases bind to it) */
-  contentDigest?: string;
-  /** Byte length of index.html when present */
-  contentLength?: number;
-  /** Absolute path to index.html */
-  contentPath: string;
-  /** Data snapshot summary, or null when no data has been written yet */
-  data: PageToolDataSummary | null;
-  /** Source-action grants (user-approved; stale = digest mismatch or expired) */
-  grants: Array<{
-    id: string;
-    kind: string;
-    /** Source slug for api/mcp grants (absent for script grants) */
-    sourceSlug?: string;
-    /** Workspace-relative script path for script grants (absent otherwise) */
-    script?: string;
-    description?: string;
-    expiresAt: number;
-    stale: boolean;
-  }>;
-  /** Public share URL when published */
-  shareUrl?: string;
-  /** Full index.html content (only when requested with includeContent) */
-  content?: string;
-}
-
-/** Input for create_page. */
-export interface CreatePageToolInput {
-  name: string;
-  description?: string;
-  /** 'static' | 'interactive' | 'live' (default: 'interactive') */
-  kind?: string;
-  /** Stable Project ID to bind the page to */
-  projectId?: string;
-  /** Full self-contained HTML document for index.html */
-  content?: string;
-  refresh?: PageToolRefreshSpec;
-}
-
-/** Patch for update_page — only provided fields change; null clears a field. */
-export interface UpdatePageToolPatch {
-  name?: string;
-  description?: string | null;
-  kind?: string;
-  projectId?: string | null;
-  /** Replaces index.html entirely (re-digests; existing grants go stale by design) */
-  content?: string;
-  refresh?: PageToolRefreshSpec | null;
-}
-
-/** Data mutation batch for write_page_data (applied in one transaction). */
-export interface PageDataToolPatch {
-  /** KV upserts: key → any JSON value */
-  set?: Record<string, unknown>;
-  /** KV keys to delete */
-  delete?: string[];
-  /** Timeseries appends: series name → points ({ t? epoch ms, v number }) */
-  appendSeries?: Record<string, Array<{ t?: number; v: number }>>;
-  /** Timeseries prunes: series name → deleteBefore timestamp (t < value removed) */
-  pruneSeries?: Record<string, number>;
-}
-
-/** Result of write_page_data. */
-export interface PageDataWriteSummary {
-  slug: string;
-  kvCount: number;
-  seriesCount: number;
-  generatedAt: number;
-  snapshotPath: string;
-  durationMs: number;
-}
-
-/** Result of delete_page. */
-export interface DeletePageToolResult {
-  deleted: true;
-  /** True when the page was published and the remote copy may still exist */
-  publicCopyMayRemain: boolean;
 }
 
 /**
- * Pages tool callbacks, injected by the backend (SessionManager). All storage
- * logic lives behind these — this package never touches pages/ directly.
+ * One selector a tweak declares with `@target`, and what it has matched.
+ *
+ * `stale` is the whole point of keeping the record: the tweak has been applied since the
+ * last time this selector matched, and it did not match — the design moved.
  */
-export interface PagesToolCallbacks {
-  listPages(): PageToolSummary[] | Promise<PageToolSummary[]>;
-  getPage(slug: string, options?: { includeContent?: boolean }): PageToolDetails | null | Promise<PageToolDetails | null>;
-  createPage(input: CreatePageToolInput): Promise<PageToolDetails>;
-  updatePage(slug: string, patch: UpdatePageToolPatch): Promise<PageToolDetails>;
-  writePageData(slug: string, patch: PageDataToolPatch): Promise<PageDataWriteSummary>;
-  deletePage(slug: string): Promise<DeletePageToolResult>;
+export interface TweakToolTarget {
+  selector: string;
+  /** Which of the tweak's files declares it. */
+  file: string;
+  /** When it last matched something, epoch ms. Absent means it never has. */
+  lastMatchedAt?: number;
+  /** It matched before, and the most recent apply did not see it. */
+  stale: boolean;
+}
+
+/** Full tweak detail (returned by get_tweak / create_tweak / update_tweak). */
+export interface TweakToolDetails extends TweakToolSummary {
+  /** Absolute path to tweak.css (whether or not it exists). */
+  cssPath: string;
+  /** Absolute path to tweak.js (whether or not it exists). */
+  jsPath: string;
+  /** Which of the two code files are actually there — a path does not say that. */
+  hasCss: boolean;
+  hasJs: boolean;
+  /** Absolute path to hits.json — written by whatever applies the tweak, never by hand. */
+  hitsPath: string;
+  /**
+   * When its javascript runs: what the tweak declares with `@run-at`, or `document_end`.
+   * Derived from the code, because that is where it is declared.
+   */
+  runAt: 'document_start' | 'document_end' | 'document_idle';
+  targets: TweakToolTarget[];
+  /** When the hit record was last written, or null when nothing has applied it yet. */
+  appliedAt: number | null;
+}
+
+/** Input for create_tweak. */
+export interface CreateTweakToolInput {
+  name: string;
+  description?: string;
+  /** Chrome match patterns — at least one. */
+  matches: string[];
+  /** Created off unless this is true; see the tool's own description. */
+  enabled?: boolean;
+  /** Written to tweak.css */
+  css?: string;
+  /** Written to tweak.js */
+  js?: string;
+}
+
+/** Patch for update_tweak — only provided fields change; null clears the description. */
+export interface UpdateTweakToolPatch {
+  name?: string;
+  description?: string | null;
+  matches?: string[];
+  enabled?: boolean;
+}
+
+/** Result of delete_tweak. */
+export interface DeleteTweakToolResult {
+  deleted: true;
+}
+
+/**
+ * Tweaks tool callbacks, injected by the backend (SessionManager). All storage logic
+ * lives behind these — this package never touches tweaks/ directly.
+ */
+export interface TweakToolCallbacks {
+  listTweaks(): TweakToolSummary[] | Promise<TweakToolSummary[]>;
+  getTweak(slug: string): TweakToolDetails | null | Promise<TweakToolDetails | null>;
+  createTweak(input: CreateTweakToolInput): Promise<TweakToolDetails>;
+  updateTweak(slug: string, patch: UpdateTweakToolPatch): Promise<TweakToolDetails>;
+  deleteTweak(slug: string): Promise<DeleteTweakToolResult>;
 }
 
 // ============================================================
 // Decision Tool Types (mirror @craft-agent/shared/decisions — this package
-// must stay free of that dependency, same rule as pages)
+// must stay free of that dependency, same rule as the tweaks types)
 // ============================================================
 
 export type DecisionToolQuestionType = 'choice' | 'score' | 'noul';
@@ -728,14 +667,28 @@ export interface SessionInfo {
   id: string;
   name: string;
   labels: string[];
+  /**
+   * The **kanban column**, which a person sets. It is not progress: a finished turn leaves it where
+   * it was, so it is the wrong field to poll for "is my subtask done".
+   */
   status: string;
   permissionMode: string;
   createdAt: number;
   updatedAt?: number;
   workingDirectory?: string;
+  /** The workspace project this session belongs to (undefined = unbound). */
+  projectId?: string;
   llmConnection?: string;
   model?: string;
+  /**
+   * Whether an agent exists for this session (it stays true after a turn ends). Together with
+   * `isActive` this used to be the only activity signal, and it could not answer the question.
+   */
   isActive: boolean;
+  /** True only while a turn is running. */
+  isProcessing?: boolean;
+  /** Who spoke last: `isProcessing === false` plus `'assistant'` is what "it finished" looks like. */
+  lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error';
 }
 
 /** Compact session summary (returned by list_sessions). */

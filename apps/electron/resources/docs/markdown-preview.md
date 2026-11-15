@@ -155,6 +155,6 @@ Is the content a markdown file (.md, .markdown)?
 - Check that `src` is a string (not an array) and `items` is an array of objects with a `src` field.
 
 ### Links inside the rendered markdown don't open
-- Plain `https://` URLs open in the system browser.
-- Absolute filesystem paths open via the OS file manager.
-- `file://` URLs are blocked by the in-app URL safety layer (`shell.openExternal` can launch local executables on Windows) — use a plain filesystem path or reference the file through another preview block.
+- Plain `https://` URLs open in a browser — the app's own browser window by default, the system browser when the person asked for that (Settings → Links).
+- A local path — plain, or written as a `file://` URL, which resolves to the same path — is opened by the app itself: what it can show goes to its own window (an HTML file, a diagram, a document, an image, a PDF), and anything else to the program the system has for it. HTML is *drawn* there rather than run; that window's own header is where the same file can be opened in a browser.
+- `javascript:`, `data:` and `blob:` URLs have nowhere to open; they are refused.

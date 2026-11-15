@@ -3,20 +3,46 @@
  * accepts remote connections from other machines.
  *
  * When enabled, the app binds to 0.0.0.0 on a fixed port instead of
- * localhost on a random port, allowing thin clients to connect.
+ * localhost on a random port, allowing remote windows to connect.
  */
 
 export interface ServerConfig {
-  /** Whether remote server mode is active (bind 0.0.0.0 vs 127.0.0.1) */
+  /** Whether remote server mode is active (fixed port vs a random localhost port) */
   enabled: boolean
   /** Fixed port to listen on (default 9100) */
   port: number
+  /**
+   * Bind to all interfaces (0.0.0.0) so other machines can connect. When false the
+   * server only listens on 127.0.0.1. Defaults to true, preserving the historical
+   * behaviour where enabling server mode exposed the app on the network.
+   */
+  allowExternal: boolean
   /** Path to PEM certificate file (enables TLS / wss://) */
   tlsCertPath?: string
   /** Path to PEM private key file (required when cert is set) */
   tlsKeyPath?: string
   /** Stable auth token for remote clients (auto-generated on first enable) */
   token?: string
+  /**
+   * Web UI login password (auto-generated when Server Mode is first enabled).
+   *
+   * The Web UI follows Server Mode. Sessions are signed with a key derived from this password and
+   * `token`, so there is no third secret to store — and changing either one signs browsers out.
+   */
+  webuiPassword?: string
+  /**
+   * The server's external address — how browsers reach it from outside this network, when a
+   * reverse proxy, tunnel or port mapping puts it somewhere the derived address cannot describe
+   * (e.g. `https://agents.example.com/craft`).
+   *
+   * Stored exactly as the person typed it: `https://host` and `wss://host` are the same endpoint,
+   * so both are accepted and the socket form is derived where a socket URL is needed.
+   *
+   * It is handed to the requests that arrive through it and nothing else: a browser on the LAN
+   * calls the hub directly and keeps the address it used, so setting this never redirects local
+   * traffic to a public host. When unset, the URL is derived from each request's host and `port`.
+   */
+  publicWsUrl?: string
 }
 
 export interface ServerStatus {
@@ -30,15 +56,27 @@ export interface ServerStatus {
   tls: boolean
   /** Full connection URL (ws:// or wss://) */
   url: string
-  /** Current auth token */
-  token: string
   /** Whether saved config differs from running config (restart needed) */
   needsRestart: boolean
   /** True when server is bound to a network address without TLS */
   insecureWarning: boolean
+  /** Whether the running server is bound to a network address (0.0.0.0) */
+  allowExternal: boolean
+  /**
+   * Address other machines would use to reach this one.
+   *
+   * Reported even while the listener is loopback-only, because the settings page previews the URL
+   * of a config that has not been applied yet (Server Mode just turned on).
+   */
+  lanHost: string
+  /** Configured public WS URL (reverse proxy / port mapping), when set */
+  publicWsUrl?: string
+  /** Set when the configured port was unavailable and a random one was used instead */
+  bindError?: string
 }
 
 export const DEFAULT_SERVER_CONFIG: ServerConfig = {
   enabled: false,
   port: 9100,
+  allowExternal: true,
 }

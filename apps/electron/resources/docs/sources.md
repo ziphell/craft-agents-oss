@@ -1,6 +1,6 @@
 # Sources Configuration Guide
 
-This guide explains how to configure sources (MCP servers, APIs, local filesystems) in Craft Agent.
+This guide explains how to configure sources (MCP servers, APIs, mailboxes, local filesystems, web pages) in Craft Agent.
 
 > **CLI-first workflow (recommended):** Use `craft-agent source ...` commands instead of editing source config files directly.
 > - `craft-agent source --help`
@@ -42,6 +42,17 @@ Sources remain the default for reusable integrations. Before building a new sour
 
 If you choose browser-first, still offer optional source setup later when the user needs repeatability.
 
+**A web source is the third path**, for when the thing worth reusing is a *page* rather than an
+integration. Prefer `type: "web"` when:
+- The page itself is the entry point — an article, a spec, a changelog, reference docs
+- It sits behind a login, or a script builds it after load (so fetching the url would not work)
+- It is worth returning to, but not worth an API integration
+- **It is a page you use rather than read** — a tool, a dashboard, an app. The value is the address
+  and the guide; the browser reads the page when it is needed
+
+A web source stores the address and a `guide.md` saying what the page is and how to work with it.
+Nothing is captured or copied into the source folder. See [Web Page Sources](#web-page-sources).
+
 ### 1. Understand User Intent
 
 Before creating any configuration, ask questions to understand:
@@ -70,6 +81,7 @@ Use available tools to learn about the service:
 - **Gmail/Microsoft setup keeps failing auth:** attempt source setup, but confirm browser fallback for immediate task completion.
 - **Need a one-off export from an admin UI:** use browser directly; skip full source setup unless recurring.
 - **API lacks the required endpoint but UI supports it:** use browser as preferred path and document limitation.
+- **A logged-in or script-built page worth returning to:** make a web source — the address and its guide are there next session, and the browser opens the page already signed in.
 
 ### 3. Configure Intelligently
 
@@ -77,11 +89,12 @@ Based on research and user intent, create `config.json` with **ALL required fiel
 
 **Core fields:**
 - `id` - **REQUIRED**: Unique identifier string. Format: `{slug}_{random}` (e.g., `linear_a1b2c3d4`). Generate the random part with any method (e.g., 8 hex chars).
+- `enabled` - **REQUIRED**: `true`. A source that is missing it loads but is never active, and its guide is never put in front of the agent.
 - `name`, `slug`, `provider`, `type` - Basic identification
 - `icon` - **RECOMMENDED**: URL to the service's favicon, logo, or app icon. The icon is auto-downloaded and cached locally. Use an emoji as fallback.
 - `tagline` - **RECOMMENDED**: Short description for agent context (e.g., "Issue tracking, sprint planning, and project management")
-- Type-specific config (`mcp`, `api`, or `local`)
-- Authentication method appropriate for the service
+- Type-specific config (`mcp`, `api`, `local`, `web`, or `email`)
+- Authentication method appropriate for the service — a **web** source declares none of its own: it is opened in the browser window, which already carries the person's session.
 
 ### 4. Configure Explore Mode Permissions (REQUIRED)
 
@@ -124,6 +137,20 @@ Sources should work in Explore mode by default. Create `permissions.json` to all
 }
 ```
 
+**For web page sources:** none — a web source has no tools and no endpoints, so there is no `permissions.json` to write. Working with the page goes through `browser_tool`, governed by the workspace's own permissions rather than by the source's.
+
+**For mailbox sources:** allow the read tools and leave `send` out, so Explore mode can search and read but not send mail:
+```json
+{
+  "allowedMcpPatterns": [
+    { "pattern": "list_folders", "comment": "List mailboxes" },
+    { "pattern": "search", "comment": "Search messages" },
+    { "pattern": "read", "comment": "Read a message" },
+    { "pattern": "download_attachment", "comment": "Save an attachment" }
+  ]
+}
+```
+
 > **Goal:** Sources should be fully functional in Explore mode. Allow all read operations by default. Only block actual mutations (create, update, delete).
 
 ### 5. Write Comprehensive guide.md
@@ -137,7 +164,7 @@ Create a guide.md tailored to the user's context:
 
 ### 6. Test and Validate (MANDATORY)
 
-**You MUST use the `source_test` tool after creating any source.** This applies to ALL source types - MCP, API, and local filesystem sources. This is not optional.
+**You MUST use the `source_test` tool after creating any source that has a server** — MCP, API, and local filesystem sources. This is not optional. A **web page source is the exception**: it has no server and no tools, so `source_test` has nothing to test, and writing a `permissions.json` for it would be writing a file about nothing. What validates a web source is opening the page in the browser and checking the result against its guide (see [Web Page Sources](#web-page-sources)).
 
 ```
 mcp__session__source_test({ sourceSlug: "{slug}" })
@@ -254,7 +281,7 @@ Each source folder contains:
   "slug": "url-safe-identifier",
   "enabled": true,
   "provider": "provider-name",
-  "type": "mcp" | "api" | "local",
+  "type": "mcp" | "api" | "local" | "web" | "email",
 
   // RECOMMENDED: Icon and tagline for better UI and agent context
   "icon": "https://example.com/favicon.ico",  // URL (auto-downloaded) or emoji
@@ -279,6 +306,20 @@ Each source folder contains:
   // For local sources:
   "local": {
     "path": "/path/to/folder"
+  },
+
+  // For web sources (a bookmark; the page is opened in the browser when needed):
+  "web": {
+    "url": "https://example.com/article"
+  },
+
+  // For mailbox sources:
+  "email": {
+    "address": "me@163.com",
+    "provider": "163",
+    "defaultMailbox": "INBOX",
+    "imap": { "host": "imap.163.com", "port": 993, "secure": true },
+    "smtp": { "host": "smtp.163.com", "port": 465, "secure": true }
   },
 
   // Status (updated by source_test):
@@ -699,6 +740,116 @@ Filesystem access for local folders.
 
 **After creating, run `source_test`** to validate the path exists and is accessible.
 
+### Web Page Sources
+
+A single web page kept as a **bookmark plus a guide**. The `url` is the entry point, and `guide.md`
+says what the page is and how to work with it. Nothing is captured or copied into the source folder:
+the built-in browser window opens the page when it is needed, carrying the person's session, and the
+agent reads or drives it there.
+
+Use one when a page is worth returning to: an article, a spec, a dashboard you check, reference
+documentation that sits behind a login. Because the browser renders the page, one the user is signed
+in to — or one a script builds after load — is available as the person sees it; a plain HTTP fetch
+would get the empty shell instead.
+
+```json
+{
+  "id": "chrome-release-notes_a1b2c3d4",
+  "name": "Chrome Release Notes",
+  "slug": "chrome-release-notes",
+  "enabled": true,
+  "provider": "web",
+  "type": "web",
+  "web": { "url": "https://developer.chrome.com/release-notes" },
+  "tagline": "What shipped in each Chrome release",
+  "icon": "https://developer.chrome.com/favicon.ico"
+}
+```
+
+**No server, so there is no `source_test`.** A web source provides no tools — it is opened in the
+browser. `source_test` answers "no connection test available for this source type", which is expected
+here.
+
+**Using the page.** Open it in the browser window and work from there:
+
+```
+browser_tool: navigate https://developer.chrome.com/release-notes
+browser_tool: wait network-idle 8000        # only when the page builds itself client-side
+browser_tool: read                          # the page as markdown, when the text is what you need
+browser_tool: snapshot                      # the controls, when the page is what you operate
+```
+
+A web source folder holds only:
+
+```
+{workspace}/sources/{slug}/
+  config.json        # type: "web", web: { url }
+  guide.md           # what this page is and how to work with it
+```
+
+`read --save <path>` is still there when a page is worth keeping as a file: it writes the page as
+markdown, and `read --save <path> --images` also keeps its images beside it. The result can be read
+or edited later. That is an ordinary workspace file, not part of the source — put it wherever the
+work belongs.
+
+**guide.md for a web source** carries the meaning: what the page is, how the person uses it, its
+entry points and key paths, which controls matter and what changes. For a page you *use*, that
+understanding **is** the source. When the extracted text is thin (a script-built page often gives
+little), say so plainly and lean on `snapshot` and `screenshot`; a thin extraction is expected rather
+than a failure.
+
+### Mailbox Sources
+
+An IMAP/SMTP mailbox, one source per account. `config.json` holds the non-secret settings; the
+password or authorization code lives in the credential store, never on disk in the source folder.
+
+```json
+{
+  "id": "work-mail_a1b2c3d4",
+  "name": "Work mailbox",
+  "slug": "work-mail",
+  "enabled": true,
+  "provider": "163",
+  "type": "email",
+  "icon": "📬",
+  "tagline": "Read and send mail from the work mailbox",
+  "email": {
+    "address": "me@163.com",
+    "provider": "163",
+    "defaultMailbox": "INBOX",
+    "imap": { "host": "imap.163.com", "port": 993, "secure": true },
+    "smtp": { "host": "smtp.163.com", "port": 465, "secure": true }
+  }
+}
+```
+
+Only `email.address` is required. `provider` is inferred from the domain, and the `imap` / `smtp`
+blocks are overrides for self-hosted servers. Built-in presets: `qq`, `163`, `netease-enterprise`,
+`gmail`, `outlook`, `exmail`, `aliyun`, `sina`, `sohu`. For any other provider, set both `imap.host`
+and `smtp.host`.
+
+**Use an authorization code, not the account password.** QQ, 163, Gmail and Outlook reject the login
+password and issue a separate authorization code. Ask for it with:
+
+```
+source_credential_prompt({
+  sourceSlug: "work-mail",
+  mode: "basic",
+  labels: { username: "Email address", password: "Authorization code" },
+  description: "Enter the mailbox authorization code"
+})
+```
+
+`source_test` logs in to IMAP and verifies SMTP with that credential, so a passing test means mail
+will actually work. If it reports "Credentials needed", the prompt above has not run yet.
+
+The mailbox exposes `list_folders`, `search`, `read`, `download_attachment` and `send` as
+`mcp__{slug}__{tool}`. There is no draft tool: write the message to a file, show it to the person,
+then send. `send` cannot be undone — confirm recipients and body before calling it.
+
+Gmail and Outlook are retiring password-based IMAP login. If login fails there, use the browser, or
+a `type: "api"` source with Google/Microsoft OAuth.
+
 ## guide.md Format
 
 The guide.md file helps Claude understand how to use the source effectively.
@@ -879,9 +1030,9 @@ Technical steps:
 
 3. Write `guide.md` tailored to user's context and use case
 
-4. **Create `permissions.json` for Explore mode** - List the source's tools, identify read-only operations (list, get, search), and add simple patterns. Patterns are auto-scoped to this source.
+4. **Create `permissions.json` for Explore mode** - List the source's tools, identify read-only operations (list, get, search), and add simple patterns. Patterns are auto-scoped to this source. *(Not for a web source — it has no tools. See [Web Page Sources](#web-page-sources).)*
 
-5. Run `source_test` to validate configuration and test connection
+5. Run `source_test` to validate configuration and test connection *(a web source has no server to test; open the page in the browser instead)*
 
 6. If auth is required, trigger the appropriate flow:
    - `source_oauth_trigger` for MCP OAuth

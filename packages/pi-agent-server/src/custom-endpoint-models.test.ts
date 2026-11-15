@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  applyModelOverrides,
   buildCustomEndpointModelDef,
   normalizeCustomEndpointModelEntry,
   stripPiPrefix,
@@ -42,44 +43,186 @@ describe('normalizeCustomEndpointModelEntry', () => {
       supportsImages: true,
     })
   })
+
+  it('preserves every per-model parameter and only normalizes the id', () => {
+    const params = {
+      name: 'Qwen3 Coder',
+      supportsImages: false,
+      supportsThinking: true,
+      contextWindow: 1_000_000,
+      maxTokens: 32_768,
+      cost: { input: 0.3, output: 1.2 },
+      headers: { 'X-Gateway-Token': 'abc' },
+      compat: { maxTokensField: 'max_tokens' },
+      thinkingLevelMap: { off: null, high: 'high' },
+    }
+
+    expect(normalizeCustomEndpointModelEntry({ id: 'pi/qwen3-coder', ...params })).toEqual({
+      id: 'qwen3-coder',
+      ...params,
+    })
+  })
 })
 
-describe('buildCustomEndpointModelDef', () => {
-  it('defaults custom endpoint models to text-only input', () => {
-    const model = buildCustomEndpointModelDef('my-model')
-    expect(model.input).toEqual(['text'])
+describe('buildCustomEndpointModelDef – per-model parameters', () => {
+  it('falls back to the built-in defaults when nothing is set', () => {
+    const model = buildCustomEndpointModelDef('plain-model')
+
+    expect(model).toEqual({
+      id: 'plain-model',
+      name: 'plain-model',
+      // Capability flags are permissive by default; only an explicit false
+      // turns them off.
+      reasoning: true,
+      input: ['text', 'image'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 1_000_000,
+      maxTokens: 393_216,
+    })
   })
 
-  it('enables image input when the connection explicitly opts in', () => {
-    const model = buildCustomEndpointModelDef('vision-model', { supportsImages: true })
+  it('lets every user-written parameter win over the fallback', () => {
+    const model = buildCustomEndpointModelDef('qwen3-coder', {
+      name: 'Qwen3 Coder',
+      supportsImages: true,
+      supportsThinking: true,
+      contextWindow: 262_144,
+      maxTokens: 32_768,
+      cost: { input: 0.3, output: 1.2 },
+      headers: { 'X-Gateway-Token': 'abc' },
+      compat: { maxTokensField: 'max_tokens' },
+      thinkingLevelMap: { off: null, high: 'high' },
+    })
+
+    expect(model.name).toBe('Qwen3 Coder')
     expect(model.input).toEqual(['text', 'image'])
+    // The user-facing name is translated to the SDK's flag at this boundary.
+    expect(model.reasoning).toBe(true)
+    expect(model.contextWindow).toBe(262_144)
+    expect(model.maxTokens).toBe(32_768)
+    // Unset rates keep the zero fallback rather than becoming undefined.
+    expect(model.cost).toEqual({ input: 0.3, output: 1.2, cacheRead: 0, cacheWrite: 0 })
+    expect(model.headers).toEqual({ 'X-Gateway-Token': 'abc' })
+    expect(model.compat).toEqual({ maxTokensField: 'max_tokens' })
+    expect(model.thinkingLevelMap).toEqual({ off: null, high: 'high' })
   })
 
-  it('lets per-model overrides disable image input even when the connection default is enabled', () => {
-    const model = buildCustomEndpointModelDef('text-only-model', { supportsImages: true }, { supportsImages: false })
-    expect(model.input).toEqual(['text'])
+  it('defaults reasoning to true, and honours an explicit false', () => {
+    expect(buildCustomEndpointModelDef('plain-model').reasoning).toBe(true)
+    expect(buildCustomEndpointModelDef('off-model', { supportsThinking: false }).reasoning).toBe(false)
   })
 
-  it('lets per-model overrides enable image input and custom context window', () => {
-    const model = buildCustomEndpointModelDef('vision-model', undefined, { supportsImages: true, contextWindow: 262_144 })
+  it('omits pass-through fields the user did not write', () => {
+    const model = buildCustomEndpointModelDef('plain-model', { maxTokens: 4_096 })
+
+    expect('headers' in model).toBe(false)
+    expect('compat' in model).toBe(false)
+    expect('thinkingLevelMap' in model).toBe(false)
+  })
+})
+
+describe('buildCustomEndpointModelDef – image input', () => {
+  it('defaults to text + image input', () => {
+    expect(buildCustomEndpointModelDef('my-model').input).toEqual(['text', 'image'])
+  })
+
+  it('turns image input off only on an explicit false', () => {
+    expect(buildCustomEndpointModelDef('text-only-model', { supportsImages: false }).input).toEqual(['text'])
+    expect(buildCustomEndpointModelDef('vision-model', { supportsImages: true }).input).toEqual(['text', 'image'])
+  })
+
+  it('carries a custom context window alongside image input', () => {
+    const model = buildCustomEndpointModelDef('vision-model', { supportsImages: true, contextWindow: 262_144 })
     expect(model.input).toEqual(['text', 'image'])
     expect(model.contextWindow).toBe(262_144)
   })
 
   // Regression: craft-agents-oss#1022 — strict OpenAI-compatible gateways 400 on the
   // `store` param. supportsStore:false makes the pi-ai driver omit it entirely.
-  it('disables the store param for openai-completions endpoints', () => {
-    const model = buildCustomEndpointModelDef('gpt-model', undefined, undefined, 'openai-completions')
-    expect((model as { compat?: { supportsStore?: boolean } }).compat).toEqual({ supportsStore: false })
+  // The `developer` role gets the same treatment: pi-ai only falls back to `system`
+  // for hosts it recognizes as non-standard, so an arbitrary endpoint needs the flag
+  // or every request fails with "developer is not one of ['system', ...]".
+  it('defaults openai-completions compat to the lowest common denominator', () => {
+    const model = buildCustomEndpointModelDef('gpt-model', undefined, 'openai-completions')
+    expect((model as { compat?: unknown }).compat).toEqual({
+      supportsStore: false,
+      supportsDeveloperRole: false,
+    })
+  })
+
+  it('lets a user-written developer-role statement win over that default', () => {
+    const model = buildCustomEndpointModelDef(
+      'openai-model',
+      { compat: { supportsDeveloperRole: true } },
+      'openai-completions',
+    )
+    expect((model as { compat?: { supportsDeveloperRole?: boolean } }).compat?.supportsDeveloperRole)
+      .toBe(true)
   })
 
   it('does not set store compat for anthropic-messages endpoints', () => {
-    const model = buildCustomEndpointModelDef('claude-model', undefined, undefined, 'anthropic-messages')
+    const model = buildCustomEndpointModelDef('claude-model', undefined, 'anthropic-messages')
     expect((model as { compat?: unknown }).compat).toBeUndefined()
   })
 
   it('does not set store compat when the api is unspecified', () => {
     const model = buildCustomEndpointModelDef('some-model')
     expect((model as { compat?: unknown }).compat).toBeUndefined()
+  })
+})
+
+describe('applyModelOverrides – a model the SDK owns', () => {
+  // A built-in provider's catalog entry: everything on it comes from the SDK,
+  // and only what the user wrote on the connection's model entry may win.
+  const catalogModel = {
+    id: 'deepseek-v4-flash',
+    name: 'DeepSeek V4 Flash',
+    provider: 'deepseek',
+    reasoning: true,
+    input: ['text'],
+    contextWindow: 128_000,
+    maxTokens: 8_192,
+    compat: { supportsDeveloperRole: true },
+  }
+
+  it('returns the model untouched when the connection says nothing', () => {
+    expect(applyModelOverrides(catalogModel, undefined)).toBe(catalogModel)
+  })
+
+  it('lets an explicit image-support statement win over the catalog', () => {
+    const enabled = applyModelOverrides(catalogModel, { supportsImages: true })
+    expect(enabled.input).toEqual(['text', 'image'])
+    // The catalog's own fields stay as they are.
+    expect(enabled.name).toBe('DeepSeek V4 Flash')
+    expect(enabled.provider).toBe('deepseek')
+    expect(enabled.contextWindow).toBe(128_000)
+
+    expect(applyModelOverrides(catalogModel, { supportsImages: false }).input).toEqual(['text'])
+  })
+
+  it('leaves the SDK input flag alone when the user did not write one', () => {
+    const overridden = applyModelOverrides(catalogModel, { contextWindow: 262_144 })
+    expect(overridden.input).toEqual(['text'])
+    expect(overridden.contextWindow).toBe(262_144)
+  })
+
+  it('translates supportsThinking to the SDK reasoning flag', () => {
+    expect(applyModelOverrides(catalogModel, { supportsThinking: false }).reasoning).toBe(false)
+  })
+
+  it('merges compat over the model’s own instead of replacing it', () => {
+    const overridden = applyModelOverrides(catalogModel, {
+      compat: { maxTokensField: 'max_tokens' },
+    })
+    expect(overridden.compat).toEqual({
+      supportsDeveloperRole: true,
+      maxTokensField: 'max_tokens',
+    })
+  })
+
+  it('does not mutate the model it was given', () => {
+    const before = { ...catalogModel, input: [...catalogModel.input] }
+    applyModelOverrides(catalogModel, { supportsImages: true, contextWindow: 1 })
+    expect(catalogModel).toEqual(before)
   })
 })

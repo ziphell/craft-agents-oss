@@ -7,6 +7,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
+import type { TabBelongsTo } from '@craft-agent/shared/protocol'
 
 const CHANNELS = {
   NAVIGATE: 'browser-toolbar:navigate',
@@ -15,15 +16,46 @@ const CHANNELS = {
   RELOAD: 'browser-toolbar:reload',
   STOP: 'browser-toolbar:stop',
   MENU_GEOMETRY: 'browser-toolbar:menu-geometry',
+  SHOW_ERROR_PAGE: 'browser-toolbar:show-error-page',
   FORCE_CLOSE_MENU: 'browser-toolbar:force-close-menu',
   HIDE: 'browser-toolbar:hide',
   DESTROY: 'browser-toolbar:destroy',
+  MINIMIZE: 'browser-toolbar:minimize',
+  MAXIMIZE: 'browser-toolbar:maximize',
   STATE_UPDATE: 'browser-toolbar:state-update',
-  THEME_COLOR: 'browser-toolbar:theme-color',
+  PICK_ELEMENT: 'browser-toolbar:pick-element',
+  CANCEL_PICK: 'browser-toolbar:cancel-pick',
+  TABS: 'browser-toolbar:tabs',
+  DEVTOOLS: 'browser-toolbar:devtools',
+  RECORD: 'browser-toolbar:record',
+  RECORD_CHUNK: 'browser-toolbar:record-chunk',
+  DOWNLOAD_REVEAL: 'browser-toolbar:download-reveal',
+  RAIL_TOGGLE: 'browser-toolbar:rail-toggle',
 } as const
 
 // Instance ID is passed via query parameter by BrowserPaneManager
 const instanceId = new URLSearchParams(location.search).get('instanceId') || ''
+
+/**
+ * The last state the host pushed, and who wants the next one.
+ *
+ * The host pushes from its own side — on a tab being added, on a navigation, on the
+ * window being shown — and one of those lands before this document's React has
+ * subscribed (`onStateUpdate` runs in a mount effect, which is later than the load the
+ * host replays on, especially in dev). A push nobody hears is a push that never
+ * happened: that is exactly how a window opened from the app comes up with an empty tab
+ * rail — the rail is told which tabs exist rather than counting them, so no push means
+ * no tabs. This listener is registered while the preload runs, before any document
+ * script, so nothing is missed; a subscriber is handed the last state immediately, and
+ * the state is kept here rather than fetched so a late mount costs no round trip.
+ */
+let lastState: unknown
+const stateListeners = new Set<(state: unknown) => void>()
+
+ipcRenderer.on(CHANNELS.STATE_UPDATE, (_event, state) => {
+  lastState = state
+  for (const listener of stateListeners) listener(state)
+})
 
 contextBridge.exposeInMainWorld('browserToolbar', {
   instanceId,
@@ -33,17 +65,107 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   reload: () => ipcRenderer.invoke(CHANNELS.RELOAD, instanceId),
   stop: () => ipcRenderer.invoke(CHANNELS.STOP, instanceId),
   setMenuGeometry: (open: boolean, height = 0) => ipcRenderer.invoke(CHANNELS.MENU_GEOMETRY, instanceId, open, height),
+  /**
+   * Ask the host to render the built-in error page into the tab that failed.
+   *
+   * The copy travels with the call — this document is the side that has i18n, and the
+   * main process owns the page and where it goes.
+   */
+  showErrorPage: (copy: { message: string; url: string; retry: string }) =>
+    ipcRenderer.invoke(CHANNELS.SHOW_ERROR_PAGE, instanceId, copy),
   hideWindow: () => ipcRenderer.invoke(CHANNELS.HIDE, instanceId),
   closeWindowEntirely: () => ipcRenderer.invoke(CHANNELS.DESTROY, instanceId),
+  /**
+   * The window's own minimize and maximize/restore.
+   *
+   * The window is chromeless, so it has no OS caption buttons — these are its own. The
+   * maximize state is not answered here: it comes back through `onStateUpdate` (the window
+   * can also be maximized from outside the bar), and the button draws from that.
+   */
+  minimize: () => ipcRenderer.invoke(CHANNELS.MINIMIZE, instanceId),
+  toggleMaximize: () => ipcRenderer.invoke(CHANNELS.MAXIMIZE, instanceId),
+  /**
+   * Turn the window's element picker on — and leave it on.
+   *
+   * Resolves as soon as the mode is on, not when something happens: the person keeps
+   * clicking and boxing (and keeps moving between the window's tabs while they do).
+   * A selection shows the bar — at the selection's bottom-left corner, in the app's
+   * accent like the frame and the name — and its one button hands the selection to the
+   * conversation. Each pick arrives on the host side as an `add-to-conversation`
+   * action; nothing is written before that. Page clicks are suppressed for as long as
+   * the mode is on.
+   *
+   * `cancelPick` turns it off again. Escape in the page does the same.
+   *
+   * `labels` are the bar's word — in this renderer's language, since the page has no
+   * i18n.
+   */
+  pickElement: (labels?: { add: string }) =>
+    ipcRenderer.invoke(CHANNELS.PICK_ELEMENT, instanceId, labels),
+  cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
+  /**
+   * Manage this window's own tabs from the rail: switch to one, close one, add one,
+   * or take a locked tab back (`release`). The host owns what a tab is, so nothing
+   * about it travels back here except through `onStateUpdate`.
+   *
+   * `work` belongs to `new` alone, and only when the tab is being opened **for** a piece
+   * of work rather than as one more of the person's own: the `+` on a section header,
+   * which asks for a tab in that conversation's section.
+   */
+  tabAction: (
+    action: 'activate' | 'close' | 'new' | 'release',
+    tabId?: string,
+    work?: TabBelongsTo | null,
+  ) => ipcRenderer.invoke(CHANNELS.TABS, instanceId, action, tabId, work),
+  /**
+   * Open the developer tools for the tab on screen, or close them if they are up.
+   *
+   * They belong to the tab rather than the window: switching or closing that tab puts
+   * them away, and whether they are up comes back through `onStateUpdate` — the tools
+   * can also be closed from their own window, which this side never sees otherwise.
+   */
+  toggleDevTools: () => ipcRenderer.invoke(CHANNELS.DEVTOOLS, instanceId),
+  /**
+   * The record button.
+   *
+   * `start` arms a recording of the tab on screen — the host opens the file, in the
+   * person's downloads folder — and answers with what the button should draw. The
+   * extension is the container the caller is about to record into (an `mp4`): the file
+   * is named before the picture exists, so the two have to be decided together.
+   * The picture is not taken here: right after this, this renderer asks for display
+   * media and the host hands it that exact tab, which is the only thing it hands back.
+   * `stop` closes the file and answers with where it went.
+   */
+  startRecording: (extension?: string) => ipcRenderer.invoke(CHANNELS.RECORD, instanceId, 'start', extension),
+  stopRecording: () => ipcRenderer.invoke(CHANNELS.RECORD, instanceId, 'stop'),
+  /**
+   * One encoded chunk of the recording, in the order produced.
+   *
+   * `send` rather than `invoke`: there is nothing to say back, and a dozen answers to
+   * "did you write it" per recording would be a second thing to keep in order. The
+   * host appends each one as it arrives, and the stop that follows the last chunk is
+   * on the same channel, so it cannot overtake it.
+   */
+  sendRecordingChunk: (chunk: ArrayBuffer) => ipcRenderer.send(CHANNELS.RECORD_CHUNK, instanceId, chunk),
+  /**
+   * Show a finished download in its folder.
+   *
+   * The path is the one the state push carried for that download — the host only reveals
+   * a path it recorded itself, so this cannot be turned into "open anything".
+   */
+  revealDownload: (savePath: string) => ipcRenderer.invoke(CHANNELS.DOWNLOAD_REVEAL, instanceId, savePath),
+  /**
+   * Fold this window's rail away, or bring it back.
+   *
+   * The rail's room is part of the tab area, so this is not a renderer's decision to keep: the
+   * host flips its own flag, re-places the page and tells us the new state. Not remembered
+   * outside the window — a window opened later starts with the rail out.
+   */
+  toggleRailCollapsed: () => ipcRenderer.invoke(CHANNELS.RAIL_TOGGLE, instanceId),
   onStateUpdate: (callback: (state: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: unknown) => callback(state)
-    ipcRenderer.on(CHANNELS.STATE_UPDATE, handler)
-    return () => { ipcRenderer.removeListener(CHANNELS.STATE_UPDATE, handler) }
-  },
-  onThemeColor: (callback: (color: string | null) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, color: string | null) => callback(color)
-    ipcRenderer.on(CHANNELS.THEME_COLOR, handler)
-    return () => { ipcRenderer.removeListener(CHANNELS.THEME_COLOR, handler) }
+    if (lastState !== undefined) callback(lastState)
+    stateListeners.add(callback)
+    return () => { stateListeners.delete(callback) }
   },
   onForceCloseMenu: (callback: (payload: { reason?: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: { reason?: string }) => callback(payload)

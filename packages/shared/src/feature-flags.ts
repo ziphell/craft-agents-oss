@@ -49,7 +49,7 @@ export function isCraftAgentsCliEnabled(): boolean {
 }
 
 /**
- * Runtime-evaluated check for embedded server settings page.
+ * Runtime-evaluated check for embedded server settings design.
  *
  * Defaults to disabled. Override with CRAFT_FEATURE_EMBEDDED_SERVER=1|0.
  */
@@ -57,23 +57,6 @@ export function isEmbeddedServerEnabled(): boolean {
   const override = parseBooleanEnv(getEnv('CRAFT_FEATURE_EMBEDDED_SERVER'));
   if (override !== undefined) return override;
   return false;
-}
-
-/**
- * Runtime-evaluated check for Pages sharing (Cloudflare publication).
- *
- * Server-evaluated: the renderer learns it via `pages:getShareCapabilities`,
- * never from its own process.env. Gates publish/update only — unpublish stays
- * available regardless, so disabling the flag never strands a published page.
- *
- * Defaults to ENABLED as of 2026-08-27 (the Cloudflare publication Worker is
- * deployed and verified live). Publishing sends the page bundle to Cloudflare,
- * so this is opt-out: set CRAFT_FEATURE_PAGES_SHARING=0 to hide the Share UI.
- */
-export function isPagesSharingEnabled(): boolean {
-  const override = parseBooleanEnv(getEnv('CRAFT_FEATURE_PAGES_SHARING'));
-  if (override !== undefined) return override;
-  return true;
 }
 
 export const FEATURE_FLAGS = {
@@ -97,20 +80,11 @@ export const FEATURE_FLAGS = {
     return isCraftAgentsCliEnabled();
   },
   /**
-   * Enable embedded server settings page.
+   * Enable embedded server settings design.
    *
    * Defaults to disabled. Override with CRAFT_FEATURE_EMBEDDED_SERVER=1|0.
    */
   get embeddedServer(): boolean {
     return isEmbeddedServerEnabled();
-  },
-  /**
-   * Enable Pages sharing (publish to Cloudflare).
-   *
-   * Defaults to ENABLED (Worker deployed 2026-08-27). Opt out with
-   * CRAFT_FEATURE_PAGES_SHARING=0.
-   */
-  get pagesSharing(): boolean {
-    return isPagesSharingEnabled();
   },
 } as const;

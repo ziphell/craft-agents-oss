@@ -1,11 +1,17 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAtomValue } from 'jotai'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { useAppShellContext, useSession } from '@/context/AppShellContext'
 import { cn } from '@/lib/utils'
+import { getFileManagerName } from '@/lib/platform'
 import { SessionFilesSection } from '../right-sidebar/SessionFilesSection'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
+// A type, so it is erased: the barrel reaches node fs, and a value imported from it could not be
+// bundled for the renderer.
+import type { LoadedProject } from '@craft-agent/shared/projects/types'
 
 interface SessionInfoPopoverProps {
   sessionId: string
@@ -104,10 +110,45 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
   const { onRenameSession } = useAppShellContext()
   const [name, setName] = React.useState('')
   const renameTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fileManagerName = getFileManagerName()
+  // A remote window's files are on the hub, so this machine cannot reveal them.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
+
+  // The project this conversation belongs to (undefined = unbound). When it resolves, the panel
+  // gains a second tab: the project's own folder beside the session's.
+  const workspaceId = session?.workspaceId
+  const projectId = session?.projectId
+  const [project, setProject] = React.useState<LoadedProject | null>(null)
+  const [tab, setTab] = React.useState<'session' | 'project'>('session')
 
   React.useEffect(() => {
     setName(session?.name || '')
   }, [session?.name])
+
+  // A different conversation means starting back on its session files.
+  React.useEffect(() => {
+    setTab('session')
+  }, [sessionId])
+
+  // Resolve the bound project (id → config + folder paths). Failing to resolve simply means no
+  // project tab — the panel stays a plain session-files view.
+  React.useEffect(() => {
+    if (!workspaceId || !projectId) {
+      setProject(null)
+      return
+    }
+    let cancelled = false
+    window.electronAPI.getProject(workspaceId, projectId)
+      .then((result) => {
+        if (!cancelled) setProject((result as LoadedProject | null) ?? null)
+      })
+      .catch(() => {
+        if (!cancelled) setProject(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId, projectId])
 
   React.useEffect(() => {
     return () => {
@@ -133,6 +174,8 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
     }, 500)
   }, [onRenameSession, sessionId])
 
+  const revealFolderPath = tab === 'session' ? sessionFolderPath : project?.folderPath
+
   return (
     <div className="h-full min-h-0 flex flex-col">
       <div className="shrink-0 p-3 border-b border-border/50">
@@ -148,14 +191,79 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
           />
         </div>
       </div>
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <SessionFilesSection
-          sessionId={sessionId}
-          sessionFolderPath={sessionFolderPath}
-          hideHeader={false}
-          className="h-full min-h-0"
-        />
-      </div>
+      {project && workspaceId ? (
+        <>
+          <div className="shrink-0 flex items-center justify-between gap-2 border-b border-border/50 px-2 select-none">
+            <div className="flex items-center gap-1">
+              <InfoTabButton active={tab === 'session'} onClick={() => setTab('session')}>
+                {t("chat.sessionFiles")}
+              </InfoTabButton>
+              <InfoTabButton active={tab === 'project'} onClick={() => setTab('project')}>
+                {t("chat.projectFiles")}
+              </InfoTabButton>
+            </div>
+            {canRevealLocally && revealFolderPath && (
+              <button
+                type="button"
+                // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
+                onClick={() => window.electronAPI.openFile(revealFolderPath)}
+                className="shrink-0 text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
+              >
+                {t("chat.viewInFileManager", { fileManager: fileManagerName })}
+              </button>
+            )}
+          </div>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            {tab === 'session' ? (
+              <SessionFilesSection
+                sessionId={sessionId}
+                sessionFolderPath={sessionFolderPath}
+                hideHeader
+                className="h-full min-h-0"
+              />
+            ) : (
+              <SessionFilesSection
+                projectFolder={{
+                  // The conversation's workspace id, not `project.workspaceId`: that field is the
+                  // workspace *folder name* (basename of its root path), which the RPC layer cannot
+                  // resolve back to a workspace — the project files panel then silently listed nothing.
+                  workspaceId,
+                  projectSlug: project.config.slug,
+                  folderPath: project.folderPath,
+                }}
+                hideHeader
+                className="h-full min-h-0"
+              />
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <SessionFilesSection
+            sessionId={sessionId}
+            sessionFolderPath={sessionFolderPath}
+            hideHeader={false}
+            className="h-full min-h-0"
+          />
+        </div>
+      )}
     </div>
+  )
+}
+
+function InfoTabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'px-2.5 py-1.5 text-xs rounded-t-md border-b-2 transition-colors',
+        active
+          ? 'border-foreground/80 text-foreground'
+          : 'border-transparent text-foreground/60 hover:text-foreground/80'
+      )}
+    >
+      {children}
+    </button>
   )
 }

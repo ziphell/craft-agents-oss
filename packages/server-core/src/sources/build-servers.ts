@@ -37,13 +37,19 @@ export async function buildServersFromSources(
   const credManager = getSourceCredentialManager()
   const serverBuilder = getSourceServerBuilder()
 
-  // Load credentials for all sources
+  // Load credentials for all sources. Email sources keep their login in the
+  // basic-credential slot, so they take the mail-specific reader instead.
   const sourcesWithCreds: SourceWithCredential[] = await Promise.all(
-    sources.map(async (source) => ({
-      source,
-      token: await credManager.getToken(source),
-      credential: await credManager.getApiCredential(source),
-    }))
+    sources.map(async (source) => {
+      if (source.config.type === 'email') {
+        return { source, emailCredential: await credManager.getEmailCredential(source) }
+      }
+      return {
+        source,
+        token: await credManager.getToken(source),
+        credential: await credManager.getApiCredential(source),
+      }
+    })
   )
   span.mark('credentials.loaded')
 
@@ -105,6 +111,15 @@ export async function buildServersFromSources(
   // expired-but-refreshable; in that case the refresh cycle handles recovery
   // and we must NOT prematurely mark the source as needing re-auth (#710).
   for (const error of result.errors) {
+    if (error.error === SERVER_BUILD_ERRORS.CREDENTIALS_NEEDED) {
+      const source = sources.find(s => s.config.slug === error.sourceSlug)
+      if (source) {
+        credManager.markSourceNeedsReauth(source, 'Mailbox credentials missing')
+        log.info(`Source ${error.sourceSlug}: mailbox credentials missing`)
+      }
+      continue
+    }
+
     if (error.error !== SERVER_BUILD_ERRORS.AUTH_REQUIRED) continue
     const source = sources.find(s => s.config.slug === error.sourceSlug)
     if (!source) continue

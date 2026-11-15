@@ -1,14 +1,29 @@
-import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
-import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
+import type { EventSink, RpcServer, DeviceFsRequest } from '@craft-agent/server-core/transport'
+import { CLIENT_BROWSER_INVOKE, CLIENT_COMPUTER_INVOKE, CLIENT_DEVICE_EXEC, CLIENT_DEVICE_FS } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
+import { RemoteComputerPaneManager } from './RemoteComputerPaneManager'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { createScopedLogger, CONSOLE_LOGGER, type PlatformServices, type Logger } from '@craft-agent/server-core/runtime'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, posix, resolve, win32 } from 'path'
+import { hostname } from 'node:os'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, type ChatOptions, getPermissionMode, setPermissionMode, setGuardedModeActiveResolver, clampPermissionMode, planExecutionMode, parsePermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
+  import { type AgentEvent, type ChatOptions, getPermissionMode, setPermissionMode, setGuardedModeActiveResolver, clampPermissionMode, planExecutionMode, parsePermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, type ComputerPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive, resolveToolName, setBrowserProfilePromptState, setBrowserHostState, setRecordingHostState, clearBrowserProfilePromptState, clearBrowserHostState, clearRecordingHostState, type DeviceToolFns, type DeviceToolInfo, type DeviceExecArgs, type DeviceExecResult, type DeviceFsArgs, type DeviceFsResult } from '@craft-agent/shared/agent'
+import type { BrowserTabInfo } from '@craft-agent/shared/agent/browser-pane'
+import type { BrowserInstanceInfo, BrowserTabSummary, TabBelongsTo, ConnectedClientInfo } from '@craft-agent/shared/protocol'
+import { sameTask, workOfSession } from '@craft-agent/shared/protocol'
+import { drawioDocument, drawioPages } from '@craft-agent/shared/drawio/types'
+import { officeMarkdownShot, officePageCapture, officeWebShot, type OfficeApp } from '@craft-agent/office-host'
+import {
+  pickCommandTarget,
+  whyTabIsLocked,
+  whyTabIsNotMineToClose,
+  whyTabIsOutOfReach,
+  whyThereIsNoWorkingTab,
+} from '../domain/tab-access'
+import { HubDeviceRegistry } from '../domain/hub-device-registry'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -20,7 +35,7 @@ import {
   type BackendHostRuntimeContext,
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
-import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName } from '@craft-agent/shared/config'
+import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName, toCustomEndpointModels, getBrowserProfiles, resolveBrowserProfileRef, resolveConversationBrowserProfileId, DEFAULT_BROWSER_PROFILE_ID, getDeviceId } from '@craft-agent/shared/config'
 import type { MidStreamBehavior } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
@@ -33,6 +48,7 @@ import {
   loadPreferences,
   migrateLegacyCredentials,
   migrateLegacyLlmConnectionsConfig,
+  migrateLegacyRemoteWorkspaces,
   migrateOrphanedDefaultConnections,
   MODEL_REGISTRY,
   type Workspace,
@@ -40,6 +56,10 @@ import {
 } from '@craft-agent/shared/config'
 import type { ActiveSessionInfo, ContextUsageSnapshot, PermissionRisk, SessionProcessingStatus } from '@craft-agent/core/types'
 import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
+import { loadProjectById, loadProjectConfig } from '@craft-agent/shared/projects'
+import { formatChildReport, type ChildReportEntry } from './child-report'
+import { formatRunReport, type RunReportEntry } from './run-report'
+import type { RunSettledInfo } from '../tasks/TaskRunner'
 import {
   // Session persistence functions
   listSessions as listStoredSessions,
@@ -67,16 +87,23 @@ import {
   type SessionBundle,
   type DispatchMode,
   type StoredSession,
+  takeMessagePage,
+  type MessagePageOptions,
   type StoredMessage,
   type SessionMetadata,
   type SessionStatus,
+  type SessionMode,
   type SessionHeader,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
 import { serializeHeaderCredential, loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, TokenRefreshManager } from '@craft-agent/shared/sources'
 import { listTaskSlugs, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
+import { createDrawioCliFns } from '@craft-agent/shared/drawio/cli-fns'
+import { createRecordingCliFns } from '@craft-agent/shared/recording/cli-fns'
+import { OFFICE_DOMAINS } from '@craft-agent/session-tools-core'
 import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
-import { buildPagesToolCallbacks } from '../pages/tool-callbacks'
+import { buildTweaksToolCallbacks } from '../tweaks/tool-callbacks'
+import { requestDirtyDocumentFlush, requestOfficeEdit } from '../handlers/rpc/office'
 import { buildDecisionToolCallbacks } from '../decisions/tool-callbacks'
 import { buildServersFromSources as buildServersFromSourcesShared } from '../sources/build-servers'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
@@ -89,10 +116,10 @@ import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
-import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
+import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath, expandPath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
-import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
+import { getToolIconsDir, getMiniModel, modelSupportsImages, resolveImageModel } from '@craft-agent/shared/config'
 import { getDefaultSummarizationModel } from '@craft-agent/shared/config/models'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
@@ -118,7 +145,7 @@ import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAtta
 import { validateArchiveTarget } from './archive-guards'
 
 // Import from server-core domain utilities
-import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
+import { sanitizeForTitle, shouldActivateBrowserOverlay, browserToolOpensWindow, rollbackFailedBranchCreation, releaseBrowserOnForcedStop } from '@craft-agent/server-core/domain'
 import { resizeImageForAPI, resizeIconBuffer } from '@craft-agent/server-core/services'
 export { sanitizeForTitle }
 
@@ -185,6 +212,18 @@ export const AGENT_FLAGS = {
   /** Default modes enabled for new sessions */
   defaultModesEnabled: true,
 } as const
+
+/**
+ * Which editor draws this file — the same four the export doors classify, minus the one that has no
+ * editor to speak of (a `.pdf` is drawn by pdfium, not by a window).
+ */
+function captureAppFor(path: string): Exclude<OfficeApp, 'pdf'> | null {
+  const ext = path.split('.').pop()?.toLowerCase() ?? ''
+  if (ext === 'docx' || ext === 'doc' || ext === 'odt') return 'docs'
+  if (ext === 'xlsx' || ext === 'xls' || ext === 'ods') return 'sheets'
+  if (ext === 'pptx' || ext === 'ppt' || ext === 'odp') return 'slides'
+  return null
+}
 
 const MAX_ADMIN_REMEMBER_MINUTES = 60
 const MAX_ANNOTATIONS_PER_MESSAGE = 200
@@ -384,8 +423,8 @@ async function saveClaudeTurnAnchor(
 /**
  * Session-flavored wrapper around the shared builder: keeps the ~7 existing
  * call sites unchanged while routing logs through sessionLog. The
- * implementation lives in ../sources/build-servers.ts so the pages action
- * executor uses the exact same credential path.
+ * implementation lives in ../sources/build-servers.ts so every caller uses the
+ * exact same credential path.
  */
 async function buildServersFromSources(
   sources: LoadedSource[],
@@ -518,6 +557,7 @@ async function resolveToolDisplayMeta(
           'update_user_preferences': 'Update Preferences',
           'send_developer_feedback': 'Send Feedback',
           'browser_tool': 'Browser',
+          'device_tool': 'Device',
         },
       }
 
@@ -525,10 +565,10 @@ async function resolveToolDisplayMeta(
       if (internalServer) {
         const displayName = internalServer[toolSlug]
         if (displayName) {
-          const normalizedBrowserTool = normalizeBrowserToolName(toolSlug)
+          const isBrowserTool = resolveToolName(toolSlug) === 'browser'
           return {
             displayName,
-            iconDataUrl: normalizedBrowserTool ? await getBrowserToolIconDataUrl() : undefined,
+            iconDataUrl: isBrowserTool ? await getBrowserToolIconDataUrl() : undefined,
             category: 'native' as const,
           }
         }
@@ -611,17 +651,11 @@ async function resolveToolDisplayMeta(
     }
   }
 
-  // Native browser tool names (with Chrome icon)
-  const normalizedBrowserToolName = normalizeBrowserToolName(toolName)
-  if (normalizedBrowserToolName) {
-    const browserDisplayName = normalizedBrowserToolName
-      .split('_')
-      .map((part, index) => (index === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)))
-      .join(' ')
-      .replace(/^browser\s+/i, 'Browser ')
-
+  // The browser tool's own name (with the Chrome icon). Its canonical name is the label: the
+  // legacy split names answer "browser" too, and they are the same tool.
+  if (resolveToolName(toolName) === 'browser') {
     return {
-      displayName: browserDisplayName,
+      displayName: 'Browser Tool',
       iconDataUrl: await getBrowserToolIconDataUrl(),
       category: 'native' as const,
     }
@@ -644,6 +678,16 @@ async function resolveToolDisplayMeta(
     'NotebookEdit': 'Edit Notebook',
     'KillShell': 'Kill Shell',
     'TaskOutput': 'Task Output',
+    // One media file: generation, local transforms, and frames out of a recording.
+    'media_tool': 'Media',
+    // Recordings into words, on this machine or through the account the person chose.
+    'asr_tool': 'Transcription',
+    // Drawn by the app's own drawio — no window of the person's involved.
+    'drawio_tool': 'Draw.io',
+    'markdown_tool': 'Markdown',
+    'html_tool': 'HTML',
+    // The document doors, named by what they hold — read from the table, so a rename cannot drift.
+    ...Object.fromEntries(OFFICE_DOMAINS.map((door) => [door.toolName, door.label])),
   }
 
   const nativeDisplayName = nativeToolNames[toolName]
@@ -738,6 +782,8 @@ interface ManagedSession {
   archivedAt?: number
   /** Permission mode for this session ('safe', 'ask', 'guarded', 'allow-all') */
   permissionMode?: PermissionMode
+  /** What this conversation is (absent = ordinary; `bot` = the assistant). */
+  role?: 'bot'
   /** Previous permission mode (preserved across restarts for session_state modeTransition context) */
   previousPermissionMode?: PermissionMode
   /** Centralized MCP client pool for this session's source connections */
@@ -779,6 +825,10 @@ interface ManagedSession {
   labels?: string[]
   // Workspace-scoped project binding (undefined = unbound)
   projectId?: string
+  // The layer this conversation is working in (undefined = no mode).
+  // Its home is the owning project's folder, and it only feeds the prompt block
+  // added for this conversation — it changes no tool behavior. One at a time.
+  mode?: SessionMode
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
   // Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus
@@ -791,6 +841,9 @@ interface ManagedSession {
   taskNodeId?: string
   // Tasks Conductor: total DAG node count (orchestrator only) — stable board progress denominator
   taskNodeCount?: number
+  // Tasks Conductor: gates of the active run waiting on a person (orchestrator only) — drives the
+  // board's "needs you" badge and the one notification about work *stopping* rather than arriving
+  taskAwaitingApproval?: number
   // Tasks Conductor: hidden generate-time orchestrator awaiting validated adoption (off the board)
   taskDraft?: boolean
   // Working directory for this session (used by agent for bash commands)
@@ -804,9 +857,14 @@ interface ManagedSession {
   sharedId?: string
   // Model to use for this session (overrides global config if set)
   model?: string
-  // LLM connection slug for this session (locked after first message)
+  // LLM connection slug for this session (auto-pinned on first agent creation)
   llmConnection?: string
-  // Whether the connection is locked (cannot be changed after first agent creation)
+  // Browser profile this conversation's browser work runs in (one window per profile). Unset = the workspace's default,
+  // then the built-in `default` (see `browser-profiles.ts`).
+  browserProfile?: string
+  // Whether the connection is pinned. Only guards *implicit* rewrites (model-change
+  // events carrying a connection, task reconcile) — explicit user switches go
+  // through setSessionConnection() and are honored at any point in the session.
   connectionLocked?: boolean
   // Thinking level for this session ('off', 'think', 'max')
   thinkingLevel?: ThinkingLevel
@@ -1158,6 +1216,14 @@ function managedToSession(m: ManagedSession, overrides?: Partial<Session>): Sess
 // Performance: Batch IPC delta events to reduce renderer load
 const DELTA_BATCH_INTERVAL_MS = 50  // Flush batched deltas every 50ms
 
+/**
+ * How long finished child tasks are collected before the assistant is told.
+ *
+ * Long enough that three tasks finishing together are one interruption rather than three, short
+ * enough that it still reads as "the thing you asked about just came back".
+ */
+const CHILD_REPORT_DELAY_MS = 1500
+
 interface PendingDelta {
   delta: string
   turnId?: string
@@ -1247,6 +1313,18 @@ export class SessionManager implements ISessionManager {
   // Delta batching for performance - reduces IPC events from 50+/sec to ~20/sec
   private pendingDeltas: Map<string, PendingDelta> = new Map()
   private deltaFlushTimers: Map<string, NodeJS.Timeout> = new Map()
+  // Child tasks reporting back to the assistant that started them.
+  private reportedChildren: Map<string, number> = new Map()
+  private pendingChildReports: Map<string, Map<string, string>> = new Map()
+  /**
+   * Task **graphs** that ended, waiting to be reported to the assistant that created them.
+   *
+   * Kept apart from `pendingChildReports` because the two are different facts (a conversation's
+   * last words vs a graph's verdict) with different dedupe keys — but drained by the same timer
+   * and sent as one message, so three things finishing together is still one interruption.
+   */
+  private pendingRunReports: Map<string, Map<string, RunReportEntry>> = new Map()
+  private childReportTimers: Map<string, NodeJS.Timeout> = new Map()
   // Config watchers for live updates (sources, etc.) - one per workspace
   private configWatchers: Map<string, ConfigWatcher> = new Map()
   // Automation systems for workspace event automations - one per workspace (includes scheduler, diffing, and handlers)
@@ -1785,132 +1863,525 @@ export class SessionManager implements ISessionManager {
   }
 
   private browserPaneManager: IBrowserPaneManager | null = null
-  private enqueuePageThumbnailFn?: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void
+  private installTweaksFn?: (workspaceId: string) => void
   private rpcServer: RpcServer | null = null
-  private remoteBpms = new Map<string, RemoteBrowserPaneManager>()
-  /** Pinned desktop client per session for `client:browser:invoke` routing. */
-  private browserHostByCanvas = new Map<string, string>()
+  /** Durable record of devices that have connected. */
+  private deviceRegistry = new HubDeviceRegistry()
+  /** Browser bridges for one **named** device, for `device_tool`'s nested `browser`. */
+  private remoteDeviceBpms = new Map<string, RemoteBrowserPaneManager>()
   private eventSink: EventSink | null = null
 
   setEventSink(sink: EventSink): void {
     this.eventSink = sink
   }
 
+  /**
+   * The desktop this server can drive, when it has one.
+   *
+   * Supplied by the application rather than opened here: only the process that owns the machine's
+   * accessibility session can drive its pointer, and a server without one must not advertise the
+   * capability at all. `null` is a real answer — the `computer` tool then refuses, and no device
+   * lists it as offered.
+   */
+  private computerPaneFnsForSession: ((sessionId: string) => Promise<ComputerPaneFns>) | null = null
+
+  /** One remote bridge per device connection; its desktop is that device's, not this process's. */
+  private readonly remoteComputerPanes = new Map<string, RemoteComputerPaneManager>()
+
+  private cacheRemoteComputerPane(clientId: string): RemoteComputerPaneManager {
+    const existing = this.remoteComputerPanes.get(clientId)
+    if (existing) return existing
+    if (!this.rpcServer) throw new Error('Devices are not reachable from this server.')
+    const pane = new RemoteComputerPaneManager({
+      rpcServer: this.rpcServer,
+      getHostClient: () => clientId,
+    })
+    this.remoteComputerPanes.set(clientId, pane)
+    return pane
+  }
+
+  /**
+   * Supplied with the session, not once: a desktop is held by **one** session at a time, so the
+   * provider is where that session is named (and where a second one is refused).
+   */
+  setComputerPaneFns(provider: ((sessionId: string) => Promise<ComputerPaneFns>) | null): void {
+    this.computerPaneFnsForSession = provider
+  }
+
+  private async requireComputerPaneFns(sessionId: string): Promise<ComputerPaneFns> {
+    if (!this.computerPaneFnsForSession) {
+      throw new Error('No desktop is available to drive from this server.')
+    }
+    return await this.computerPaneFnsForSession(sessionId)
+  }
+
   setBrowserPaneManager(bpm: IBrowserPaneManager): void {
     this.browserPaneManager = bpm
-    bpm.setSessionPathResolver((sessionId) => this.getSessionPath(sessionId))
   }
 
   /**
-   * Inject the page thumbnail capturer (Electron main only — needs a
-   * BrowserWindow). Headless/WebUI hosts never call this, so
-   * {@link enqueuePageThumbnail} no-ops and tiles fall back to the placeholder.
+   * Inject the tweaks installer (Electron main only — the browser window that runs them is
+   * there, and the injector lives beside it). Headless/WebUI hosts never call this, so
+   * {@link installTweaks} no-ops: a tweak is only ever written to disk there.
    */
-  setPageThumbnailer(fn: (req: { workspaceId: string; workspaceRootPath: string; slug: string }) => void): void {
-    this.enqueuePageThumbnailFn = fn
+  setTweaksInstaller(fn: (workspaceId: string) => void): void {
+    this.installTweaksFn = fn
   }
 
   /**
-   * Request a (re)capture of a page's preview poster. Fire-and-forget: the
-   * injected capturer queues it, writes thumbnail.jpg, and stamps page.json
-   * (which broadcasts pages:changed). No-op when no capturer is injected.
+   * Re-install a workspace's tweaks for the documents to come. Called when a tweak changes on
+   * disk — the agent's tools, a hand edit, or the UI's switch — because the rules changed and
+   * the installed registration is what a new document is given. No-op with no installer.
    */
-  enqueuePageThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void {
-    this.enqueuePageThumbnailFn?.({ workspaceId, workspaceRootPath, slug })
+  installTweaks(workspaceId: string): void {
+    this.installTweaksFn?.(workspaceId)
   }
 
   /**
-   * Provide the WS RPC server so remote clients can host browser tools.
+   * Provide the WS RPC server so `device_tool` can reach other machines.
    *
-   * When called, the SM activates the remote-bridge code path: per-session
-   * `RemoteBrowserPaneManager` instances are created lazily by
-   * {@link getBrowserPaneManagerForSession}, and the browser-host client is
-   * resolved via {@link getBrowserHostClient} with capability-aware fallback.
-   *
-   * Local Electron callers do not need to call this — they already
-   * call `setBrowserPaneManager(bpm)` with the in-process BPM, which takes
-   * precedence over the remote bridge in {@link getBrowserPaneManagerForSession}.
+   * This is the *other* door: `browser_tool` runs on this process's own browser and never
+   * follows a connected client. A headless server (no browser of its own) simply has no
+   * `browser_tool`; naming a device through `device_tool` is the only way to browse elsewhere.
    */
   setRpcServer(server: RpcServer): void {
     this.rpcServer = server
-    sessionLog.info('[browser-pane] setRpcServer called — remote browser bridge is now available')
+    sessionLog.info('[browser-pane] setRpcServer called — devices are reachable')
+  }
+
+  /** Tests inject an in-memory registry so they never touch the person's config directory. */
+  setDeviceRegistry(registry: HubDeviceRegistry): void {
+    this.deviceRegistry = registry
   }
 
   /**
-   * Resolve the {@link IBrowserPaneManager} that owns the user's local browser
-   * for a given session. Returns:
+   * The browser that serves a session's `browser_*` tools: this process's own, or nothing.
    *
-   * 1. The locally-injected `browserPaneManager` when present (Electron client co-located
-   *    with the agent), regardless of session.
-   * 2. A session-bound {@link RemoteBrowserPaneManager} when `rpcServer` is set.
-   *    Cached in `remoteBpms` so repeat lookups don't allocate.
-   * 3. `null` when there's neither a local BPM nor an RPC server.
+   * Which client sent the last message is not a routing decision. Thin clients come and go, and a
+   * conversation that moved its browser to whoever spoke last would leave its tabs on the machine
+   * it left behind. Other machines' browsers are reached by naming them through `device_tool`,
+   * which is likewise the only door when this process has no browser at all.
    */
-  getBrowserPaneManagerForSession(sid: string): IBrowserPaneManager | null {
-    if (this.browserPaneManager) return this.browserPaneManager
-    if (!this.rpcServer) return null
+  getBrowserPaneManagerForSession(_sid: string): IBrowserPaneManager | null {
+    return this.browserPaneManager
+  }
 
-    const cached = this.remoteBpms.get(sid)
+  /**
+   * Called by the transport bootstrap on `onClientConnected`.
+   *
+   * A record exists for a machine that connected with its **own one-to-one device token**. The
+   * server token is the hub's own credential — a window, or a client that was handed the master
+   * token — and never makes a device row, no matter which machine it comes from.
+   *
+   * The record is written even when the device declares no tools: this machine may have turned
+   * device use off, which is shown on the hub as "not authorized" rather than hiding the device.
+   * This is the only place a record is created; listing devices never writes one, so deleting a
+   * device is final even while the machine is still linked.
+   */
+  onClientConnected(clientId: string): void {
+    const client = this.rpcServer?.getConnectedClients?.()
+      .find((candidate) => candidate.clientId === clientId)
+    if (!client || this.isLocalClient(clientId)) return
+    if (client.tokenKind !== 'device') return
+    if (!client.deviceId?.trim()) return
+    this.deviceRegistry.ensure({
+      deviceId: client.deviceId,
+      name: client.name,
+      platform: client.platform,
+      version: client.version,
+    })
+  }
+
+  /**
+   * Called by the transport bootstrap on `onClientDisconnected`. Drops the bridges held by
+   * `clientId` so the next `device_tool` call re-resolves the device (and says it is offline)
+   * rather than holding a socket-shaped memory of it.
+   */
+  onClientDisconnected(clientId: string): void {
+    for (const key of [...this.remoteDeviceBpms.keys()]) {
+      if (key.endsWith(`::${clientId}`)) this.remoteDeviceBpms.delete(key)
+    }
+  }
+
+  /** Whether `clientId` is one of this server's own windows rather than another machine. */
+  private isLocalClient(clientId: string): boolean {
+    return this.rpcServer?.isLocalClient?.(clientId) ?? false
+  }
+
+  // ---------------------------------------------------------------------------
+  // Devices — the machine-named door `device_tool` reaches through
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Every device this hub keeps a record for, online or offline, with the connections backing it
+   * right now.
+   *
+   * A row is a **record saved when a machine connected with its own device token**, not a picture
+   * of whatever connections happen to exist: the registry keeps it after the machine goes away,
+   * and deleting it is what stops the hub from using that machine. Records are written only in
+   * {@link onClientConnected}, never while listing. A link that used the server token, and a
+   * deleted device, stay out of the list; a device that turned its own authorization off stays in
+   * it with `deviceAllows: false`. Which install a machine is plays no part in it.
+   *
+   * A machine can hold several connections (an app-level link, a window, a reconnect mid-flight);
+   * they are one device because they share a device id. Which connection answers a call is decided
+   * in {@link resolveDevice}.
+   *
+   * Being connected is not the same as being usable: `deviceAllows` (the device-side switch)
+   * must be on, and only then is `available` true.
+   */
+  private deviceEntries(workspaceId?: string): Array<{
+    info: DeviceToolInfo
+    offered: DeviceToolInfo['offered']
+    clients: Array<{ clientId: string; workspaceId: string | null }>
+  }> {
+    const clients = this.rpcServer?.getConnectedClients?.() ?? []
+    const entries = new Map<string, {
+      info: DeviceToolInfo
+      offered: DeviceToolInfo['offered']
+      clients: Array<{ clientId: string; workspaceId: string | null }>
+    }>()
+
+    for (const client of clients) {
+      if (this.isLocalClient(client.clientId)) continue
+      // A browser tab has no stable device identity. It is a view of the hub, not a machine the
+      // agent can drive, so it must not create an ephemeral device row.
+      if (!client.deviceId?.trim()) continue
+
+      const id = client.deviceId
+      // What a link declares decides which tools exist; the folder authorization is what makes a
+      // connection declare them at all.
+      const offered = {
+        shell: client.capabilities.includes(CLIENT_DEVICE_EXEC),
+        files: client.capabilities.includes(CLIENT_DEVICE_FS),
+        browser: client.capabilities.includes(CLIENT_BROWSER_INVOKE),
+        // Served by the remote bridge only: a device that offers its desktop, not this process's.
+        computer: client.capabilities.includes(CLIENT_COMPUTER_INVOKE),
+      }
+      const allows = offered.shell || offered.files || offered.browser || offered.computer
+      // Rows are saved records, not a picture of the connections. A connection only annotates the
+      // record written when that machine connected as a device; a read must never create or
+      // resurrect one, so deleting a device stays deleted even while it is still linked.
+      const record = this.deviceRegistry.get(id)
+      if (!record) continue
+
+      const existing = entries.get(id)
+      const roots = this.deviceRoots(client)
+      // Only the listing that a session asked for can name a default: it is per (hub, workspace).
+      const defaultRoot = workspaceId ? this.deviceDefaultRoot(client, workspaceId) : undefined
+      if (existing) {
+        existing.offered.shell ||= offered.shell
+        existing.offered.files ||= offered.files
+        existing.offered.browser ||= offered.browser
+        existing.offered.computer ||= offered.computer
+        existing.info.deviceAllows ||= allows
+        if (defaultRoot && !existing.info.defaultRoot) existing.info.defaultRoot = defaultRoot
+        for (const root of roots) {
+          if (!existing.info.allowedRoots.includes(root)) existing.info.allowedRoots.push(root)
+        }
+        existing.clients.push({ clientId: client.clientId, workspaceId: client.workspaceId })
+        continue
+      }
+
+      entries.set(id, {
+        info: {
+          id,
+          // A record exists only for machines that lend something; a window-only machine is
+          // described by the connection itself and keeps no history on this hub.
+          name: record.name,
+          ...(record.alias ? { alias: record.alias } : {}),
+          platform: record.platform,
+          version: record.version,
+          allowedRoots: roots,
+          ...(defaultRoot ? { defaultRoot } : {}),
+          online: true,
+          deviceAllows: allows,
+          available: false,
+          lastSeenAt: record.lastSeenAt,
+          offered,
+          capabilities: { shell: false, files: false, browser: false, computer: false },
+        },
+        offered,
+        clients: [{ clientId: client.clientId, workspaceId: client.workspaceId }],
+      })
+    }
+
+    // Records that outlived their connection. They stay visible (and switchable) while offline.
+    for (const record of this.deviceRegistry.list()) {
+      if (entries.has(record.deviceId)) continue
+      entries.set(record.deviceId, {
+        info: {
+          id: record.deviceId,
+          name: record.name,
+          ...(record.alias ? { alias: record.alias } : {}),
+          platform: record.platform,
+          version: record.version,
+          allowedRoots: [],
+          online: false,
+          deviceAllows: false,
+          available: false,
+          lastSeenAt: record.lastSeenAt,
+          offered: { shell: false, files: false, browser: false, computer: false },
+          capabilities: { shell: false, files: false, browser: false, computer: false },
+        },
+        offered: { shell: false, files: false, browser: false, computer: false },
+        clients: [],
+      })
+    }
+
+    const result = [...entries.values()]
+    for (const entry of result) {
+      entry.info.available = entry.info.online && entry.info.deviceAllows
+      entry.info.capabilities = entry.info.available
+        ? { ...entry.offered }
+        : { shell: false, files: false, browser: false, computer: false }
+    }
+    return result.sort((a, b) =>
+      Number(b.info.online) - Number(a.info.online)
+      || (b.info.lastSeenAt ?? 0) - (a.info.lastSeenAt ?? 0)
+      || a.info.name.localeCompare(b.info.name))
+  }
+
+  /**
+   * Every device the hub knows, online or offline — what Server settings lists. This is wider
+   * than the agent's list: a connected device that has not been enabled here is still a row.
+   */
+  getConnectedDevices(): DeviceToolInfo[] {
+    return this.deviceEntries().map((entry) => entry.info)
+  }
+
+  /**
+   * Devices `device_tool` may name right now: connected, allowed by the device, and enabled on
+   * this server. The tool itself is offered whenever this hub has a paired device (even an
+   * offline one); `{"tool":"devices"}` narrows that to the ones usable now.
+   *
+   * Roots are the connection's own authorization list. The device's per-hub working directory is
+   * where an omitted `cwd` starts; it is always usable, so it is listed separately as `default`
+   * rather than mixed into the granted roots.
+   */
+  getAgentDevices(workspaceId?: string): DeviceToolInfo[] {
+    return this.deviceEntries(workspaceId).filter((entry) => entry.info.available).map((entry) => entry.info)
+  }
+
+  /**
+   * Whether this hub has ever paired a device, online or offline — the gate for offering
+   * `device_tool` at all. A hub that has never paired a machine does not pay for the tool's brief
+   * and schema on every request. Deliberately not "is a device connected now": pairing is the
+   * durable fact, and a sleeping device must not make the door appear and disappear.
+   */
+  hasPairedDevices(): boolean {
+    return this.deviceRegistry.list().length > 0
+  }
+
+  /** Set the person's own name for a device, or clear it with `null`. */
+  setDeviceAlias(deviceId: string, alias: string | null): DeviceToolInfo {
+    const record = this.deviceRegistry.setAlias(deviceId, alias)
+    if (!record) throw new Error(`Unknown device: ${deviceId}`)
+    const entry = this.deviceEntries().find((candidate) => candidate.info.id === deviceId)
+    if (!entry) throw new Error(`Unknown device: ${deviceId}`)
+    return entry.info
+  }
+
+  /**
+   * Remove a device record. Works whether or not the device is connected — the caller decides what
+   * to do about the live connection (the RPC handler drops it and any bound slot).
+   */
+  forgetDevice(deviceId: string): void {
+    const entry = this.deviceEntries().find((candidate) => candidate.info.id === deviceId)
+    if (!entry) throw new Error(`Unknown device: ${deviceId}`)
+    this.deviceRegistry.forget(deviceId)
+  }
+
+  /**
+   * The folders one connection authorized for this hub.
+   *
+   * `device_tool` is path-based and independent of the hub's workspaces: the device advertises the
+   * folders the person saved for this server, and that list is the whole authorization surface.
+   * The device also keeps a per-(hub, workspace) working directory for calls that omit `cwd`, but
+   * that is a default location rather than a granted root, so it is not reported here.
+   */
+  private deviceRoots(client: ConnectedClientInfo): string[] {
+    return [...new Set(client.allowedRoots)]
+  }
+
+  /**
+   * Where a call that omits `cwd` lands: `<hubRootBase>/<this hub's device id>/<workspace id>`.
+   *
+   * This directory is a fixed authorization — always usable, created on first use — but it is a
+   * default location rather than one of the connection's granted folders, so `device_tool` lists it
+   * separately as `default`.
+   */
+  private deviceDefaultRoot(client: ConnectedClientInfo, workspaceId: string): string | undefined {
+    const base = client.hubRootBase?.trim()
+    if (!base || !workspaceId.trim()) return undefined
+    // The base came from the device, so its separators are the device's — not this server's.
+    const joinPath = client.platform === 'win32' ? win32.join : posix.join
+    return joinPath(base, getDeviceId(), workspaceId)
+  }
+
+  /**
+   * A device by id, then by the person's alias, then by display name, and the connection that can
+   * serve `capability`.
+   *
+   * A name that fits two machines is refused rather than guessed — the whole point of naming a
+   * device is that the answer does not drift.
+   */
+  private resolveDevice(
+    ref: string,
+    capability: 'shell' | 'files' | 'browser' | 'computer',
+  ): { info: DeviceToolInfo; clientId: string } {
+    const wanted = ref.trim()
+    const entries = this.deviceEntries()
+    if (entries.length === 0) {
+      throw new Error('No devices have connected to this hub. This machine\'s own tools need no device.')
+    }
+
+    const named = entries.filter(
+      (entry) => entry.info.id === wanted
+        || entry.info.name.toLowerCase() === wanted.toLowerCase()
+        || entry.info.alias?.toLowerCase() === wanted.toLowerCase(),
+    )
+    if (named.length === 0) {
+      const available = entries.filter((entry) => entry.info.available)
+        .map((entry) => `${entry.info.alias ?? entry.info.name} (${entry.info.id})`).join(', ')
+      throw new Error(available
+        ? `No device "${ref}". Available devices: ${available}.`
+        : `No enabled device "${ref}".`)
+    }
+    if (named.length > 1) {
+      const known = named.map((entry) => entry.info.id).join(', ')
+      throw new Error(`"${ref}" names more than one device (${known}); use the id.`)
+    }
+
+    const entry = named[0]!
+    const name = entry.info.name
+    if (!entry.info.online) {
+      throw new Error(`Device "${name}" is offline.`)
+    }
+    if (!entry.info.offered[capability]) {
+      throw new Error(`Device "${name}" does not offer ${capability} access.`)
+    }
+
+    // A device's capability is the union of its connections', but a call has to go to one that
+    // has it. A **workspace-free** connection first — that is the process-level device link, which
+    // no window owns and which therefore outlives every window and is never mid-close; a window's
+    // connection last.
+    const servers = entry.clients
+      .filter((client) => this.clientHasCapability(client.clientId, capability))
+      .sort((a, b) => Number(a.workspaceId !== null) - Number(b.workspaceId !== null))
+    const server = servers[0]
+    if (!server) {
+      throw new Error(`Device "${name}" is connected but cannot serve ${capability} right now.`)
+    }
+    return { info: entry.info, clientId: server.clientId }
+  }
+
+  private clientHasCapability(clientId: string, capability: 'shell' | 'files' | 'browser' | 'computer'): boolean {
+    const channel = capability === 'shell'
+      ? CLIENT_DEVICE_EXEC
+      : capability === 'files' ? CLIENT_DEVICE_FS
+        : capability === 'browser' ? CLIENT_BROWSER_INVOKE : CLIENT_COMPUTER_INVOKE
+    return this.rpcServer?.hasClientCapability(clientId, channel) ?? false
+  }
+
+  /**
+   * The browser of one **named** device, for `device_tool`'s nested `browser`.
+   *
+   * The answer is a bridge pinned to that client, and there is no substitute when it has no
+   * browser.
+   */
+  private browserPaneManagerForClient(sid: string, clientId: string): IBrowserPaneManager {
+    if (!this.rpcServer) throw new Error('No browser is reachable from this server.')
+
+    const key = `${sid}::${clientId}`
+    const cached = this.remoteDeviceBpms.get(key)
     if (cached) return cached
 
     const session = this.sessions.get(sid)
-    if (!session) return null
-
     const bridge = new RemoteBrowserPaneManager({
       sessionId: sid,
-      workspaceId: session.workspace.id,
+      workspaceId: session?.workspace.id ?? '',
       rpcServer: this.rpcServer,
-      getHostClient: () => this.getBrowserHostClient(sid),
+      getHostClient: () => clientId,
+      // Read per call: a session can be bound to a task after it exists, and its tabs follow it.
+      getWork: () => {
+        const live = this.sessions.get(sid)
+        return live ? workOfSession(live) : null
+      },
+      getProfileId: () => this.getBrowserProfileForSession(sid),
     })
-    this.remoteBpms.set(sid, bridge)
+    this.remoteDeviceBpms.set(key, bridge)
     return bridge
   }
 
   /**
-   * Record which desktop client should host this session's browser. Called
-   * with `ctx.clientId` from the `sessions.sendMessage` RPC handler so the
-   * agent's browser_* tools route back to the client that posted the message.
+   * Back `device_tool` for one conversation. Two surfaces, deliberately separate:
    *
-   * No-op when `callerClientId` is undefined — preserves the existing pin
-   * (lets reconnected clients continue holding the host role).
+   * - `list()` — **meta**: which devices exist.
+   * - `exec` / `fs` / `getBrowserFns` — **proxy**: each requires a device, resolves it through
+   *   {@link resolveDevice}, and sends the call to that device's connection.
+   *
+   * Nothing here reads the conversation's own browser ({@link getBrowserPaneManagerForSession}),
+   * which is this process's. A proxy names its machine, and when that machine cannot answer the
+   * call it fails rather than sliding to another one.
    */
-  private setLastMessageClientId(sid: string, callerClientId: string | undefined): void {
-    if (!callerClientId) return
-    this.browserHostByCanvas.set(sid, callerClientId)
-  }
-
-  /**
-   * Called by the transport bootstrap on `onClientDisconnected`. Drops any
-   * pins held by `clientId` so the next browser tool call re-resolves via
-   * {@link findClientsWithCapability} instead of trying to ship to a dead client.
-   */
-  onClientDisconnected(clientId: string): void {
-    for (const [sid, pinned] of this.browserHostByCanvas) {
-      if (pinned === clientId) this.browserHostByCanvas.delete(sid)
+  private createDeviceToolFns(
+    workspaceId: string,
+    getBrowserFnsForDevice: (clientId: string) => BrowserPaneFns,
+  ): DeviceToolFns {
+    const invoke = async <T>(clientId: string, channel: string, payload: unknown, timeoutMs: number): Promise<T> => {
+      const server = this.rpcServer
+      if (!server) throw new Error('Devices are not reachable from this server.')
+      return (server.invokeClientWithTimeout
+        ? server.invokeClientWithTimeout(clientId, channel, [payload], timeoutMs)
+        : server.invokeClient(clientId, channel, payload)) as Promise<T>
     }
-  }
 
-  /**
-   * Pinned client first, with fallback to any connected client for the workspace
-   * that advertises `client:browser:invoke`. The fallback handles reconnect-with-
-   * new-clientId so the agent isn't stuck waiting for another user message.
-   */
-  private getBrowserHostClient(sid: string): string | null {
-    if (!this.rpcServer) return null
-    const pinned = this.browserHostByCanvas.get(sid)
-    if (pinned && this.rpcServer.hasClientCapability(pinned, CLIENT_BROWSER_INVOKE)) {
-      return pinned
+    /**
+     * The hub and workspace that scope the call.
+     *
+     * `workspaceId` is **this hub's** workspace (the conversation's, not the connection's). The
+     * device uses the pair only to keep one default working directory per (hub, workspace) apart,
+     * so two workspaces never share a scratch directory. It is not path authorization — that is
+     * the folder list saved on the connection.
+     */
+    const hubContext = workspaceId
+      ? { hubDeviceId: getDeviceId(), workspaceId }
+      : {}
+
+    return {
+      list: async () => this.getAgentDevices(workspaceId),
+      exec: async (device: string, args: DeviceExecArgs) => {
+        const { clientId } = this.resolveDevice(device, 'shell')
+        const timeoutMs = Math.min(Math.max(args.timeoutMs ?? 60_000, 1_000), 300_000)
+        return await invoke<DeviceExecResult>(
+          clientId,
+          CLIENT_DEVICE_EXEC,
+          // Hub context last: a nested arg can never name another hub or workspace.
+          { v: 1, ...args, ...hubContext, timeoutMs },
+          // The device answers when the command ends, so the reply deadline follows the command's
+          // own bound — otherwise the hub gives up while the device keeps running it.
+          timeoutMs + 15_000,
+        )
+      },
+      fs: async (device: string, args: DeviceFsArgs) => {
+        const { clientId } = this.resolveDevice(device, 'files')
+        const req: DeviceFsRequest = { v: 1, ...args, ...hubContext }
+        return await invoke<DeviceFsResult>(clientId, CLIENT_DEVICE_FS, req, 60_000)
+      },
+      getBrowserFns: async (device: string) => {
+        // Resolved to a connection first: a device that is offline, or that does not allow browser
+        // work, is an error here — never a reason to use this conversation's own browser instead.
+        const { clientId } = this.resolveDevice(device, 'browser')
+        return getBrowserFnsForDevice(clientId)
+      },
+      getComputerFns: async (device: string) => {
+        // The remote bridge, and nothing else: this process's own desktop is `computer_tool`.
+        const { clientId } = this.resolveDevice(device, 'computer')
+        return this.remoteComputerPanes.get(clientId)
+          ?? this.cacheRemoteComputerPane(clientId)
+      },
     }
-    const session = this.sessions.get(sid)
-    if (!session) return null
-    const candidates = this.rpcServer.findClientsWithCapability(
-      CLIENT_BROWSER_INVOKE,
-      { workspaceId: session.workspace.id },
-    )
-    const fallback = candidates[0]
-    if (!fallback) return null
-    this.browserHostByCanvas.set(sid, fallback)
-    return fallback
   }
 
   /** Returns a strictly increasing timestamp (ms). When Date.now() collides with
@@ -2031,6 +2502,12 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
+    // Mode — reconciled in without a dedicated event.
+    if (managed.mode !== header.mode) {
+      managed.mode = header.mode
+      changed = true
+    }
+
     // Kanban column (mutable via drag; reconcile external/multi-window changes)
     if (managed.kanbanColumn !== header.kanbanColumn) {
       managed.kanbanColumn = header.kanbanColumn
@@ -2117,12 +2594,14 @@ export class SessionManager implements ISessionManager {
         // Notify renderer to re-read automations.json
         this.broadcastAutomationsChanged(workspaceId)
       },
-      onPagesListChange: (pages) => {
-        sessionLog.info(`Pages changed in ${workspaceId} (${pages.length} pages)`)
-        // Rebuild the synthetic page-refresh cron matchers (page.json is the
-        // completion marker, so this also fires after every refresh run)
-        this.automationSystems.get(workspaceRootPath)?.reloadPageRefreshMatchers()
-        this.broadcastPagesChanged(workspaceId, pages)
+      onTweaksListChange: (tweaks) => {
+        // A tweak changed outside the RPC handlers (the agent's tools, or a hand edit to the
+        // record or the code). Two things follow: the list designs show, and the registration the
+        // next document is given — a tweak is a rule set, so a code edit is as much a change to
+        // the rules as a switch is.
+        sessionLog.info(`Tweaks changed in ${workspaceId} (${tweaks.length} tweaks)`)
+        this.broadcastTweaksChanged(workspaceId, tweaks)
+        this.installTweaks(workspaceId)
       },
       onLlmConnectionsChange: () => {
         sessionLog.info(`LLM connections changed in ${workspaceId}`)
@@ -2285,10 +2764,10 @@ export class SessionManager implements ISessionManager {
     this.eventSink(RPC_CHANNELS.skills.CHANGED, { to: 'workspace', workspaceId }, workspaceId, skills)
   }
 
-  private broadcastPagesChanged(workspaceId: string, pages: import('@craft-agent/shared/pages').LoadedPage[]): void {
+  private broadcastTweaksChanged(workspaceId: string, tweaks: import('@craft-agent/shared/tweaks').TweakSummary[]): void {
     if (!this.eventSink) return
-    sessionLog.info(`Broadcasting pages changed (${pages.length} pages)`)
-    this.eventSink(RPC_CHANNELS.pages.CHANGED, { to: 'workspace', workspaceId }, workspaceId, pages)
+    sessionLog.info(`Broadcasting tweaks changed (${tweaks.length} tweaks)`)
+    this.eventSink(RPC_CHANNELS.tweaks.CHANGED, { to: 'workspace', workspaceId }, workspaceId, tweaks)
   }
 
   private broadcastDefaultPermissionsChanged(): void {
@@ -2400,6 +2879,10 @@ export class SessionManager implements ISessionManager {
 
       // Fix defaultLlmConnection if it points to a non-existent connection
       migrateOrphanedDefaultConnections()
+
+      // A workspace no longer carries a server of its own: legacy remote workspaces become
+      // saved connections (one per URL), and the workspace entries are dropped.
+      migrateLegacyRemoteWorkspaces()
 
       // Migrate legacy credentials to LLM connection format (one-time migration)
       // This ensures credentials saved before LLM connections are available via the new system
@@ -2945,18 +3428,30 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Get a single session by ID with all messages loaded.
+   * Get a single session by ID, with its messages loaded.
    * Used for lazy loading session messages when session is selected.
    * Messages are loaded from disk on first access to reduce memory usage.
+   *
+   * `messagePage` narrows what is **sent**, never what is kept: the managed
+   * session still holds the whole history, because branching, compaction, token
+   * accounting and retries all read it. It exists for conversations long enough
+   * that shipping every message to a client is the expensive part.
    */
-  async getSession(sessionId: string): Promise<Session | null> {
+  async getSession(sessionId: string, messagePage?: MessagePageOptions): Promise<Session | null> {
     const m = this.sessions.get(sessionId)
     if (!m) return null
 
     // Lazy-load messages from disk if not yet loaded
     await this.ensureMessagesLoaded(m)
 
-    return managedToSession(m, { messages: m.messages })
+    const wantsPage = !!messagePage
+      && (messagePage.before !== undefined || messagePage.limit !== undefined || messagePage.minQuestions !== undefined)
+    if (!wantsPage) {
+      return managedToSession(m, { messages: m.messages })
+    }
+
+    const page = takeMessagePage(m.messages, messagePage)
+    return managedToSession(m, { messages: page.messages, messagesTruncated: page.truncated })
   }
 
   /**
@@ -3156,11 +3651,14 @@ export class SessionManager implements ISessionManager {
         }
       } else {
         resolvedProjectId = project.config.id
-        if (
-          (options?.workingDirectory === undefined || options?.workingDirectory === 'user_default') &&
-          project.config.workingDirectory
-        ) {
-          resolvedWorkingDir = project.config.workingDirectory
+        // A session in a project works in the project's own place: the folder the project
+        // configured, or the project's own folder when it configured none. The project folder
+        // is the default because that is where the project's files live — a conversation that
+        // starts somewhere else makes "which folder is this project about" have several answers.
+        // Only an explicit directory escapes it: an absolute path, or 'none'. 'user_default' is
+        // still "no choice was made", so it takes the project's place just as undefined does.
+        if (options?.workingDirectory === undefined || options?.workingDirectory === 'user_default') {
+          resolvedWorkingDir = project.config.workingDirectory ?? project.folderPath
         }
       }
     }
@@ -3364,6 +3862,11 @@ export class SessionManager implements ISessionManager {
       labels: options?.labels,
       isFlagged: options?.isFlagged,
       projectId: resolvedProjectId,
+      mode: options?.mode,
+      role: options?.role,
+      // Inherited by child sessions (see `CreateSessionOptions.browserProfile`); a top-level
+      // session leaves it unset so the workspace default stays dynamic.
+      browserProfile: options?.browserProfile,
       parentSessionId: options?.parentSessionId,
       taskSlug: options?.taskSlug,
       taskRunId: options?.taskRunId,
@@ -3579,6 +4082,12 @@ export class SessionManager implements ISessionManager {
     return this.sessions.get(sessionId)?.workingDirectory
   }
 
+  /** The browser profile a session picked (not the effective one), so children inherit it the
+   *  same way they inherit the working directory. Undefined means "follow the workspace default". */
+  getSessionBrowserProfile(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.browserProfile
+  }
+
   private async disposeManagedAgentRuntime(managed: ManagedSession, reason: string): Promise<void> {
     const sessionId = managed.id
     this.recoverPendingSteers(managed)
@@ -3739,18 +4248,9 @@ export class SessionManager implements ISessionManager {
             baseUrl: connection.baseUrl,
             piAuthProvider: connection.piAuthProvider,
             customEndpoint: connection.customEndpoint,
-            customModels: connection.models?.map(model => {
-              if (typeof model === 'string') return model
-              const supportsImages = typeof model.supportsImages === 'boolean' ? model.supportsImages : undefined
-              if (model.contextWindow || supportsImages !== undefined) {
-                return {
-                  id: model.id,
-                  ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
-                  ...(supportsImages !== undefined ? { supportsImages } : {}),
-                }
-              }
-              return model.id
-            }),
+            customModels: connection.models?.length
+              ? toCustomEndpointModels(connection.models)
+              : undefined,
           } : undefined,
         })
       } catch (error) {
@@ -3790,7 +4290,7 @@ export class SessionManager implements ISessionManager {
    * Creates the appropriate backend agent based on LLM connection.
    *
    * Provider resolution order:
-   * 1. session.llmConnection (locked after first message)
+   * 1. session.llmConnection (auto-pinned on first use; switchable by the user)
    * 2. workspace.defaults.defaultLlmConnection
    * 3. global defaultLlmConnection
    * 4. fallback: no connection configured
@@ -3820,8 +4320,10 @@ export class SessionManager implements ISessionManager {
     if (!managed.agent) {
       const end = perf.start('agent.create', { sessionId: managed.id })
 
-      // Lock the connection after first resolution
-      // This ensures the session always uses the same provider
+      // Pin the connection on first resolution so ambient config drift (workspace
+      // default edits, task reconcile, model-change events carrying a fallback
+      // connection) can't re-route a live session. An explicit user switch is
+      // still allowed afterwards — see setSessionConnection().
       if (connection && !managed.connectionLocked) {
         managed.llmConnection = connection.slug
         managed.connectionLocked = true
@@ -3882,6 +4384,14 @@ export class SessionManager implements ISessionManager {
 
       // Per-session env overrides
       const miniModel = connection ? (getMiniModel(connection) ?? connection.defaultModel) : undefined
+      // Which model reads images / frames for this session (see resolveImageModel).
+      // Fed to the Pi subprocess so its call_llm resolves the same model.
+      const imageModel = connection ? resolveImageModel(connection, backendContext.resolvedModel) : undefined
+      // Whether the model that is actually running this session can see. It is what decides if a
+      // picture in a tool result needs to be routed through `call_llm` instead of shown inline.
+      const mainModelSeesImages = connection
+        ? modelSupportsImages(connection, backendContext.resolvedModel)
+        : undefined
       const envOverrides: Record<string, string> = {
         CRAFT_WORKSPACE_PATH: managed.workspace.rootPath,
         // Pass mini model to SDK subprocess so built-in tools like WebFetch
@@ -3912,6 +4422,9 @@ export class SessionManager implements ISessionManager {
         permissionMode: managed.permissionMode,
         previousPermissionMode: managed.previousPermissionMode,
         projectId: managed.projectId,
+        // The layer this conversation is working in — consumed by the prompt block
+        // added for this conversation, not by any tool.
+        mode: managed.mode,
       }
 
       const onSdkSessionIdUpdate = (sdkSessionId: string) => {
@@ -4017,6 +4530,8 @@ export class SessionManager implements ISessionManager {
         coreConfig: {
         workspace: managed.workspace,
         miniModel,
+        imageModel,
+        mainModelSeesImages,
         thinkingLevel: managed.thinkingLevel,
         session: sessionConfig,
         onSdkSessionIdUpdate,
@@ -4131,220 +4646,646 @@ export class SessionManager implements ISessionManager {
       // Wire up browser pane tools — merge BrowserPaneFns into session callbacks
       // so browser_* tools can delegate to BrowserPaneManager.
       //
-      // Always register when EITHER a local BPM is set OR an RPC server is
-      // available (which lets `getBrowserPaneManagerForSession` lazily build a
-      // RemoteBrowserPaneManager). Calls fail per-method with
-      // BROWSER_NO_CAPABLE_CLIENT if no desktop client is connected, instead
-      // of "tool unavailable".
+      // A server with a local browser registers them; one without (headless, WebUI-only) does not,
+      // and `browser_tool` refuses instead of borrowing a connected client's browser. Other
+      // machines are reached only by naming them through `device_tool`.
       sessionLog.info('[browser-pane] BPF gate check', {
         sessionId: managed.id,
         hasLocalBpm: !!this.browserPaneManager,
-        hasRpcServer: !!this.rpcServer,
       })
-      if (this.browserPaneManager || this.rpcServer) {
+      // Tell the prompt whether this server has a browser of its own, and which profile the
+      // conversation works in. Both ride the volatile `<session_state>` tail, so neither
+      // invalidates the cached prefix. The profile matters even without a local browser: a
+      // device-driven browser resolves it the same way.
+      //
+      // Decoding a recording is a second, independent capability: a hub has no pane but may have
+      // staged the render host (`CRAFT_RENDER_CLI`), and a desktop decodes in a hidden window even
+      // when the browser door itself is turned off.
+      const renderCli = process.env.CRAFT_RENDER_CLI?.trim() || null
+      setBrowserHostState(managed.id, !!this.browserPaneManager)
+      setRecordingHostState(managed.id, !!this.browserPaneManager || !!renderCli)
+      setBrowserProfilePromptState(managed.id, this.browserProfileName(this.getBrowserProfileForSession(managed.id)))
+
+      if (this.browserPaneManager) {
         const sid = managed.id
-        const bpm = this.getBrowserPaneManagerForSession(sid)
-        if (!bpm) {
-          throw new Error('Browser pane manager unavailable despite passing the gate — this is a bug.')
-        }
-        sessionLog.info('[browser-pane] BPF block resolved BPM', {
-          sessionId: sid,
-          bpmKind: this.browserPaneManager === bpm ? 'local' : 'remote',
-        })
+        const sessionBpm = this.browserPaneManager
+        sessionLog.info('[browser-pane] BPF block resolved BPM', { sessionId: sid, bpmKind: 'local' })
+
+        /**
+         * Whether this conversation was spawned by another one — a DAG node, or a session an
+         * agent delegated to.
+         *
+         * Its browser side is deliberately narrower: a child works in the
+         * tab it was given rather than in whatever the person has in front of them, and it does
+         * not move the person's view. A parent and its children share one window, so those are
+         * the two behaviours that would otherwise make them interfere.
+         */
+        const isChildSession = !!managed.parentSessionId
+
+        /**
+         * The **work** this conversation is part of — what its tabs say they are for, and what
+         * its commands are judged against.
+         *
+         * A Conductor child is a node of a task, and says so: its tabs belong to that node, so a
+         * re-run of the node (repair — a *new* child session for the *same* node) inherits the
+         * tab instead of leaving it orphaned. The orchestrator is the task itself; an ordinary
+         * conversation is its own work. Read live rather than captured, because a session can be
+         * bound to a task after it exists.
+         */
+        const work: TabBelongsTo = workOfSession(managed)
 
         const workspaceId = managed.workspace.id
-        const resolveSessionBrowserInstance = async (toolName: string, options?: { show?: boolean }): Promise<string> => {
+
+        /**
+         * The tab a command is about, refused when it is not this conversation's to
+         * touch or is held by another one at this moment (第九轮).
+         *
+         * Two rules, in this order. `whyTabIsOutOfReach` is the standing one — a tab is
+         * this conversation's work, or nobody's, and anything else is another conversation's or
+         * another node's (which is what keeps a parent's children out of each other's tabs).
+         * `whyTabIsLocked` is the clock: the tab may be yours in principle and busy
+         * right now, and its answer is "wait" rather than "never".
+         */
+        const assertTabUsable = (tab: BrowserTabSummary): void => {
+          const why = whyTabIsOutOfReach(tab, work) ?? whyTabIsLocked(tab, sid)
+          if (why) throw new Error(why)
+        }
+
+        /**
+         * Closing is housekeeping, and housekeeping is the whole **task**'s: a node
+         * opens its own tabs and stops, so a rule that only let the opener close them would
+         * leave every finished run's tabs in the window with nobody left to tidy them.
+         */
+        const assertTabIsMineToClose = (tab: BrowserTabSummary): void => {
+          const why = whyTabIsNotMineToClose(tab, work)
+          if (why) throw new Error(why)
+        }
+
+        /**
+         * …and not while somebody else is in the middle of working on it.
+         *
+         * A tab this conversation opened can still be locked by another one that took it
+         * over (a shared tab is shared), and closing it under that conversation's feet is
+         * exactly what the lock is for.
+         */
+        const assertTabUnlocked = (tab: BrowserTabSummary): void => {
+          const why = whyTabIsLocked(tab, sid)
+          if (why) throw new Error(why)
+        }
+
+        /** One named tab of the workspace's window, or an error saying it is not there. */
+        const requireTab = async (instanceId: string, tabId: string): Promise<BrowserTabSummary> => {
+          const tabs = await sessionBpm.listTabsAsync(instanceId).catch(() => [])
+          const tab = tabs.find((candidate) => candidate.id === tabId)
+          if (!tab) {
+            throw new Error(`This browser window has no tab "${tabId}". "tabs" lists them.`)
+          }
+          return tab
+        }
+
+        /**
+         * Everything a conversation can do in the browser, bound to **one profile**.
+         *
+         * `--profile` names the profile; a command that names none uses the conversation's own
+         * selection — its own pick, then its project's default, then the workspace's default,
+         * then the built-in **Default**. It never falls back to the profile of the tab it is on.
+         * A name that does not exist is refused by `resolveProfileIdOrThrow`, never quietly
+         * replaced.
+         *
+         * Built per command rather than mutated: a conversation can work in two profiles at once
+         * (`--profile`), so the profile a command acts in is part of the command and never state
+         * two calls could race on. The profile is what picks the window: one workspace holds one
+         * window per profile.
+         */
+        const buildBrowserPaneFns = (profileId?: string, bpm: IBrowserPaneManager = sessionBpm): BrowserPaneFns => {
+          // `--profile` binds this command; without one the profile is the conversation's own
+          // selection (its pick, the workspace default, then Default). Read per call rather than
+          // captured, because the person can switch it between turns — or mid-turn — and the next
+          // command has to land in the profile selected now. It never falls back to Default while
+          // the conversation has selected another one.
+          const namedProfileId = profileId?.trim()
+          const scopedProfileId = (): string =>
+            namedProfileId || this.getBrowserProfileForSession(sid)
+
+          /** The profile a window is signed into; the built-in one for a window that predates profiles. */
+          const profileOf = (window: BrowserInstanceInfo): string =>
+            window.profileId ?? DEFAULT_BROWSER_PROFILE_ID
+
+          const profileNameOf = (id: string): string =>
+            getBrowserProfiles().find((profile) => profile.id === id)?.name ?? id
+
+          /**
+           * The profile a reply should name — only when there is a choice to get wrong.
+           *
+           * One window needs no label; two do, because the answer says which window the tab landed
+           * in and the agent can then name the other one with `--profile`.
+           */
+          const replyProfileName = async (instanceId: string): Promise<string | undefined> => {
+            const windows = await sessionWindows()
+            if (windows.length <= 1) return undefined
+            const window = windows.find((candidate) => candidate.id === instanceId)
+            return window ? profileNameOf(profileOf(window)) : undefined
+          }
+
+        /**
+         * The window this profile's work lives in — opened if it is not up yet.
+         *
+         * Split out from the tab resolution below because one command needs a window and not a
+         * tab: `tab-new` is how a conversation with no tab gets one, so it cannot require a
+         * tab first. A window is always opened **behind** the person: nothing a conversation
+         * starts does is worth taking their screen for, and `tab-show` is the one verb that does.
+         */
+        const resolveWorkspaceWindow = async (): Promise<string> => {
+          const existing = await resolveWorkspaceWindowId()
+          if (existing) return existing
           const instanceId = await bpm.createForSessionAsync(sid, {
-            show: options?.show ?? false,
+            show: false,
             workspaceId,
+            // The profile the command named (or the conversation's own), stated rather than
+            // resolved from the session: a command never guesses.
+            profileId: scopedProfileId(),
           })
           const info = await bpm.getInstanceAsync(instanceId)
-          sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} ownerType=${info?.ownerType ?? 'unknown'} ownerSessionId=${info?.ownerSessionId ?? 'none'} visible=${info?.isVisible ?? false}`)
+          sessionLog.info(`[browser-pane] window resolved: session=${sid} instance=${instanceId} profile=${scopedProfileId()} visible=${info?.isVisible ?? false}`)
           return instanceId
         }
 
-        const resolveLifecycleWindowTarget = async (command: 'release' | 'close' | 'hide', requestedInstanceId?: string) => {
-          const windows = await bpm.listInstancesAsync()
+        /**
+         * Which window a command acts on, and which tab of it.
+         *
+         * The tab is settled here, once, and handed on to the command: the conversation's own
+         * tab — its cursor — and nothing else. A conversation that has none is **refused**
+         * rather than pointed at the tab on screen (`whyThereIsNoWorkingTab`): what the person
+         * is looking at changes with their next click, and letting it answer "where does this
+         * command go" is the coupling the cursor exists to remove. Naming a tab is how a
+         * conversation gets one, and settling it once here is what keeps the decision in one
+         * place: every browser method below takes the tab it acts on, and none of them reads
+         * `activeTabId` and hopes it is the right one.
+         *
+         * Recording it is a cursor write (`setSessionTab`) rather than a window switch
+         * (第十二轮): the window is shared with the person, and taking them off the tab they
+         * are reading because the agent reached for another one is exactly what "the command
+         * acts where it was told" is meant to stop. Every command works behind them;
+         * `tab-show` is the one that moves what they see, because that is what it says.
+         */
+        const resolveCommandTarget = async (
+          toolName: string,
+          options?: { takeATab?: boolean },
+        ): Promise<{ instanceId: string; tabId: string }> => {
+          // Looked up before it is resolved, because afterwards the window always exists.
+          // Only a command that says `takeATab` may open the window: one that cannot take a
+          // tab has nothing to do in a window it just made.
+          const existingInstanceId = await resolveWorkspaceWindowId()
+          const instanceId = existingInstanceId
+            ?? (options?.takeATab ? await resolveWorkspaceWindow() : null)
+          if (!instanceId) {
+            throw new Error(whyThereIsNoWorkingTab(false, isChildSession))
+          }
+
+          const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
+          const target = pickCommandTarget(tabs, sid)
+
+          if (target) {
+            assertTabUsable(target)
+            bpm.setSessionTab(instanceId, target.id, sid)
+            sessionLog.info(`[browser-pane] tool target resolved: ${toolName} session=${sid} instance=${instanceId} tab=${target.id}`)
+            return { instanceId, tabId: target.id }
+          }
+
+          // `navigate` is the entry point — "go to this url" — so it is the one command that
+          // **takes** a tab instead of refusing: a new tab behind the person's, or — when this
+          // command is what opened the window — the tab the window was born with, which is what
+          // keeps a fresh window at one tab instead of leaving an orphan beside it. Same rule as
+          // `tab-new` and the app's "New tab"; a blank tab that was already in the window is never
+          // taken, even if it is the only one, because it may be the person's.
+          if (options?.takeATab) {
+            const created = await bpm.createTabAsync(instanceId, {
+              // "A tab to use", not "one more": the browser side takes the window's birth tab
+              // while it is untouched — one new-tab page, and the window never shown — whether
+              // this call opened the window or the turn's control overlay did it a moment
+              // earlier. A window the person has seen is never taken from.
+              reuseUntouchedWindow: true,
+              belongsTo: work,
+            })
+            sessionLog.info(`[browser-pane] tool target created: ${toolName} session=${sid} instance=${instanceId} tab=${created} windowWasNew=${existingInstanceId === null}`)
+            return { instanceId, tabId: created }
+          }
+
+          throw new Error(whyThereIsNoWorkingTab(tabs.length > 0, isChildSession))
+        }
+
+        /**
+         * The windows this session may act on: its workspace's.
+         *
+         * Worked out in one place because "which windows are mine" stopped being a
+         * question about ownership. A workspace's browser window is shared, so
+         * every conversation in it may act on it; another workspace's window is
+         * outside the boundary and stays invisible, which is the one part of the old
+         * model that is still true and still has to be.
+         */
+        const sessionWindows = async (): Promise<BrowserInstanceInfo[]> => {
+          const windows = await bpm.listInstancesAsync().catch(() => [])
+          return windows.filter(
+            (window) => (window.workspaceId ?? null) === (managed.workspace.id ?? null),
+          )
+        }
+
+        /**
+         * Which window this command acts on — without making one.
+         *
+         * The window of the profile the command bound itself to: `--profile` when it named one,
+         * the conversation's own selection otherwise. Never "the first window" and never a window
+         * inferred from the tab it was working in: with one window per profile that guess handed a
+         * command to a profile nobody chose.
+         *
+         * Only the commands that can take a tab open a browser when there is none: `navigate`
+         * (its entry point) and `tab-new`. The rest have no tab to read without one, and creating
+         * an empty window to report that would be the tool inventing the state it was asked about.
+         */
+        const resolveWorkspaceWindowId = async (): Promise<string | null> => {
+          const windows = await sessionWindows()
+          return windows.find((window) => profileOf(window) === scopedProfileId())?.id ?? null
+        }
+
+        /**
+         * Where a named tab is: the profile's window, and the tab itself.
+         *
+         * A tab id is unique inside a window, and a window is one profile, so `tab-1` can be two
+         * tabs. Which one is meant follows the same rule as the command: `--profile`, or the
+         * conversation's own profile.
+         * A tab in another profile is reached by naming that profile, never by guessing.
+         */
+        const findTabWindow = async (
+          tabId: string,
+        ): Promise<{ instanceId: string; tab: BrowserTabSummary } | null> => {
+          const windows = await sessionWindows()
+          const window = windows.find((candidate) => profileOf(candidate) === scopedProfileId())
+          if (!window) return null
+          const tabs = await bpm.listTabsAsync(window.id).catch(() => [])
+          const tab = tabs.find((candidate) => candidate.id === tabId)
+          return tab ? { instanceId: window.id, tab } : null
+        }
+
+        const resolveLifecycleWindowTarget = async (requestedInstanceId?: string) => {
+          const all = await sessionWindows()
+          // The profile's window, even for a lifecycle verb: the same rule as every other command.
+          const windows = all.filter((window) => profileOf(window) === scopedProfileId())
 
           if (windows.length === 0) {
-            return { windows, reason: 'No browser windows are available. Use "open" first.' }
+            return { windows, reason: 'No browser window is available. "navigate <url>" or "tab-new <url>" opens one.' }
           }
 
-          const validateTarget = (target: (typeof windows)[number] | undefined) => {
-            if (!target) {
-              return { ok: false as const, reason: `Browser window "${requestedInstanceId}" not found. Use "windows" to list available windows.` }
+          /**
+           * The window it means, or why there is none.
+           *
+           * Anything in `windows` is already this workspace's, and a window is never
+           * locked — what "someone is using it right now" describes is a **tab** (a held
+           * tab refuses input; the window does not), so there is nothing left to refuse
+           * once the target exists. The only failure is naming one that does not.
+           */
+          const resolveTarget = (target: (typeof windows)[number] | undefined) => {
+            if (target) return { ok: true as const, target }
+            return {
+              ok: false as const,
+              reason: requestedInstanceId
+                ? `Browser window "${requestedInstanceId}" not found.`
+                : 'No browser window is associated with this workspace.',
             }
-
-            if (target.boundSessionId && target.boundSessionId !== sid) {
-              return { ok: false as const, reason: `Browser window "${target.id}" is locked to session ${target.boundSessionId}.` }
-            }
-
-            if (!target.boundSessionId && target.ownerSessionId && target.ownerSessionId !== sid) {
-              return { ok: false as const, reason: `Browser window "${target.id}" is currently owned by session ${target.ownerSessionId}.` }
-            }
-
-            return { ok: true as const, target }
           }
 
-          if (requestedInstanceId) {
-            const validated = validateTarget(windows.find((w) => w.id === requestedInstanceId))
-            if (!validated.ok) {
-              return { windows, reason: validated.reason }
-            }
-            return { windows, target: validated.target }
-          }
+          // Which window it means when none is named: the profile's own (the command's
+          // `--profile`, or the conversation's selection), falling back to what is open only when
+          // that profile has no window in this workspace.
+          const preferredId = requestedInstanceId ?? (await resolveWorkspaceWindowId()) ?? windows[0]?.id
+          const resolved = resolveTarget(windows.find((w) => w.id === preferredId))
 
-          const fallbackTarget = windows.find((w) => w.boundSessionId === sid)
-            ?? windows.find((w) => w.ownerSessionId === sid)
-
-          if (!fallbackTarget) {
-            return { windows, reason: `No ${command} target is currently associated with this session. Use "windows", then "${command} <id>".` }
-          }
-
-          const validated = validateTarget(fallbackTarget)
-          if (!validated.ok) {
-            return { windows, reason: validated.reason }
-          }
-
-          return { windows, target: validated.target }
+          return resolved.ok ? { windows, target: resolved.target } : { windows, reason: resolved.reason }
         }
 
         sessionLog.info('[browser-pane] BPF registering browserPaneFns', { sessionId: sid })
-        mergeSessionScopedToolCallbacks(sid, {
-          browserPaneFns: {
-            openPanel: async (options) => {
-              const instanceId = options?.background
-                ? await bpm.createForSessionAsync(sid, { show: false, workspaceId })
-                : await bpm.focusBoundForSessionAsync(sid, { workspaceId })
-              const info = await bpm.getInstanceAsync(instanceId)
-              sessionLog.info(`[browser-pane] route decision: browser_open session=${sid} instance=${instanceId} background=${options?.background ?? false} ownerType=${info?.ownerType ?? 'unknown'} ownerSessionId=${info?.ownerSessionId ?? 'none'} visible=${info?.isVisible ?? false}`)
-              return { instanceId }
-            },
-            navigate: async (url) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_navigate')
-              return bpm.navigate(instanceId, url)
+
+          return {
+            navigate: async (url, requestedTabId) => {
+              if (requestedTabId) {
+                // Naming a tab is working in it. A name that no longer exists is not an
+                // error for "go here": open a tab for this conversation instead — never
+                // adopt some other tab, which may be a step's page — and say so in the
+                // answer.
+                //
+                // The name is looked up across this workspace's windows (one per profile), so
+                // `--tab tab-3 --profile Work` works in Work while the unnamed form would have
+                // stayed in the cursor's profile.
+                const located = await findTabWindow(requestedTabId)
+                const instanceId = located?.instanceId ?? await resolveWorkspaceWindow()
+                const named = located?.tab
+                if (named) {
+                  assertTabUsable(named)
+                  bpm.setSessionTab(instanceId, named.id, sid)
+                  const result = await bpm.navigate(instanceId, url, named.id)
+                  const profileName = await replyProfileName(instanceId)
+                  return { ...result, tabId: named.id, ...(profileName ? { profileName } : {}) }
+                }
+                const created = await bpm.createTabAsync(instanceId, {
+                  // Same rule as the unnamed path: take the birth tab of a window that has
+                  // never been shown, leave a window the person has seen alone.
+                  reuseUntouchedWindow: true,
+                  belongsTo: work,
+                })
+                bpm.setSessionTab(instanceId, created, sid)
+                const result = await bpm.navigate(instanceId, url, created)
+                const profileName = await replyProfileName(instanceId)
+                return {
+                  ...result,
+                  tabId: created,
+                  ...(profileName ? { profileName } : {}),
+                  note:
+                    `Requested tab "${requestedTabId}" was closed; allocated a new tab ` +
+                    `"${created}" instead. Use "${created}" for later calls.`,
+                }
+              }
+              const { instanceId, tabId } = await resolveCommandTarget('browser_navigate', { takeATab: true })
+              const result = await bpm.navigate(instanceId, url, tabId)
+              const profileName = await replyProfileName(instanceId)
+              // The tab is part of the answer: this command may have just made one, and the
+              // caller should not have to run `tabs` to find out where it landed.
+              return { ...result, tabId, ...(profileName ? { profileName } : {}) }
             },
             snapshot: async () => {
-              const instanceId = await resolveSessionBrowserInstance('browser_snapshot')
-              return bpm.getAccessibilitySnapshot(instanceId)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_snapshot')
+              return bpm.getAccessibilitySnapshot(instanceId, tabId)
             },
             click: async (ref, options) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_click')
-              return bpm.clickElement(instanceId, ref, options)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_click')
+              return bpm.clickElement(instanceId, ref, options, tabId)
             },
             clickAt: async (x, y) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_click_at')
-              return bpm.clickAtCoordinates(instanceId, x, y)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_click_at')
+              return bpm.clickAtCoordinates(instanceId, x, y, tabId)
             },
             drag: async (x1, y1, x2, y2) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_drag')
-              return bpm.drag(instanceId, x1, y1, x2, y2)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_drag')
+              return bpm.drag(instanceId, x1, y1, x2, y2, tabId)
             },
             fill: async (ref, value) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_fill')
-              return bpm.fillElement(instanceId, ref, value)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_fill')
+              return bpm.fillElement(instanceId, ref, value, tabId)
             },
             type: async (text) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_type')
-              return bpm.typeText(instanceId, text)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_type')
+              return bpm.typeText(instanceId, text, tabId)
             },
             select: async (ref, value) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_select')
-              return bpm.selectOption(instanceId, ref, value)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_select')
+              return bpm.selectOption(instanceId, ref, value, tabId)
             },
             setClipboard: async (text) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_set_clipboard')
-              return bpm.setClipboard(instanceId, text)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_set_clipboard')
+              return bpm.setClipboard(instanceId, text, tabId)
             },
             getClipboard: async () => {
-              const instanceId = await resolveSessionBrowserInstance('browser_get_clipboard')
-              return bpm.getClipboard(instanceId)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_get_clipboard')
+              return bpm.getClipboard(instanceId, tabId)
             },
             screenshot: async (options) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_screenshot')
-              return bpm.screenshot(instanceId, options)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_screenshot')
+              return bpm.screenshot(instanceId, options, tabId)
             },
             screenshotRegion: async (options) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_screenshot_region')
-              return bpm.screenshotRegion(instanceId, options)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_screenshot_region')
+              return bpm.screenshotRegion(instanceId, options, tabId)
+            },
+            // A PDF is a document, not a picture of one: it covers the whole page and needs no
+            // composited surface, so a tab behind the person prints like any other.
+            printPdf: async (options) => {
+              const { instanceId, tabId } = await resolveCommandTarget('browser_pdf')
+              return bpm.printPdf(instanceId, options, tabId)
             },
             getConsoleLogs: async (options) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_console')
-              return bpm.getConsoleLogs(instanceId, options)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_console')
+              return bpm.getConsoleLogs(instanceId, options, tabId)
             },
-            windowResize: async (options) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_window_resize')
-              return bpm.windowResize(instanceId, options.width, options.height)
+            // The size is the **view's**, so it is the named tab's — `--tab`, or this conversation's
+            // own tab. When that tab is the one on screen the window has to follow (its viewport *is*
+            // the window's page area); when it is not, only that view is resized and the window the
+            // person is reading is left alone (`resizeViewport`).
+            resizeViewport: async (options) => {
+              const { instanceId, tabId } = await resolveCommandTarget('browser_viewport_resize')
+              return bpm.resizeViewport(instanceId, options.width, options.height, tabId)
             },
             getNetworkLogs: async (options) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_network')
-              return bpm.getNetworkLogs(instanceId, options)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_network')
+              return bpm.getNetworkLogs(instanceId, options, tabId)
             },
             waitFor: async (options) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_wait')
-              return bpm.waitFor(instanceId, options)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_wait')
+              return bpm.waitFor(instanceId, options, tabId)
             },
             sendKey: async (options) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_key')
-              return bpm.sendKey(instanceId, options)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_key')
+              return bpm.sendKey(instanceId, options, tabId)
             },
             getDownloads: async (options) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_downloads')
+              // Downloads are the window's, not a tab's — the list outlives the tab it
+              // started in, and a `--tab` names nothing here (`getDownloads`). Asking for
+              // them must not open a window either: a workspace with no window has no
+              // downloads to report, and inventing one to say "none" is a side effect a
+              // read must not have.
+              const instanceId = await resolveWorkspaceWindowId()
+              if (!instanceId) return []
               return bpm.getDownloads(instanceId, options)
             },
             upload: async (ref, filePaths) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_upload')
-              return bpm.uploadFile(instanceId, ref, filePaths).then(() => {})
+              const { instanceId, tabId } = await resolveCommandTarget('browser_upload')
+              return bpm.uploadFile(instanceId, ref, filePaths, tabId).then(() => {})
             },
             scroll: async (direction, amount) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_scroll')
-              return bpm.scroll(instanceId, direction, amount)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_scroll')
+              return bpm.scroll(instanceId, direction, amount, tabId)
             },
             goBack: async () => {
-              const instanceId = await resolveSessionBrowserInstance('browser_back')
-              return bpm.goBack(instanceId)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_back')
+              return bpm.goBack(instanceId, tabId)
             },
             goForward: async () => {
-              const instanceId = await resolveSessionBrowserInstance('browser_forward')
-              return bpm.goForward(instanceId)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_forward')
+              return bpm.goForward(instanceId, tabId)
+            },
+            // Fire-and-forget on the browser side (the toolbar's own reload is the same
+            // call): nothing waits for a document to load.
+            reload: async () => {
+              const { instanceId, tabId } = await resolveCommandTarget('browser_reload')
+              bpm.reload(instanceId, tabId)
             },
             evaluate: async (expression) => {
-              const instanceId = await resolveSessionBrowserInstance('browser_evaluate')
-              return bpm.evaluate(instanceId, expression)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_evaluate')
+              return bpm.evaluate(instanceId, expression, tabId)
             },
-            focusWindow: async (targetInstanceId) => {
-              const windows = await bpm.listInstancesAsync()
-              if (windows.length === 0) {
-                throw new Error('No browser windows available to focus. Use "open" first.')
-              }
+            // Bytes through the window's session rather than the page's fetch: a url the page
+            // displayed but script could not read still comes down here.
+            fetchResource: async (url, options) => {
+              const { instanceId, tabId } = await resolveCommandTarget('browser_fetch_resource')
+              return bpm.fetchResource(instanceId, url, options, tabId)
+            },
+            pick: async (options) => {
+              const { instanceId, tabId } = await resolveCommandTarget('browser_pick')
+              return bpm.pickElement(instanceId, options, tabId)
+            },
+            // No browser instance: a recording is decoded by a hidden window, not
+            // by the one the session is driving, so this works in a session that
+            // has never opened a tab.
+            sampleVideo: async ({ path, out, mode, everyMs, maxFrames, changeThreshold, fromMs, toMs, first, last, maxEdge, probeOnly }) => {
+              const extracted = await bpm.extractVideoFrames(path, {
+                mode: mode ?? 'timeline',
+                everyMs: Math.max(100, everyMs ?? 2_000),
+                // The same ceiling the command line defaults to and tops out at: high enough that
+                // the interval, not this, decides the spacing of an ordinary read.
+                maxFrames: Math.max(1, Math.min(1_000, maxFrames ?? 1_000)),
+                ...(probeOnly ? { probeOnly: true } : {}),
+                // `changes` only, and bounded here as well as in the sampler: a nonsense value
+                // should be settled at the door rather than travel to the sampler and be clamped there.
+                ...(typeof changeThreshold === 'number'
+                  ? { changeThreshold: Math.min(1, Math.max(0.0005, changeThreshold)) }
+                  : {}),
+                // The range is clamped to the recording by the sampler, which is where the
+                // duration is known; this only refuses to pass a negative in.
+                ...(typeof fromMs === 'number' ? { fromMs: Math.max(0, fromMs) } : {}),
+                ...(typeof toMs === 'number' ? { toMs: Math.max(0, toMs) } : {}),
+                // The two ends are all-or-nothing: the sampler treats either as "these frames
+                // instead of a scan", so a `false` carries no meaning and is left out.
+                ...(first ? { first: true } : {}),
+                ...(last ? { last: true } : {}),
+                // The ceiling is the format's own (`scale_long`), and it only ever scales down.
+                // **`0` means "no scaling"** (see the command line's own default), so it is passed
+                // on as *absent* rather than clamped up to the smallest edge: `Math.max(16, 0)` is
+                // 16, and that floor is what made every frame 16px wide unless `--max-edge` was
+                // given. The floor still guards a deliberately tiny number.
+                ...(typeof maxEdge === 'number' && maxEdge > 0
+                  ? { maxEdge: Math.max(16, Math.min(4096, maxEdge)) }
+                  : {}),
+              })
 
-              const target = targetInstanceId
-                ? windows.find(w => w.id === targetInstanceId)
-                : windows.find(w => w.boundSessionId === sid || w.ownerSessionId === sid)
-
-              if (!target) {
-                if (targetInstanceId) {
-                  throw new Error(`Browser window "${targetInstanceId}" not found. Use "windows" to list available windows.`)
+              // No `out` means the frames are the reply: hand them back and write nothing.
+              if (!out) {
+                return {
+                  durationMs: extracted.durationMs,
+                  viewport: extracted.viewport,
+                  truncated: extracted.truncated,
+                  frames: extracted.frames.map((frame) => ({
+                    offsetMs: frame.offsetMs,
+                    bytes: frame.bytes,
+                    path: null,
+                  })),
                 }
-                throw new Error('No browser window is currently bound to this session. Use "open --foreground" to create or reuse one.')
               }
 
-              const availableToSession = !target.boundSessionId || target.boundSessionId === sid
-              if (!availableToSession) {
-                throw new Error(`Browser window "${target.id}" is locked to session ${target.boundSessionId}.`)
+              // Written under the caller's directory, named the same way a capture names
+              // its frames (`frame-0001.jpg`) so a caller has one naming to learn.
+              const dir = resolve(out)
+              await mkdir(dir, { recursive: true })
+
+              const frames: Array<{ offsetMs: number; bytes: Uint8Array; path: string }> = []
+              for (const [index, frame] of extracted.frames.entries()) {
+                const framePath = join(dir, `frame-${String(index + 1).padStart(4, '0')}.jpg`)
+                await writeFile(framePath, frame.bytes)
+                frames.push({ offsetMs: frame.offsetMs, bytes: frame.bytes, path: framePath })
               }
 
-              if (!target.boundSessionId) {
-                bpm.bindSession(target.id, sid, { workspaceId })
+              return { durationMs: extracted.durationMs, viewport: extracted.viewport, truncated: extracted.truncated, frames }
+            },
+            // The sound of a recording, written where the caller asked. The decoder owns the
+            // decode and the file; this only resolves the two paths the command gave it.
+            extractAudio: async ({ path, out }) => {
+              return await bpm.extractAudio(path, resolve(out))
+            },
+            // Recording a tab the conversation is working in. The file's directory is decided
+            // by the door that asks (a session's `records/`), so this only forwards — what it
+            // owns is the conversation's half of the identity, `(sessionId, tabId)`.
+            startRecording: async (args) => {
+              // The window to record in is the one holding the named tab — a tab id names a tab
+              // inside one profile's window, and `--profile` may have put this command in another
+              // profile than the cursor's.
+              const located = await findTabWindow(args.tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${args.tabId}". "tabs" lists them.`)
+              }
+              const window = (await sessionWindows()).find((candidate) => candidate.id === located.instanceId)
+              const result = await bpm.startRecordingForSession(sid, args, {
+                workspaceId,
+                ...(window ? { profileId: profileOf(window) } : {}),
+              })
+
+              // The non-waiting form answers at the start, so the *end* has to be delivered
+              // separately — otherwise the file lands on disk and nobody is ever told. Nobody
+              // is holding a turn open here: the wait is a listener on the promise the recording
+              // already settles (`waitForRecordingEnd`), not a poll and not a blocked turn.
+              if (result.started && !args.wait) {
+                void bpm.waitForRecordingEnd(sid, args.tabId).then((finished) => {
+                  if (!finished) return
+                  // A turn in flight already sees the file in its own tool results, and a
+                  // follow-up would only interrupt what it is doing.
+                  if (this.sessions.get(sid)?.isProcessing) return
+                  sessionLog.info('[recording] finished, telling the session', {
+                    sessionId: sid,
+                    tabId: finished.tabId,
+                    file: finished.file,
+                  })
+                  const sidecar = finished.file.replace(/\.[^./\\]+$/, '.events.jsonl')
+                  void this.sendMessage(
+                    sid,
+                    [
+                      `[recording-finished] The recording you started of tab ${finished.tabId} has finished`,
+                      `(${finished.seconds}s) and is saved at: ${finished.file}`,
+                      `Sidecar beside it: ${sidecar} — what happened, with ms; read it first.`,
+                      `To understand it: recording_tool understand ${finished.file} --prompt "<question>"; a transcript: recording_tool audio ${finished.file} --out words.wav, then asr_tool transcribe words.wav`,
+                    ].join('\n'),
+                    [],
+                    [],
+                    { hidden: true },
+                  ).catch((error) => {
+                    sessionLog.error('[recording] failed to report a finished recording', { sessionId: sid, error })
+                  })
+                }).catch(() => {
+                  // The window, or the whole runtime, went away with the recording in it.
+                })
               }
 
-              bpm.focus(target.id)
-              const focused = await bpm.getInstanceAsync(target.id)
-              return {
-                instanceId: target.id,
-                title: focused?.title ?? target.title,
-                url: focused?.currentUrl ?? target.url,
+              return result
+            },
+            stopRecording: async ({ tabId }) => bpm.stopRecordingForSession(sid, tabId),
+            // A `.drawio` document → SVG, an editable SVG, a PNG or a page. The document is read
+            // here — the workspace is where this runs, and only its text has to travel to the
+            // engine — and drawn by the pane side. `out` is the whole difference between looking
+            // and keeping, exactly as it is for a recording's frames.
+            //
+            // The read goes through `drawioDocument`, so what travels is the *document*: a file that
+            // is an exported SVG (a drawing with its document inside) is read back out of it, and the
+            // engine is never handed a wrapper it would have to unwrap itself.
+            exportDrawio: async ({ path, format, out, page, scale, theme }) => {
+              if (!existsSync(path)) {
+                throw new Error(`No diagram at ${path}.`)
               }
+              const rendered = await bpm.renderDrawio({
+                xml: drawioDocument(await readFile(path, 'utf-8')),
+                format,
+                ...(page !== undefined ? { page } : {}),
+                ...(scale !== undefined ? { scale } : {}),
+                theme: theme ?? 'auto',
+              })
+
+              if (!out) return { ...rendered, path: null }
+
+              const target = resolve(out)
+              await mkdir(dirname(target), { recursive: true })
+              await writeFile(target, rendered.bytes)
+              return { ...rendered, path: target }
+            },
+            // The same read as `exportDrawio`, and nothing else: `drawio_tool pages` lists what a
+            // document holds, which is a question about the file and no reason to involve a window.
+            listDrawioPages: async ({ path }) => {
+              if (!existsSync(path)) {
+                throw new Error(`No diagram at ${path}.`)
+              }
+              return drawioPages(await readFile(path, 'utf-8'))
             },
             releaseControl: async (requestedInstanceId) => {
               if (requestedInstanceId === 'all') {
@@ -4365,7 +5306,7 @@ export class SessionManager implements ISessionManager {
                 }
               }
 
-              const resolution = await resolveLifecycleWindowTarget('release', requestedInstanceId)
+              const resolution = await resolveLifecycleWindowTarget(requestedInstanceId)
               if (!resolution.target) {
                 sessionLog.info(`[browser-pane] lifecycle release session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
                 return {
@@ -4388,60 +5329,266 @@ export class SessionManager implements ISessionManager {
                 reason: result.reason,
               }
             },
-            closeWindow: async (requestedInstanceId) => {
-              const resolution = await resolveLifecycleWindowTarget('close', requestedInstanceId)
-              if (!resolution.target) {
-                sessionLog.info(`[browser-pane] lifecycle close session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
-                return {
-                  action: 'noop',
-                  requestedInstanceId,
-                  affectedIds: [],
-                  reason: resolution.reason,
+            // Tabs, not windows: this session's window holds them, and a command
+            // acts on this conversation's cursor tab unless it names one with `--tab`.
+            // Creating a tab is the one tab operation that may open a
+            // window — there is nothing to add a tab to otherwise — so it goes
+            // through the same resolver every browser command uses.
+            //
+            // Everything reached through here was asked for by the agent, so the
+            // tab says whose work it is: `by` is stamped here
+            // rather than at each call site, because a caller that forgot would
+            // leave the agent's own tab looking like the user's — and "leave other
+            // people's tabs alone" is decided from that field.
+            createTab: async (options) => {
+              // A window, not a tab: this is the one command a conversation with no tab of its
+              // own can still run.
+              const instanceId = await resolveWorkspaceWindow()
+              return await bpm.createTabAsync(instanceId, {
+                ...options,
+                // A blank tab the person has seen is theirs — "new tab" means one more there.
+                // A window nobody has seen yet (opened by this call or by the turn's control
+                // overlay) has only its birth tab, and taking it is what keeps that window at
+                // one tab instead of leaving an orphan beside it. The browser side decides,
+                // from `hasBeenShown`.
+                reuseUntouchedWindow: true,
+                belongsTo: work,
+              })
+            },
+            /**
+             * Hand a tab to another conversation — the orchestrator's half of "a DAG's nodes each
+             * get their own tab".
+             *
+             * Checked here rather than in the browser because only this side knows the sessions:
+             * the tab has to be one this conversation owns (the browser side checks that), and the
+             * receiver has to be a conversation this one spawned (any depth) or one of the same
+             * task — not any session in the workspace. A tab is not a thing to push into somebody
+             * else's conversation.
+             *
+             * The receiver's **work** is resolved here too, and passed whole: whether the new tab
+             * belongs to a conversation or to a DAG node is a fact about the session being handed
+             * to, which the browser side has no way to look up.
+             */
+            assignTab: async (tabId, targetSessionId) => {
+              const located = await findTabWindow(tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${tabId}". "tabs" lists them. "navigate <url>" or "tab-new <url>" opens one.`)
+              }
+              const instanceId = located.instanceId
+              const target = this.sessions.get(targetSessionId)
+              if (!target || target.workspace.id !== workspaceId) {
+                throw new Error(
+                  `"${targetSessionId}" is not a conversation in this workspace, so it cannot be given a tab of this window. ` +
+                  '"spawn-session" (or the task\'s own report) says which child sessions exist.',
+                )
+              }
+              if (targetSessionId === sid) {
+                throw new Error('A tab cannot be handed to the conversation that already has it.')
+              }
+              // A child of this conversation (any depth), or a session of the same task. Anything
+              // else is another conversation's business.
+              let ancestorId = target.parentSessionId
+              let isDescendant = false
+              const visited = new Set<string>()
+              while (ancestorId && !visited.has(ancestorId)) {
+                if (ancestorId === sid) {
+                  isDescendant = true
+                  break
+                }
+                visited.add(ancestorId)
+                ancestorId = this.sessions.get(ancestorId)?.parentSessionId
+              }
+              if (!isDescendant && !sameTask(workOfSession(target), work)) {
+                throw new Error(
+                  `"${targetSessionId}" was not spawned by this conversation and is not part of this task, so it cannot be given this tab. ` +
+                  'Hand a tab to a child session you spawned ("spawn-session"), or let the task orchestrate its own.',
+                )
+              }
+              bpm.assignTab(instanceId, tabId, workOfSession(target), work)
+            },
+            targetTab: async (tabId) => {
+              const located = await findTabWindow(tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${tabId}". "tabs" lists them. "navigate <url>" or "tab-new <url>" opens one.`)
+              }
+              const { instanceId, tab } = located
+              // Checked on the *named* tab, before anything is written: naming somebody else's
+              // work is refused here rather than after the window has been repointed at it.
+              assertTabUsable(tab)
+              // Naming a tab is how a conversation says "this is where I work from" — the cursor
+              // moves with it, so the rest of the command (and the next one, and the one after the
+              // person clicks around) stays on this tab. Nothing is shown:
+              // the window is shared, and the person reading another of its tabs is not the
+              // command's to move (第十二轮).
+              bpm.setSessionTab(instanceId, tabId, sid)
+            },
+            activateTab: async (tabId, options) => {
+              const located = await findTabWindow(tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${tabId}". "tabs" lists them. "navigate <url>" or "tab-new <url>" opens one.`)
+              }
+              const { instanceId, tab } = located
+              // Checked on the *named* tab, before the window is moved to it: showing somebody
+              // else's work is refused here rather than after the switch.
+              assertTabUsable(tab)
+              // The one command that moves the window's tab, because that is what it is called
+              // (`tab-show`): every other command works where its tab is, behind the person's if
+              // they are reading another one (第十二轮) — and a tab brought up is a tab about to
+              // be worked on, so the cursor goes with it too.
+              bpm.setSessionTab(instanceId, tabId, sid)
+              // …except for a child session, which takes the tab as its own without moving what
+              // the person sees. Said out loud rather than done quietly:
+              // the answer to "show it to them" is about the person's view.
+              if (isChildSession) return { movedView: false }
+              // Showing a tab to the person is not unlocking it: they can look while the
+              // conversation goes on working there. `--handover` is the other request — "you
+              // take it from here" — and only then do the overlay and the hold go, before the
+              // tab comes up so they see the page rather than a shield that is about to leave.
+              if (options?.handover) bpm.clearAgentControlForInstance(instanceId, sid)
+              bpm.activateTab(instanceId, tabId)
+              // The window is deliberately **not** brought to the front. Raising it steals the
+              // person's screen and focus with no explanation; the conversation's reply is the
+              // prompt ("the browser is on tab X — I need you to …"), and the top bar's browser
+              // badge is how they open it themselves. Same rule as every other command: an
+              // automatic action does not move the person's view.
+              return { movedView: true }
+            },
+            closeTab: async (tabId) => {
+              const located = await findTabWindow(tabId)
+              if (!located) {
+                throw new Error(`No browser window has a tab "${tabId}". "tabs" lists them.`)
+              }
+              const { instanceId, tab: target } = located
+              assertTabIsMineToClose(target)
+              assertTabUnlocked(target)
+              bpm.closeTab(instanceId, tabId)
+              // Read back rather than assume: closing the last tab takes the
+              // window with it, and that is worth saying rather than leaving the
+              // caller to find out on its next command.
+              const remaining = await bpm.listTabsAsync(instanceId).catch(() => [])
+              return { remaining: remaining.length }
+            },
+            listTabs: async () => {
+              // Every window of this workspace, unless `--profile` names one. A conversation can
+              // hold tabs in several profiles at once, and `tabs` is how it finds them again —
+              // so the list carries the window (`instanceId`) and its profile (`profileName`)
+              // beside each id, which is what makes a colliding `tab-1` nameable.
+              const windows = (await sessionWindows())
+                .filter((window) => !profileId || profileOf(window) === profileId)
+              const tabs: BrowserTabInfo[] = []
+              for (const window of windows) {
+                const listed = await bpm.listTabsAsync(window.id).catch(() => [])
+                for (const tab of listed) {
+                  tabs.push({
+                    ...tab,
+                    instanceId: window.id,
+                    profileName: profileNameOf(profileOf(window)),
+                  })
                 }
               }
-
-              bpm.destroyInstance(resolution.target.id)
-              sessionLog.info(`[browser-pane] lifecycle close session=${sid} requested=${requestedInstanceId ?? 'auto'} resolved=${resolution.target.id} result=closed`)
-
-              return {
-                action: 'closed',
-                requestedInstanceId,
-                resolvedInstanceId: resolution.target.id,
-                affectedIds: [resolution.target.id],
-              }
+              return tabs
             },
-            hideWindow: async (requestedInstanceId) => {
-              const resolution = await resolveLifecycleWindowTarget('hide', requestedInstanceId)
-              if (!resolution.target) {
-                sessionLog.info(`[browser-pane] lifecycle hide session=${sid} requested=${requestedInstanceId ?? 'auto'} result=noop reason=${resolution.reason}`)
-                return {
-                  action: 'noop',
-                  requestedInstanceId,
-                  affectedIds: [],
-                  reason: resolution.reason,
-                }
+            waitForIdle: async (timeoutMs = 5_000) => {
+              const instanceId = await resolveWorkspaceWindowId()
+              if (!instanceId) return true
+              const deadline = Date.now() + timeoutMs
+              // The same tab `pickCommandTarget` gives this session's commands — read,
+              // not assigned: waiting must not take a tab or move a cursor.
+              while (Date.now() < deadline) {
+                const tabs = await bpm.listTabsAsync(instanceId).catch(() => [])
+                const target = pickCommandTarget(tabs, sid)
+                // `documentLoading` matters for the one document the bar draws no spinner
+                // for — our own error page: a reader must wait for it, or it reads
+                // Chromium's blank failure page in the meantime.
+                if (!target || (!target.isLoading && !target.documentLoading)) return true
+                await new Promise((resolve) => setTimeout(resolve, 100))
               }
-
-              bpm.hide(resolution.target.id)
-              sessionLog.info(`[browser-pane] lifecycle hide session=${sid} requested=${requestedInstanceId ?? 'auto'} resolved=${resolution.target.id} result=hidden`)
-
-              return {
-                action: 'hidden',
-                requestedInstanceId,
-                resolvedInstanceId: resolution.target.id,
-                affectedIds: [resolution.target.id],
-              }
-            },
-            listWindows: async () => {
-              return bpm.listInstancesAsync()
+              return false
             },
             detectChallenge: async () => {
-              const instanceId = await resolveSessionBrowserInstance('browser_detect_challenge')
-              return bpm.detectSecurityChallenge(instanceId)
+              const { instanceId, tabId } = await resolveCommandTarget('browser_detect_challenge')
+              return bpm.detectSecurityChallenge(instanceId, tabId)
             },
-          } satisfies BrowserPaneFns,
+            // `--profile`: the same surface, bound to one profile. Present on a scoped surface too,
+            // so a command that names a profile twice (or a host that asks) still resolves.
+            withProfile: (ref: string) => buildBrowserPaneFns(resolveProfileIdOrThrow(ref), bpm),
+            listProfiles: async () => getBrowserProfiles().map(({ id, name }) => ({ id, name })),
+          } satisfies BrowserPaneFns
+        }
+
+        /**
+         * The profile a `--profile` names, by display name or id.
+         *
+         * Only the host knows the registry, so this is where a name becomes an id — before any
+         * command runs, so a typo is refused with the profiles that exist rather than turning
+         * into a window nobody meant to open.
+         */
+        const resolveProfileIdOrThrow = (ref: string): string => {
+          const profiles = getBrowserProfiles()
+          const match = resolveBrowserProfileRef(ref, profiles)
+          if (match) return match.id
+          const known = profiles.map((profile) => `${profile.name} (${profile.id})`).join(', ')
+          throw new Error(`No browser profile "${ref}". Profiles: ${known}.`)
+        }
+
+        mergeSessionScopedToolCallbacks(sid, {
+          browserPaneFns: buildBrowserPaneFns(),
+          // An anchored edit inside the editor showing a document — addressed to the connection
+          // that reported it open. `null` when nothing is showing it, and `office_tool` says so
+          // rather than writing behind an absent editor.
+          officeApplyEditFn: async (path, edit) => {
+            const server = this.rpcServer
+            if (!server) return null
+            return requestOfficeEdit(server, path, edit)
+          },
+
+          // "Draw page n of this document" — the same capture a poster takes, installed by the
+          // process that owns a renderer (`setOfficePageCapture`: the app's hidden window, or a
+          // hub's launcher). Unset on a host that cannot open an editor, and `render` then prints
+          // the page as it always did.
+          // `html_tool shot` — a page drawn by the same owner of the browser, its scripts run.
+          // `markdown_tool shot` — the app's own renderer draws the file (a `.md` has no editor).
+          officeMarkdownShotFn: async ({ path, width, height, outDir }) => {
+            const shot = officeMarkdownShot()
+            if (!shot) return []
+            return shot({ path, width, height, outDir })
+          },
+          officeWebShotFn: async ({ path, width, height, outDir }) => {
+            const shot = officeWebShot()
+            if (!shot) return []
+            return shot({ path, width, height, outDir })
+          },
+          officeCapturePagesFn: async ({ path, page, outDir, target }) => {
+            const capture = officePageCapture()
+            if (!capture) return []
+            const app = captureAppFor(path)
+            if (!app) return []
+            return capture({ app, path, page, outDir, ...(target ? { target } : {}) })
+          },
+          // "Save what you are holding, now" — asked before the agent reads anything, so a
+          // document somebody is typing into is not silently behind its own file.
+          documentFlushFn: async (paths) => {
+            const server = this.rpcServer
+            if (!server) return paths.map((path) => ({ path, ok: false }))
+            return requestDirtyDocumentFlush(server, paths)
+          },
+          // The device door: shell/files reach the named device through the RPC bridge, and a
+          // nested `browser` command is bound to that device's own manager rather than to this
+          // server's browser.
+          deviceFns: this.createDeviceToolFns(managed.workspace.id, (clientId) =>
+            buildBrowserPaneFns(undefined, this.browserPaneManagerForClient(sid, clientId))),
+          // The desktop door is its own tool (`computer_tool`), not a device capability: the device
+          // door answers "which machine", this one answers "this machine's GUI".
+          getComputerPaneFns: () => this.requireComputerPaneFns(sid),
         })
       }
+
+      // Whether a tool list should offer `device_tool` at all. Registered outside the pane block
+      // because the question needs no pane — a hub with no browser still pairs machines, and a hub
+      // that has never paired one should not pay for the door's brief every turn.
+      mergeSessionScopedToolCallbacks(managed.id, {
+        hasDevicesFn: () => this.hasPairedDevices(),
+      })
 
       // Signal that the agent instance is ready (unblocks title generation)
       managed.agentReadyResolve?.()
@@ -4648,9 +5795,9 @@ export class SessionManager implements ISessionManager {
             this.recoverPendingSteers(managed)
             this.setProcessing(managed, false)
 
-            // Release browser overlay + session binding because the agent is no longer running.
-            // Plan submission pauses execution until user review, so browser ownership should not remain locked.
-            await releaseBrowserOwnershipOnForcedStop(
+            // Release browser overlay + driven-by marks because the agent is no longer running.
+            // Plan submission pauses execution until user review, so the window should not be held.
+            await releaseBrowserOnForcedStop(
               (sid) => this.getBrowserPaneManagerForSession(sid),
               managed.id,
             )
@@ -4708,8 +5855,8 @@ export class SessionManager implements ISessionManager {
           this.recoverPendingSteers(managed)
           this.setProcessing(managed, false)
 
-          // Release browser overlay + session binding because the agent is paused awaiting user auth.
-          void releaseBrowserOwnershipOnForcedStop(
+          // Release browser overlay + driven-by marks because the agent is paused awaiting user auth.
+          void releaseBrowserOnForcedStop(
             (sid) => this.getBrowserPaneManagerForSession(sid),
             managed.id,
           )
@@ -4756,6 +5903,11 @@ export class SessionManager implements ISessionManager {
           labels: request.labels ?? managed.labels,
           workingDirectory: request.workingDirectory,
           projectId: request.projectId ?? managed.projectId,
+          // A subtask of a session working in a mode keeps working in it.
+          mode: managed.mode,
+          // …and in the same browser profile, like its working directory: a child that fell back
+          // to the workspace default would land in another profile's window than its parent's.
+          ...(managed.browserProfile ? { browserProfile: managed.browserProfile } : {}),
           // Spawned sessions become subtasks of the spawning session.
           parentSessionId: managed.id,
           // Nobody watches a session an automation, task or CLI run spawns either.
@@ -4768,7 +5920,7 @@ export class SessionManager implements ISessionManager {
           const attachments: FileAttachment[] = []
           for (const a of request.attachments) {
             try {
-              const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id)
+              const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id, { sessionManager: this })
               if (request.workingDirectory) extraDirs.push(request.workingDirectory)
               const safePath = await validateFilePath(a.path, extraDirs)
               const attachment = readFileAttachment(safePath)
@@ -4804,6 +5956,37 @@ export class SessionManager implements ISessionManager {
 
       // Wire up session self-management tools (set_session_labels, set_session_status, etc.)
       mergeSessionScopedToolCallbacks(managed.id, {
+        // A host with no window still draws diagrams and decodes recordings, through the renderer
+        // it staged (`CRAFT_RENDER_CLI`). Registered here rather than with the pane callbacks: a
+        // hub has no pane, and neither of these two needs one. The desktop leaves the variable
+        // unset and keeps using its own drawio and its hidden window, one hop instead of two.
+        ...(renderCli
+          ? {
+              drawioRenderFns: createDrawioCliFns({ command: renderCli }),
+              recordingFns: createRecordingCliFns({ command: renderCli }),
+            }
+          : {}),
+        // Which model reads images for this session (`call_llm`, and the canvas's describe
+        // action). Re-resolved per call so switching connection or model between calls is honoured.
+        getImageModelFn: () => {
+          const ctx = resolveBackendContext({
+            sessionConnectionSlug: managed.llmConnection,
+            workspaceDefaultConnectionSlug: loadWorkspaceConfig(managed.workspace.rootPath)?.defaults?.defaultLlmConnection,
+            managedModel: managed.model,
+          })
+          return ctx.connection ? resolveImageModel(ctx.connection, ctx.resolvedModel) : undefined
+        },
+        notifyBackgroundResultFn: (message: string) => {
+          // A render started by `reel_tool export` settles after its tool call returned. An idle
+          // conversation is woken with a hidden follow-up so the agent can say the film is ready;
+          // one already mid-turn is left alone — it can poll `export --status` rather than be
+          // steered off the answer it is writing.
+          const current = this.sessions.get(managed.id)
+          if (!current || current.isProcessing) return
+          void this.sendMessage(managed.id, message, [], [], { hidden: true, origin: 'system' }).catch((error) => {
+            sessionLog.error('[reel-export] could not surface a finished export:', error)
+          })
+        },
         setSessionLabelsFn: async (sessionId: string | undefined, labels: string[]) => {
           await this.setSessionLabels(sessionId ?? managed.id, labels)
         },
@@ -4877,26 +6060,23 @@ export class SessionManager implements ISessionManager {
             throw new Error(`Invalid task spec: ${parsed.error.issues.map(i => i.message).join('; ')}`)
           }
 
-          const created = await createTaskFromSpec(this, ws.id, ws.rootPath, parsed.data)
+          const created = await createTaskFromSpec(this, ws.id, ws.rootPath, parsed.data, {
+            // Which conversation asked for this. Read back by Craft Bot's workbench (a task is not
+            // a child session, so `parentSessionId` cannot carry it — see the schema's note).
+            createdBy: managed.id,
+          })
           return { ...created, warnings: [...warnings, ...created.warnings] }
         },
-        // Pages tools (list_pages/get_page/create_page/update_page/
-        // write_page_data/delete_page) — grouped callbacks bound to the
-        // invoking session's workspace. Storage flows are shared with the
-        // pages RPC handlers; after each mutation we poke the watcher (Linux
-        // atomic-rename workaround) and broadcast pages:changed, exactly like
-        // those handlers do.
-        pages: buildPagesToolCallbacks({
-          workspaceId: managed.workspace.id,
+        // Tweaks tools (list_tweaks/get_tweak/create_tweak/update_tweak/delete_tweak) —
+        // the standing edits that run on pages nobody here owns. A
+        // mutation writes files in the workspace, so it is an out-of-band edit as far as
+        // the watcher is concerned: the poke is the same, and for the same
+        // reason (files are the truth, and the watcher is how the app hears about them).
+        tweaks: buildTweaksToolCallbacks({
           workspaceRootPath: managed.workspace.rootPath,
           log: (message: string) => sessionLog.info(message),
-          onPagesMutated: async (pageSlug: string) => {
-            this.notifyConfigFileChange(managed.workspace.rootPath, `pages/${pageSlug}/page.json`)
-            const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
-            this.broadcastPagesChanged(managed.workspace.id, loadWorkspacePages(managed.workspace.rootPath))
-          },
-          onContentChanged: (pageSlug: string) => {
-            this.enqueuePageThumbnail(managed.workspace.id, managed.workspace.rootPath, pageSlug)
+          onTweaksMutated: async (tweakSlug: string) => {
+            this.notifyConfigFileChange(managed.workspace.rootPath, `tweaks/${tweakSlug}/tweak.json`)
           },
         }),
         // Decision model (`decide`) — always wired; the callback re-checks the
@@ -4923,6 +6103,10 @@ export class SessionManager implements ISessionManager {
             llmConnection: session.llmConnection,
             model: session.model,
             isActive: session.agent != null,
+            // The machine state, which `status` (a kanban column a person sets) cannot answer:
+            // "has it finished?" is `isProcessing === false && lastMessageRole === 'assistant'`.
+            isProcessing: session.isProcessing,
+            lastMessageRole: session.lastMessageRole,
           }
         },
         listSessionsFn: (options) => {
@@ -5028,7 +6212,7 @@ export class SessionManager implements ISessionManager {
             const builtAttachments: FileAttachment[] = []
             for (const a of attachments) {
               try {
-                const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id)
+                const extraDirs = getWorkspaceAllowedDirs(managed.workspace.id, { sessionManager: this })
                 const safePath = await validateFilePath(a.path, extraDirs)
                 const attachment = readFileAttachment(safePath)
                 if (attachment) {
@@ -5049,7 +6233,14 @@ export class SessionManager implements ISessionManager {
           // target starts processing immediately. sendMessage throws for an
           // unknown session — that rejection propagates to the handler's catch.
           const targetBusy = this.sessions.get(sessionId)?.isProcessing === true
-          await this.sendMessage(sessionId, message, fileAttachments)
+          // `origin: 'agent'`: from this point on the message looks like any user message — same
+          // bubble, same queue — so the only chance to say who really wrote it is here. Without it
+          // the person's draft tray offers to edit another conversation's words into their own.
+          await this.sendMessage(sessionId, message, fileAttachments, undefined, {
+            origin: 'agent',
+            fromSessionId: managed.id,
+            ...(managed.name ? { fromSessionName: managed.name } : {}),
+          })
           return {
             delivery: targetBusy ? ('queued' as const) : ('delivered' as const),
             targetBusy,
@@ -5254,6 +6445,30 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  /**
+   * Hide a conversation from the workspace's session list (or bring it back).
+   *
+   * The same flag mini-agent sessions use, and **presentation only**: the transcript, the session
+   * folder and the memory stay where they are, and the conversation is still reachable by id —
+   * which is how a panel can show one that the list does not.
+   *
+   * The assistant's conversation is created hidden for exactly that reason: it is your assistant,
+   * not one of your tasks, and the task list is not where you look for it.
+   */
+  async setSessionHidden(sessionId: string, hidden: boolean): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) {
+      sessionLog.warn(`setSessionHidden: unknown session ${sessionId} — no-op`)
+      return
+    }
+    if (managed.hidden === hidden) return
+    managed.hidden = hidden
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+    this.sendEvent({ type: 'session_metadata_changed', sessionId, changes: { hidden } }, managed.workspace.id)
+    this.emitUnreadSummaryChanged()
+  }
+
   async unarchiveSession(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
@@ -5291,20 +6506,25 @@ export class SessionManager implements ISessionManager {
 
   /**
    * Set the LLM connection for a session.
-   * Can only be changed before the first message is sent (connection is locked after).
-   * This determines which LLM provider/backend will be used for this session.
+   *
+   * This is the *explicit* switch path (user picked a model under another
+   * connection in the model picker) and is allowed at any point in a session's
+   * life, including after messages have been sent. The connection is still
+   * pinned on first use, but `connectionLocked` only guards *implicit* writes
+   * (`updateSessionModel`'s connection arg, task reconcile) — it must not trap
+   * a user in a provider for the rest of a conversation.
+   *
+   * Timing: provider/auth are restart-required runtime fields, so the backend is
+   * torn down for the new connection. That happens only once the session is idle —
+   * the model picker blocks switching while a turn is generating (the input shows
+   * the stop button instead of send), and this method enforces the same rule as a
+   * safety net for races: a mid-turn switch is recorded and applies on the next send.
    */
   async setSessionConnection(sessionId: string, connectionSlug: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       sessionLog.warn(`setSessionConnection: session ${sessionId} not found`)
       throw new Error(`Session ${sessionId} not found`)
-    }
-
-    // Only allow changing connection before first message (session hasn't started)
-    if (managed.messages && managed.messages.length > 0) {
-      sessionLog.warn(`setSessionConnection: cannot change connection after session has started (${sessionId})`)
-      throw new Error('Cannot change connection after session has started')
     }
 
     // Validate connection exists
@@ -5315,11 +6535,15 @@ export class SessionManager implements ISessionManager {
       throw new Error(`LLM connection "${connectionSlug}" not found`)
     }
 
+    const previousSlug = managed.llmConnection
     managed.llmConnection = connectionSlug
+    // An explicit pick pins the session, so later ambient config drift can't
+    // silently re-route it.
+    managed.connectionLocked = true
     // Persist in-memory state directly to avoid race with pending queue writes
     this.persistSession(managed)
     await this.flushSession(managed.id)
-    sessionLog.info(`Set LLM connection for session ${sessionId} to ${connectionSlug}`)
+    sessionLog.info(`Set LLM connection for session ${sessionId} to ${connectionSlug} (was ${previousSlug ?? 'unset'})`)
 
     // Notify UI that connection changed (triggers capabilities refresh)
     this.sendEvent({
@@ -5328,6 +6552,118 @@ export class SessionManager implements ISessionManager {
       connectionSlug,
       supportsBranching: resolveSupportsBranching(managed),
     }, managed.workspace.id)
+
+    // Tear down the old provider's backend only when the session is idle — the
+    // switch itself is available at any time, but a turn that is still running
+    // must finish on the provider it started with, and the new connection takes
+    // effect on the next send. Nothing is rebuilt here: `getOrCreateAgent`
+    // recreates the backend from the new connection when the next turn arrives.
+    // A refresh failure must not fail the switch — the connection is persisted.
+    if (previousSlug !== connectionSlug) {
+      if (this.isSessionInTurn(managed)) {
+        sessionLog.info(`Connection switched mid-turn for ${sessionId}; new provider applies on the next send`)
+      } else {
+        try {
+          await this.tryRefreshAgentRuntime(managed, 'explicit connection switch')
+        } catch (error) {
+          sessionLog.warn(`Runtime refresh after connection switch failed for ${sessionId}: ${error instanceof Error ? error.message : error}`)
+        }
+      }
+    }
+  }
+
+  /**
+   * The browser profile this conversation is set to: its own pick, its project's default, its
+   * workspace's default, then the built-in one. Read per call — any level can change while the
+   * conversation exists.
+   *
+   * This is the profile the composer and the top-bar badge show, the prompt names, and the default
+   * for a browser command that names no profile.
+   */
+  getBrowserProfileForSession(sessionId: string): string {
+    const session = this.sessions.get(sessionId)
+    if (!session) return DEFAULT_BROWSER_PROFILE_ID
+    const projectProfile = session.projectId
+      ? loadProjectById(session.workspace.rootPath, session.projectId)?.config.browserProfile
+      : undefined
+    const workspaceDefault = loadWorkspaceConfig(session.workspace.rootPath)?.defaults?.browserProfile
+    return resolveConversationBrowserProfileId(session.browserProfile, projectProfile, workspaceDefault)
+  }
+
+  /** The display name of a profile id — what `--profile` accepts and the prompt shows. */
+  private browserProfileName(profileId: string): string {
+    return getBrowserProfiles().find((profile) => profile.id === profileId)?.name ?? profileId
+  }
+
+  /**
+   * Set (or clear, with `null`) the browser profile this conversation works in.
+   *
+   * The profile is the conversation's own default: the composer's picker and the top-bar badge
+   * read it, the prompt names it, and a browser command that names no `--profile` uses it (read per
+   * command, so a switch applies to the next one). Nothing is torn down and no tab is recreated: a
+   * profile is a window, and the tabs already open stay in the window they are in — a Chromium
+   * session cannot be swapped under a live page.
+   */
+  async setSessionBrowserProfile(sessionId: string, profileId: string | null): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) {
+      sessionLog.warn(`setSessionBrowserProfile: session ${sessionId} not found`)
+      throw new Error(`Session ${sessionId} not found`)
+    }
+
+    const next = profileId?.trim() || undefined
+    if (next && !getBrowserProfiles().some((profile) => profile.id === next)) {
+      sessionLog.warn(`setSessionBrowserProfile: browser profile "${next}" not found`)
+      throw new Error(`Browser profile "${next}" not found`)
+    }
+
+    const previous = managed.browserProfile
+    if (previous === next) return
+
+    // The effective profile before and after (the workspace default fills in when cleared), so
+    // the prompt and the event can say what actually changed rather than what was picked.
+    const previousEffective = this.getBrowserProfileForSession(sessionId)
+
+    if (next) managed.browserProfile = next
+    else delete managed.browserProfile
+    const effective = this.getBrowserProfileForSession(sessionId)
+    const previousName = this.browserProfileName(previousEffective)
+    const name = this.browserProfileName(effective)
+
+    if (name !== previousName) {
+      // A switch in a fresh conversation is just "where this chat works" — announcing it as a
+      // change would tell the model about a move nobody made. Only a conversation with history
+      // gets the one-shot notice; both get the profile line.
+      setBrowserProfilePromptState(
+        sessionId,
+        name,
+        managed.messages.length > 0 ? { announceFrom: previousName } : undefined,
+      )
+    }
+
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+    sessionLog.info(`Set browser profile for session ${sessionId} to ${next ?? 'workspace default'} (was ${previous ?? 'workspace default'})`)
+
+    this.sendEvent(
+      { type: 'browser_profile_changed', sessionId, profileId: next ?? null },
+      managed.workspace.id,
+    )
+  }
+
+  /**
+   * Whether a turn is currently running for this session — the session-level
+   * flag is checked alongside the agent's stream flag because the window between
+   * SDK messages (tool execution, permission waits) is still the same turn, and
+   * a turn must not have its backend torn down underneath it.
+   */
+  private isSessionInTurn(managed: ManagedSession): boolean {
+    return managed.isProcessing || Boolean(managed.agent?.isProcessing())
+  }
+
+  /** Keep the prompt's volatile profile line in step with the effective profile (workspace default included). */
+  private syncBrowserProfilePromptState(sessionId: string): void {
+    setBrowserProfilePromptState(sessionId, this.browserProfileName(this.getBrowserProfileForSession(sessionId)))
   }
 
   // ============================================
@@ -5337,7 +6673,7 @@ export class SessionManager implements ISessionManager {
   /**
    * Set pending plan execution state.
    * Called when user clicks "Accept & Compact" to persist the plan path
-   * so execution can resume after compaction (even if page reloads).
+   * so execution can resume after compaction (even if design reloads).
    */
   async setPendingPlanExecution(sessionId: string, planPath: string, draftInputSnapshot?: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
@@ -6031,14 +7367,20 @@ export class SessionManager implements ISessionManager {
   /**
    * Update the model for a session
    * Pass null to clear the session-specific model (will use global config)
-   * @param connection - Optional LLM connection slug (only applied if not already locked)
+   * @param connection - Optional LLM connection slug, applied only while the session
+   *   is not pinned. Callers that pass a connection resolved by fallback (the model
+   *   picker's effective connection) must not be able to re-route a pinned session —
+   *   an intentional switch goes through setSessionConnection() instead. A slug that
+   *   differs from the session's current connection also marks the model as belonging
+   *   to that other connection, so it is recorded but never pushed onto the current
+   *   provider's live agent.
    */
   async updateSessionModel(sessionId: string, workspaceId: string, model: string | null, connection?: string): Promise<void> {
     sessionLog.info(`[updateSessionModel] sessionId=${sessionId}, model=${model}, connection=${connection}`)
     const managed = this.sessions.get(sessionId)
     if (managed) {
       managed.model = model ?? undefined
-      // Also update connection if provided and not already locked
+      // Also update connection if provided and the session isn't pinned yet
       if (connection && !managed.connectionLocked) {
         managed.llmConnection = connection
       }
@@ -6048,14 +7390,23 @@ export class SessionManager implements ISessionManager {
         updates.llmConnection = connection
       }
       await updateSessionMetadata(managed.workspace.rootPath, sessionId, updates)
-      // Update agent model if it already exists (takes effect on next query)
+      // Update agent model if it already exists (takes effect on next query —
+      // the model for a turn is fixed when the turn is sent)
       if (managed.agent) {
-        // Fallback chain: session model > workspace default > connection default
-        const wsConfig = loadWorkspaceConfig(managed.workspace.rootPath)
-        const sessionConn = resolveSessionConnection(managed.llmConnection, wsConfig?.defaults?.defaultLlmConnection)
-        const effectiveModel = model ?? wsConfig?.defaults?.model ?? sessionConn?.defaultModel!
-        sessionLog.info(`[updateSessionModel] Calling agent.setModel(${effectiveModel}) [agent exists=${!!managed.agent}, connectionLocked=${managed.connectionLocked}]`)
-        managed.agent.setModel(effectiveModel)
+        // A model that belongs to another connection is applied by
+        // setSessionConnection() + the runtime rebuild on the next send. Pushing
+        // it here would hand a foreign model id to the wrong provider.
+        const belongsToCurrentConnection = !connection || connection === managed.llmConnection
+        if (!belongsToCurrentConnection) {
+          sessionLog.info(`[updateSessionModel] Model belongs to connection "${connection}"; applies once the session switches (next send)`)
+        } else {
+          // Fallback chain: session model > workspace default > connection default
+          const wsConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+          const sessionConn = resolveSessionConnection(managed.llmConnection, wsConfig?.defaults?.defaultLlmConnection)
+          const effectiveModel = model ?? wsConfig?.defaults?.model ?? sessionConn?.defaultModel!
+          sessionLog.info(`[updateSessionModel] Calling agent.setModel(${effectiveModel}) [agent exists=${!!managed.agent}, connectionLocked=${managed.connectionLocked}]`)
+          managed.agent.setModel(effectiveModel)
+        }
       } else {
         sessionLog.info(`[updateSessionModel] No agent yet, model will apply on next agent creation`)
       }
@@ -6299,6 +7650,9 @@ export class SessionManager implements ISessionManager {
       this.deltaFlushTimers.delete(sessionId)
     }
     this.pendingDeltas.delete(sessionId)
+    clearBrowserProfilePromptState(sessionId)
+    clearBrowserHostState(sessionId)
+    clearRecordingHostState(sessionId)
     this.clearAdminRememberApprovalsForSession(sessionId)
     this.clearPendingPermissionRequestsForSession(sessionId)
 
@@ -6313,9 +7667,10 @@ export class SessionManager implements ISessionManager {
     if (sessionBpm) {
       sessionBpm.destroyForSession(sessionId)
     }
-    // Drop the per-session remote bridge + host-client pin on destroy.
-    this.remoteBpms.delete(sessionId)
-    this.browserHostByCanvas.delete(sessionId)
+    // Drop the device bridges this session held on destroy.
+    for (const key of [...this.remoteDeviceBpms.keys()]) {
+      if (key.startsWith(`${sessionId}::`)) this.remoteDeviceBpms.delete(key)
+    }
 
     // Dispose agent to clean up ConfigWatchers, event listeners, MCP connections
     if (managed.agent) {
@@ -6371,19 +7726,32 @@ export class SessionManager implements ISessionManager {
      * (#616). Pre-persist errors still reject the outer promise as before.
      */
     onAck?: (messageId: string) => void,
-    /**
-     * Optional transport context. The `sessions.sendMessage` RPC handler passes
-     * `{ callerClientId: ctx.clientId }` so the SM can pin the desktop client
-     * that should host this session's browser tools. Pass undefined when calling
-     * directly (tests, intra-server flows) to leave the existing pin in place.
-     */
-    rpcContext?: { callerClientId?: string },
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
     }
-    this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
+
+    // A conversation whose own pick was deleted keeps that id as an explicit invalid reference
+    // (the UI shows it, and its window stays usable), but it must not start a turn: the person has
+    // to choose an existing profile first. Hidden system messages are not a person sending.
+    const pickedProfile = managed.browserProfile?.trim()
+    if (!options?.hidden && pickedProfile && !getBrowserProfiles().some((profile) => profile.id === pickedProfile)) {
+      throw new Error(
+        `This conversation's browser profile "${pickedProfile}" was deleted. Choose a valid profile before sending.`,
+      )
+    }
+
+    // Same rule for the folder this conversation works in. The path stays in the header
+    // (it is still shown, and re-creating the folder makes it valid again), but no turn may
+    // start against a directory that is gone: Claude would silently fall back to the session
+    // folder while the prompt still names the old path, and Pi would fail with a raw ENOENT.
+    const sessionWorkingDirectory = managed.workingDirectory?.trim()
+    if (!options?.hidden && sessionWorkingDirectory && !isValidWorkingDirectory(expandPath(sessionWorkingDirectory)).valid) {
+      throw new Error(
+        `This conversation's working directory "${sessionWorkingDirectory}" no longer exists. Choose a working directory before sending.`,
+      )
+    }
 
     // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
     // has just scheduled or committed a "[<slug> activated]" retry, drop a matching
@@ -6415,17 +7783,12 @@ export class SessionManager implements ISessionManager {
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
 
-    // If currently processing, behavior depends on the connection's
-    // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
-    // defaults to provider-appropriate value):
-    //
-    // - 'steer': try to deliver into the in-flight turn. Pi steers natively;
-    //   Claude emulates via PreToolUse hook. If `redirect()` returns false
-    //   (Claude with no live query, or backend can't steer), the backend has
-    //   already called forceAbort(Redirect) and we queue for replay.
-    // - 'queue': hold the message untouched; the current turn keeps running
-    //   to natural completion; replay as a new turn afterwards. NO call to
-    //   `agent.redirect()`, NO forceAbort, NO interruption.
+    // A send that arrives while a turn is running is always queued. It becomes
+    // its own turn after `complete`, so the running turn is never interrupted and
+    // the message can still be edited, deleted, or sent immediately while it
+    // waits. "Send now" is opt-in per queued message (sendQueuedMessageNow), not a
+    // property of the connection: interaction behavior must not depend on the
+    // provider.
     if (managed.isProcessing) {
       const connection = resolveSessionConnection(managed.llmConnection, undefined)
       // Fallback to 'steer' when no connection is resolvable — preserves
@@ -6446,9 +7809,15 @@ export class SessionManager implements ISessionManager {
         timestamp: this.monotonic(),
         attachments: storedAttachments,
         badges: options?.badges,
+        ...(options?.replyTo ? { replyTo: options.replyTo } : {}),
         // Hidden system-generated messages reach the model but never render as a
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
+        // Who said it. Kept apart from `hidden` on purpose: an agent's message must render, but it
+        // must not sit in the person's draft tray (see `Message.origin`).
+        ...(options?.origin ? { origin: options.origin } : {}),
+        ...(options?.fromSessionId ? { fromSessionId: options.fromSessionId } : {}),
+        ...(options?.fromSessionName ? { fromSessionName: options.fromSessionName } : {}),
       }
       managed.messages.push(userMessage)
 
@@ -6468,18 +7837,17 @@ export class SessionManager implements ISessionManager {
         (managed.acceptedSteers ??= new Map()).set(userMessage.id, payload)
       }
       if (steered) (managed.turnSteers ??= []).push(message)
+      const delivery = resolveMidStreamDeliveryOutcome(behavior, steered)
       sessionLog.info('mid-stream send', { sessionId, behavior, steered, textOnly, compactionInFlight, queueLengthBefore: managed.messageQueue.length })
 
-      const delivery = resolveMidStreamDeliveryOutcome(attemptedSteer ? 'steer' : 'queue', steered)
+      // The row is a preview until the turn takes it; steered text is already in the live turn.
       userMessage.isQueued = delivery.shouldQueue
 
-      // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
-      // (covers both queue-direct and queue-after-abort paths).
       this.sendEvent({
         type: 'user_message',
         sessionId,
         message: userMessage,
-        status: delivery.shouldQueue ? 'queued' : 'accepted',
+        status: 'queued',
         optimisticMessageId: options?.optimisticMessageId
       }, managed.workspace.id)
 
@@ -6498,10 +7866,11 @@ export class SessionManager implements ISessionManager {
         // complete answer was cut off → confusion).
         if (delivery.wasInterrupted) managed.wasInterrupted = true
       }
+      this.sendQueueState(managed)
 
       this.persistSession(managed)
       // Force a synchronous flush so the user message is genuinely on disk
-      // before we tell the renderer "accepted" — `persistSession` only
+      // before we tell the renderer "queued" — `persistSession` only
       // enqueues with a 500ms debounce. (#616 reliability fix.)
       await this.flushSession(managed.id)
       onAck?.(userMessage.id)
@@ -6526,9 +7895,13 @@ export class SessionManager implements ISessionManager {
         timestamp: this.monotonic(),
         attachments: storedAttachments, // Include for persistence (has thumbnailBase64)
         badges: options?.badges,  // Include content badges (sources, skills with embedded icons)
+        ...(options?.replyTo ? { replyTo: options.replyTo } : {}),
         // Hidden system-generated messages reach the model but never render as a
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
+        ...(options?.origin ? { origin: options.origin } : {}),
+        ...(options?.fromSessionId ? { fromSessionId: options.fromSessionId } : {}),
+        ...(options?.fromSessionName ? { fromSessionName: options.fromSessionName } : {}),
       }
       managed.messages.push(userMessage)
 
@@ -6553,6 +7926,9 @@ export class SessionManager implements ISessionManager {
         status: 'accepted',
         optimisticMessageId: options?.optimisticMessageId
       }, managed.workspace.id)
+
+      // Reconcile any optimistic queued flag: this message is running now.
+      this.sendQueueState(managed)
 
       // If this is the first user message and no title exists, set one immediately
       // AI generation will enhance it later, but we always have a title from the start
@@ -6608,6 +7984,8 @@ export class SessionManager implements ISessionManager {
     }
 
     managed.lastMessageAt = Date.now()
+    // …the volatile prompt line follows the workspace default too, when it changed.
+    this.syncBrowserProfilePromptState(managed.id)
     this.setProcessing(managed, true)
     managed.streamingText = ''
     managed.streamingTurnId = undefined
@@ -7068,6 +8446,25 @@ export class SessionManager implements ISessionManager {
       managed.messages = managed.messages.filter(m => !queuedMessageIds.has(m.id))
     }
 
+    // The queue is empty now; reconcile any queued flags the renderer still has.
+    this.sendQueueState(managed)
+
+    this.interruptTurn(managed, { silent, abortReason: AbortReason.UserStop, queuedTexts })
+  }
+
+  /**
+   * Stop the running turn, sharing the bookkeeping between Stop and "send now".
+   *
+   * `queuedTexts` is present only for a user Stop — the queue was already
+   * cleared, and the renderer puts the text back in the composer.
+   */
+  private interruptTurn(
+    managed: ManagedSession,
+    opts: { silent: boolean; abortReason: AbortReason; queuedTexts?: string[] },
+  ): void {
+    const sessionId = managed.id
+    const { silent, abortReason, queuedTexts } = opts
+
     // Signal intent to stop - let the event loop drain remaining events before clearing isProcessing
     // This prevents losing in-flight messages after soft interrupt
     managed.stopRequested = true
@@ -7081,11 +8478,11 @@ export class SessionManager implements ISessionManager {
 
     // Force-abort via Query.close() - sends soft interrupt to the backend
     if (managed.agent) {
-      managed.agent.forceAbort(AbortReason.UserStop)
+      managed.agent.forceAbort(abortReason)
     }
 
     // Only show "Response interrupted" message when user explicitly clicked Stop
-    // Silent mode is used when redirecting (sending new message while processing)
+    // Silent mode is used when interrupting for a queued "send now".
     if (!silent) {
       const interruptedMessage: Message = {
         id: generateMessageId(),
@@ -7099,7 +8496,7 @@ export class SessionManager implements ISessionManager {
         sessionId,
         message: interruptedMessage,
         // Include queued texts so the UI can restore them to the input field
-        ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
+        ...(queuedTexts && queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
       }, managed.workspace.id)
     } else {
       // Still send interrupted event but without the message (for UI state update)
@@ -7107,7 +8504,7 @@ export class SessionManager implements ISessionManager {
         type: 'interrupted',
         sessionId,
         // Include queued texts so the UI can restore them to the input field
-        ...(queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
+        ...(queuedTexts && queuedTexts.length > 0 ? { queuedMessages: queuedTexts } : {}),
       }, managed.workspace.id)
     }
 
@@ -7122,6 +8519,188 @@ export class SessionManager implements ISessionManager {
 
     // NOTE: We don't clear isProcessing or send complete event here anymore.
     // The event loop will drain remaining events and call onProcessingStopped when done.
+  }
+
+  /**
+   * Cancel a single queued message that has not started processing yet.
+   *
+   * Queued messages are appended to the transcript immediately (so the bubble
+   * is visible while the agent finishes the current turn), therefore removing
+   * one has to drop it from both the replay queue and `managed.messages`.
+   * Returns `cancelled: false` when the message is unknown or already replaying.
+   */
+  async cancelQueuedMessage(
+    sessionId: string,
+    messageId: string,
+    content?: string,
+  ): Promise<{ cancelled: boolean }> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return { cancelled: false }
+
+    // The renderer identifies its own optimistic bubble, while a reloaded
+    // session identifies the canonical message id — accept either.
+    let queueIndex = managed.messageQueue.findIndex(
+      q => q.messageId === messageId || q.optimisticMessageId === messageId
+    )
+
+    // Last resort when the ids diverged: match by the text the user is looking
+    // at, but only when it is unambiguous inside the queue.
+    if (queueIndex === -1 && content) {
+      const matches = managed.messageQueue
+        .map((q, index) => ({ q, index }))
+        .filter(({ q }) => q.message === content)
+      if (matches.length === 1) queueIndex = matches[0].index
+    }
+
+    if (queueIndex === -1) {
+      // A queued-looking row without a queue entry (orphaned/recovered state).
+      // Removing it is still what the delete action means; an in-flight message
+      // has already had `isQueued` cleared by processNextQueuedMessage.
+      const staleById = managed.messages.find(m =>
+        m.role === 'user' && m.isQueued && m.id === messageId
+      )
+      const staleMatches = staleById
+        ? [staleById]
+        : content
+          ? managed.messages.filter(m => m.role === 'user' && m.isQueued && m.content === content)
+          : []
+      // Ambiguous text could delete the wrong row; refuse instead.
+      if (staleMatches.length !== 1) return { cancelled: false }
+
+      const stale = staleMatches[0]
+      managed.messages = managed.messages.filter(m => m.id !== stale.id)
+      sessionLog.info('cancel stale queued message', { sessionId, messageId: stale.id })
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
+      this.sendEvent({
+        type: 'queued_message_cancelled',
+        sessionId,
+        messageId: stale.id,
+      }, managed.workspace.id)
+      this.sendQueueState(managed)
+      return { cancelled: true }
+    }
+
+    const [queued] = managed.messageQueue.splice(queueIndex, 1)
+    if (queued.messageId) {
+      managed.messages = managed.messages.filter(m => m.id !== queued.messageId)
+    }
+
+    sessionLog.info('cancel queued message', {
+      sessionId,
+      messageId: queued.messageId,
+      queueLengthAfterCancel: managed.messageQueue.length,
+    })
+
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+
+    // Drop the bubble in every window and tell them which persisted row went away.
+    this.sendEvent({
+      type: 'queued_message_cancelled',
+      sessionId,
+      messageId: queued.messageId ?? messageId,
+      ...(queued.optimisticMessageId ? { optimisticMessageId: queued.optimisticMessageId } : {}),
+    }, managed.workspace.id)
+    this.sendQueueState(managed)
+
+    return { cancelled: true }
+  }
+
+  /**
+   * Move a queued message to a new position.
+   *
+   * The runtime queue is the send order; `managed.messages` is re-ordered in the
+   * same pass because crash recovery re-queues from the transcript, not from the
+   * runtime array. Every window gets the new order so their trays stay in sync.
+   */
+  async reorderQueuedMessage(
+    sessionId: string,
+    messageId: string,
+    toIndex: number,
+  ): Promise<{ reordered: boolean }> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return { reordered: false }
+
+    const fromIndex = managed.messageQueue.findIndex(
+      q => q.messageId === messageId || q.optimisticMessageId === messageId
+    )
+    if (fromIndex === -1) return { reordered: false }
+
+    const targetIndex = Math.max(0, Math.min(toIndex, managed.messageQueue.length - 1))
+    if (targetIndex !== fromIndex) {
+      const [queued] = managed.messageQueue.splice(fromIndex, 1)
+      managed.messageQueue.splice(targetIndex, 0, queued)
+    }
+
+    // Persisted order is what recovery and a fresh renderer read.
+    const queuedMessages = managed.messageQueue.map(q =>
+      q.messageId ? managed.messages.find(m => m.id === q.messageId) : undefined
+    )
+    if (queuedMessages.every((m): m is Message => !!m)) {
+      const queuedIds = new Set(queuedMessages.map(m => m.id))
+      managed.messages = [
+        ...managed.messages.filter(m => !queuedIds.has(m.id)),
+        ...queuedMessages,
+      ]
+    }
+
+    sessionLog.info('reorder queued messages', {
+      sessionId,
+      messageId,
+      fromIndex,
+      targetIndex,
+    })
+
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+
+    this.sendQueueState(managed)
+
+    return { reordered: true }
+  }
+
+  /**
+   * Send one queued message now.
+   *
+   * The current turn is interrupted and the chosen message becomes the next
+   * turn — it is not injected into the reply. Because the target is a normal
+   * next-turn send it keeps its attachments and options, so multimodal queued
+   * messages work here (unlike a text-only redirect). A manual compaction is
+   * not interruptible this way, so the call declines (`reason: 'compacting'`);
+   * a steer sent into `/compact` has no agent loop to consume it (OSS #1058).
+   */
+  async sendQueuedMessageNow(
+    sessionId: string,
+    messageId: string,
+  ): Promise<{ sent: boolean; reason?: 'not-processing' | 'not-queued' | 'compacting' }> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed?.isProcessing) return { sent: false, reason: 'not-processing' }
+    if (managed.agent?.isCompactionInFlight?.()) return { sent: false, reason: 'compacting' }
+
+    // Undelivered steers land in the queue first, so the explicit pick still wins.
+    this.recoverPendingSteers(managed)
+
+    // Accept either the persisted id or the renderer's optimistic id, like cancel.
+    const queueIndex = managed.messageQueue.findIndex(
+      q => q.messageId === messageId || q.optimisticMessageId === messageId
+    )
+    if (queueIndex === -1) return { sent: false, reason: 'not-queued' }
+
+    const [queued] = managed.messageQueue.splice(queueIndex, 1)
+    managed.messageQueue.unshift(queued)
+    // Show the promoted entry first in every window's tray.
+    this.sendQueueState(managed)
+
+    sessionLog.info('send queued message now', {
+      sessionId,
+      messageId: queued.messageId,
+      queueLength: managed.messageQueue.length,
+    })
+
+    // Silent: the reply simply stops and the chosen message starts the next turn.
+    this.interruptTurn(managed, { silent: true, abortReason: AbortReason.Redirect })
+    return { sent: true }
   }
 
   /**
@@ -7325,13 +8904,14 @@ export class SessionManager implements ISessionManager {
     const turnStartFinalMessageId = managed.turnStartFinalMessageId
     managed.turnStartFinalMessageId = undefined
 
-    // Clear agent control overlay between turns. The session keeps browser
-    // ownership (boundSessionId) — only the visual overlay is removed.
+    // Clear the agent overlay between turns. What the session keeps is its tabs
+    // (`cursorOf` is sticky) — only the "working right now" marks come off, and its holds
+    // with them.
     // Full unbind happens below when the queue is empty (session truly done).
     const turnBpm = this.getBrowserPaneManagerForSession(sessionId)
     if (turnBpm) {
-      // Same guard as the queue-empty teardown below: a remote BPM throw on a
-      // headless server must not abort processing-stop handling.
+      // Same guard as the queue-empty teardown below: a browser throw must not
+      // abort processing-stop handling.
       try {
         await turnBpm.clearVisualsForSession(sessionId)
       } catch (err) {
@@ -7378,20 +8958,46 @@ export class SessionManager implements ISessionManager {
       this.applyExternalSessionMetadata(managed, pendingHeader)
     }
 
-    // 5. Check queue and process or complete
+    // 5. Emit the turn-complete event to the UI / messaging gateway
+    //    UNCONDITIONALLY — exactly once per turn, before dispatching any queued
+    //    message.
+    //
+    //    The messaging gateway renders a turn's final reply ONLY on `complete`
+    //    (progress mode rewrites its bubble, final_only sends, streaming
+    //    flushes). Emitting it from inside the queue-empty branch below stranded
+    //    a finished turn's reply whenever another message was already queued —
+    //    which, on a platform that redelivers an unacked message (Lark: ~19s),
+    //    is nearly always — leaving progress mode's bubble frozen and
+    //    final_only silent.
+    //
+    //    Do NOT also emit it in the `else` branch: the gateway handles events
+    //    concurrently (`renderer.handle(...)` is fire-and-forget), so a second
+    //    emit would send every reply twice.
+    this.sendEvent({
+      type: 'complete',
+      sessionId,
+      tokenUsage: managed.tokenUsage,
+      hasUnread: managed.hasUnread,  // Propagate unread state to renderer
+      // WS2: when keep-alive keeps the persistent query open across turns, the
+      // turn ending does NOT kill background sub-agents. Tell the renderer so its
+      // chip orphan-backstop does not falsely flip live tasks to `orphaned`; a
+      // real `task_completed` will arrive when the agent actually finishes.
+      backgroundTasksAlive: this.keepBackgroundTasksAlive,
+    }, managed.workspace.id)
+
+    // 6. Dispatch the next queued message, or tear the session down if truly done.
     if (managed.messageQueue.length > 0) {
       // Has queued messages - process next
       this.processNextQueuedMessage(sessionId)
     } else {
-      // Session is truly done — release browser ownership.
-      // The window stays alive (hidden) and becomes reusable by future sessions.
-      // On the next turn, getOrCreateForSession() will re-bind it.
+      // Session is truly done — let go of the browser (what it drove and held, not the
+      // window). The window stays alive (hidden) and becomes reusable by future sessions,
+      // and the next command of this conversation writes its marks again.
       const doneBpm = this.getBrowserPaneManagerForSession(sessionId)
       if (doneBpm) {
-        // Teardown must never block completion. On a headless/WebUI server the BPM is
-        // remote and these calls throw (BROWSER_NO_CAPABLE_CLIENT) when no desktop
-        // browser client is connected — which previously aborted onProcessingStopped
-        // before emitSessionComplete, hanging the Tasks Conductor completion seam.
+        // Teardown must never block completion: a failing browser must not abort
+        // onProcessingStopped before emitSessionComplete, which would hang the Tasks
+        // Conductor completion seam.
         try {
           await doneBpm.clearVisualsForSession(sessionId)
           doneBpm.unbindAllForSession(sessionId)
@@ -7399,19 +9005,6 @@ export class SessionManager implements ISessionManager {
           sessionLog.warn(`Browser-pane teardown failed for ${sessionId} (continuing to completion):`, err)
         }
       }
-
-      // No queue - emit complete to UI (include tokenUsage and hasUnread for state updates)
-      this.sendEvent({
-        type: 'complete',
-        sessionId,
-        tokenUsage: managed.tokenUsage,
-        hasUnread: managed.hasUnread,  // Propagate unread state to renderer
-        // WS2: when keep-alive keeps the persistent query open across turns, the
-        // turn ending does NOT kill background sub-agents. Tell the renderer so its
-        // chip orphan-backstop does not falsely flip live tasks to `orphaned`; a
-        // real `task_completed` will arrive when the agent actually finishes.
-        backgroundTasksAlive: this.keepBackgroundTasksAlive,
-      }, managed.workspace.id)
 
       // Tasks Conductor seam: signal true completion (queue empty) with the stop
       // reason + this turn's final assistant message, so the Conductor can advance
@@ -7435,7 +9028,7 @@ export class SessionManager implements ISessionManager {
       }
     }
 
-    // 6. Always persist
+    // 7. Always persist
     this.persistSession(managed)
   }
 
@@ -7469,39 +9062,62 @@ export class SessionManager implements ISessionManager {
       queueLengthAfterShift: managed.messageQueue.length,
     })
 
-    // Update UI: queued → processing (merged continuations are delivered in the same turn)
-    for (const entry of [first, ...merged]) {
-      if (!entry.messageId) continue
-      const existingMessage = managed.messages.find(m => m.id === entry.messageId)
-      if (existingMessage) {
-        // Clear isQueued flag and persist - prevents re-queueing if crash during processing
-        existingMessage.isQueued = false
-        // Re-stamp so this replayed message sorts AFTER the previous turn's
-        // finalized assistant reply. It was created mid-stream (an earlier
-        // timestamp) while queued; groupMessagesByTurn sorts by timestamp, so
-        // without this the prior turn's completed response would render BELOW it.
-        existingMessage.timestamp = this.monotonic()
-        this.persistSession(managed)
-
-        this.sendEvent({
-          type: 'user_message',
-          sessionId,
-          message: existingMessage,
-          status: 'processing',
-          optimisticMessageId: entry.optimisticMessageId
-        }, managed.workspace.id)
-      }
+    // Queued rows are previews, not transcript messages. Drop the preview and
+    // append a fresh user message for the turn at the current end. Its position
+    // therefore never depends on the timestamp it had while queued, which
+    // points into the middle of the previous turn.
+    if (next.messageId) {
+      managed.messages = managed.messages.filter(m => m.id !== next.messageId)
     }
+    const latestTimestamp = managed.messages.reduce((max, m) => Math.max(max, m.timestamp), 0)
+    const turnMessage: Message = {
+      id: generateMessageId(),
+      role: 'user',
+      content: next.message,
+      timestamp: Math.max(this.monotonic(), latestTimestamp + 1),
+      attachments: next.storedAttachments,
+      ...(next.options?.badges ? { badges: next.options.badges } : {}),
+      ...(next.options?.hidden ? { hidden: true } : {}),
+      ...(next.options?.origin ? { origin: next.options.origin } : {}),
+      ...(next.options?.fromSessionId ? { fromSessionId: next.options.fromSessionId } : {}),
+      ...(next.options?.fromSessionName ? { fromSessionName: next.options.fromSessionName } : {}),
+    }
+    managed.messages.push(turnMessage)
+    if (!next.options?.hidden) {
+      managed.lastMessageRole = 'user'
+    }
+    this.persistSession(managed)
 
-    // Process message (use setImmediate to allow current stack to clear)
+    // Remove the preview everywhere, then announce the turn message. The
+    // renderer adds it at the end like any other accepted send, so there is no
+    // timestamp to rewrite and no id to reconcile.
+    if (next.messageId) {
+      this.sendEvent({
+        type: 'queued_message_cancelled',
+        sessionId,
+        messageId: next.messageId,
+        ...(next.optimisticMessageId ? { optimisticMessageId: next.optimisticMessageId } : {}),
+      }, managed.workspace.id)
+    }
+    this.sendEvent({
+      type: 'user_message',
+      sessionId,
+      message: turnMessage,
+      status: 'accepted',
+    }, managed.workspace.id)
+    this.sendQueueState(managed)
+
     setImmediate(() => {
+      const replayOptions = next.options
+        ? { ...next.options, optimisticMessageId: undefined }
+        : undefined
       this.sendMessage(
         sessionId,
         next.message,
         next.attachments,
         next.storedAttachments,
-        next.options,
-        next.messageId
+        replayOptions,
+        turnMessage.id
       ).catch(err => {
         sessionLog.error('replay failed', {
           sessionId,
@@ -7995,6 +9611,53 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * What a conversation is called, for a window that is showing its tabs.
+   *
+   * Read by the tab rail's group headers, through the pane manager's injected
+   * resolver (see main/index.ts): the rail lists several conversations' tabs side by
+   * side in one window, and the only thing a tab knows about its opener is an id.
+   * Only the name — whose tabs are whose stays the tab's own `belongsTo`,
+   * and nothing here is consulted for a permission. `null` for a conversation that is
+   * gone or has not been named yet; the caller falls back to a generic label rather
+   * than printing an id.
+   */
+  getSessionName(sessionId: string): string | null {
+    return this.sessions.get(sessionId)?.name || null
+  }
+
+  /**
+   * Set (or clear, with `null`) the layer this session is working in.
+   *
+   * It is the session's own declaration, and it means something only inside its
+   * project: the owning project's folder (`projects/<slug>/`) is where these files
+   * live, so a session outside a project has nothing for a mode to point at.
+   * It feeds only the prompt block added for this conversation — it binds no tool
+   * and constrains nothing. One mode at a time: setting one replaces the last.
+   */
+  async setSessionMode(sessionId: string, mode: SessionMode | null): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      managed.mode = mode ?? undefined
+      // Keep a live agent's session config current so the new mode is announced to the model once
+      // on the next user message (the mode block now rides user messages, never the system prompt).
+      // A session without an agent yet picks the mode up from `sessionConfig` when it is created.
+      managed.agent?.setSessionMode(managed.mode ?? null)
+      this.setMetadataWriteGuard(managed)
+
+      this.sendEvent({
+        type: 'mode_changed',
+        sessionId: managed.id,
+        mode: managed.mode ?? null,
+      }, managed.workspace.id)
+
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
+      const watcher = this.configWatchers.get(managed.workspace.rootPath)
+      watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
+    }
+  }
+
+  /**
    * Set the kanban board column for a session ('todo' | 'in-progress' | 'done').
    * Pass `null` to clear (board falls back to the default column). Independent of sessionStatus.
    */
@@ -8029,6 +9692,27 @@ export class SessionManager implements ISessionManager {
       // Self-writes don't re-emit through the file watcher (taskNodeCount isn't in the header
       // signature), so push a live metadata event so the progress denominator updates immediately.
       this.sendEvent({ type: 'session_metadata_changed', sessionId, changes: { taskNodeCount: count } }, managed.workspace.id)
+      const watcher = this.configWatchers.get(managed.workspace.rootPath)
+      watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
+    }
+  }
+
+  /**
+   * Record how many gate nodes (`kind: approval`) of the active run are waiting on a person.
+   *
+   * Same shape as {@link setTaskNodeCount}: self-writes don't re-emit through the file watcher
+   * (this field isn't in the header signature), so the change is pushed as a live metadata event.
+   * The renderer turns 0 → N into a tile badge + one notification.
+   */
+  async setTaskAwaitingApproval(sessionId: string, count: number): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      managed.taskAwaitingApproval = count
+      this.setMetadataWriteGuard(managed)
+
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
+      this.sendEvent({ type: 'session_metadata_changed', sessionId, changes: { taskAwaitingApproval: count } }, managed.workspace.id)
       const watcher = this.configWatchers.get(managed.workspace.rootPath)
       watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
     }
@@ -8082,8 +9766,9 @@ export class SessionManager implements ISessionManager {
     const modeChanged = Boolean(reconcile?.permissionMode && reconcile.permissionMode !== managed.permissionMode)
 
     // Promote task metadata (no canonical mutator for these). Connection is set directly because
-    // setSessionConnection() refuses a session that has already sent messages (a generate draft has);
-    // the connection_changed event below keeps the renderer in sync.
+    // this is an *implicit* reconcile (gated on `connectionLocked` above and fired by the task
+    // system, not by a user pick — the explicit path is setSessionConnection, which also emits
+    // its own event); the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
     if (reconcile?.projectId !== undefined) managed.projectId = reconcile.projectId
@@ -8169,8 +9854,9 @@ export class SessionManager implements ISessionManager {
     const modeChanged = Boolean(reconcile?.permissionMode && reconcile.permissionMode !== managed.permissionMode)
 
     // Promote task metadata (no canonical mutator for these). Connection is set directly because
-    // setSessionConnection() refuses a session that has already sent messages (a quick-add tile has);
-    // the connection_changed event below keeps the renderer in sync.
+    // this is an *implicit* reconcile (gated on `connectionLocked` above and fired by the task
+    // system, not by a user pick — the explicit path is setSessionConnection, which also emits
+    // its own event); the connection_changed event below keeps the renderer in sync.
     managed.taskSlug = taskSlug
     managed.taskDraft = false
     if (reconcile?.projectId !== undefined) managed.projectId = reconcile.projectId
@@ -8426,6 +10112,36 @@ export class SessionManager implements ISessionManager {
         break
       }
 
+      case 'thinking_complete': {
+        // Reasoning is stored as an intermediate assistant message flagged with
+        // isThinking: every "final response" consumer already filters on
+        // isIntermediate, so it can never leak into replies, titles, IM or CLI.
+        const thinkingMessage: Message = {
+          id: generateMessageId(),
+          role: 'assistant',
+          content: event.text,
+          timestamp: this.monotonic(),
+          isIntermediate: true,
+          isThinking: true,
+          turnId: event.turnId,
+          parentToolUseId: event.parentToolUseId,
+        }
+        managed.messages.push(thinkingMessage)
+
+        this.sendEvent({
+          type: 'thinking_complete',
+          sessionId,
+          text: event.text,
+          turnId: event.turnId,
+          parentToolUseId: event.parentToolUseId,
+          timestamp: thinkingMessage.timestamp,
+          messageId: thinkingMessage.id,
+        }, workspaceId)
+
+        this.persistSession(managed)
+        break
+      }
+
       case 'pi_turn_anchor': {
         // Follow-up to a `text_complete` from the Pi backend, carrying the
         // correct leaf id captured AFTER the SDK appended its assistant entry
@@ -8546,8 +10262,14 @@ export class SessionManager implements ISessionManager {
 
         const overlayBpm = this.getBrowserPaneManagerForSession(sessionId)
         if (overlayBpm && shouldActivateOverlay) {
-          // Ensure first browser action in a turn gets an instance before overlay activation.
-          overlayBpm.getOrCreateForSession(sessionId, { workspaceId })
+          // Only a command that would open the window anyway (`navigate`, `tab-new`) may
+          // bring it up here: for those the overlay has to exist *before* the command, so
+          // the tab they take starts held. For every other command a window that is not
+          // there yet is not the overlay's to make — a read would look like it opened a
+          // browser, and a command that then fails would leave an empty window behind.
+          if (browserToolOpensWindow(formattedToolInput)) {
+            overlayBpm.getOrCreateForSession(sessionId, { workspaceId })
+          }
 
           const resolvedDisplayName = toolDisplayMeta?.displayName
             ?? event.displayName
@@ -9021,7 +10743,7 @@ export class SessionManager implements ISessionManager {
           // Ride the normal turn machinery (resume + persistence). `hidden: true`
           // keeps the nudge out of the transcript — the agent's response (the
           // presented result) renders as a normal assistant turn.
-          void this.sendMessage(sessionId, nudge, [], [], { hidden: true }).catch((err) => {
+          void this.sendMessage(sessionId, nudge, [], [], { hidden: true, origin: 'system' }).catch((err) => {
             sessionLog.error(`[bg-lifecycle] failed to surface completed task ${event.taskId}:`, err)
           })
         }
@@ -9243,6 +10965,25 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  /**
+   * Broadcast the authoritative queue after any change (enqueue, dequeue,
+   * cancel, reorder). The renderer reconciles `isQueued` from this list, so a
+   * message that left the queue is shown in the transcript even if its own
+   * `processing` event was missed.
+   */
+  private sendQueueState(managed: ManagedSession): void {
+    this.sendEvent({
+      type: 'queued_messages_state',
+      sessionId: managed.id,
+      order: managed.messageQueue
+        .filter(q => !!q.messageId)
+        .map(q => ({
+          messageId: q.messageId!,
+          ...(q.optimisticMessageId ? { optimisticMessageId: q.optimisticMessageId } : {}),
+        })),
+    }, managed.workspace.id)
+  }
+
   private sendEvent(event: SessionEvent, workspaceId?: string): void {
     if (!this.eventSink) {
       sessionLog.warn('Cannot send event - no event sink')
@@ -9255,6 +10996,160 @@ export class SessionManager implements ISessionManager {
     }
 
     this.eventSink(RPC_CHANNELS.sessions.EVENT, { to: 'workspace', workspaceId }, event)
+    this.notifyAssistantOfChild(event)
+  }
+
+  /**
+   * Tell the assistant that one of the tasks it started moved.
+   *
+   * The child runs as its own conversation, so its events belong to that conversation's window and
+   * not to the panel's. Rather than broadcast a child's transcript, this sends one small signal —
+   * "task X changed" — to the workspace that started it; the panel answers by asking for the list
+   * again. The parent chain is read from the live sessions, so no registry of tasks has to be kept.
+   */
+  private notifyAssistantOfChild(event: SessionEvent): void {
+    if (!this.eventSink) return
+    // Only state changes a card would show; deltas are the panel's poll to pick up, not a push.
+    if (event.type !== 'complete' && event.type !== 'error' && event.type !== 'session_status_changed') return
+
+    const sessionId = 'sessionId' in event ? event.sessionId : undefined
+    const child = sessionId ? this.sessions.get(sessionId) : undefined
+    const parentId = child?.parentSessionId
+    const parent = parentId ? this.sessions.get(parentId) : undefined
+    if (!parent || parent.role !== 'bot') return
+
+    this.eventSink(
+      RPC_CHANNELS.bot.CHANGED,
+      { to: 'workspace', workspaceId: parent.workspace.id },
+      { sessionId: child!.id, parentSessionId: parent.id, type: event.type },
+    )
+
+    // A card in the rail is not an answer. When the work ends, wake the assistant so it can say
+    // what came back — the same shape the background-task nudge already uses (a `hidden` user
+    // message: it reaches the model and never renders as a bubble).
+    if (event.type === 'complete' || event.type === 'error') {
+      this.queueChildReport(parent, child!, event.type === 'error' ? 'failed' : 'completed')
+    }
+  }
+
+  /**
+   * Collect finished tasks and tell the assistant once, shortly after.
+   *
+   * Three things this deliberately does, each learned from how the nudge could go wrong:
+   *
+   * - **Batched**, with a short delay: three tasks finishing together is one interruption, not
+   *   three, and the model can compare them in one sentence.
+   * - **Deduped by the task's own `lastMessageAt`**: a retry or a repeated terminal event must not
+   *   report the same result twice.
+   * - **Queued rather than skipped** if the assistant is mid-turn: unlike a background task (whose
+   *   result the live stream carries), a child task's events never reach this conversation — so
+   *   nothing else would deliver it. The message queue puts the report behind the current turn,
+   *   which is exactly right.
+   */
+  private queueChildReport(
+    parent: ManagedSession,
+    child: ManagedSession,
+    status: 'completed' | 'failed',
+  ): void {
+    const stamp = child.lastMessageAt ?? 0
+    if (this.reportedChildren.get(child.id) === stamp) return
+    this.reportedChildren.set(child.id, stamp)
+
+    const batch = this.pendingChildReports.get(parent.id) ?? new Map<string, string>()
+    batch.set(child.id, status)
+    this.pendingChildReports.set(parent.id, batch)
+    this.scheduleReportFlush(parent.id)
+  }
+
+  /**
+   * A task graph reached a terminal state (`TaskRunner`'s host seam).
+   *
+   * Two filters, both deliberate:
+   *
+   * - **Only graphs an assistant created.** `created_by` names a conversation; an ordinary one has
+   *   nobody to report to — the person is already watching its own session.
+   * - **Not a stop.** A stopped run is someone's own click; telling the assistant about it would be
+   *   narrating the person back to themselves, and it would spend a turn doing it.
+   */
+  onRunSettled(info: RunSettledInfo): void {
+    if (info.status !== 'completed' && info.status !== 'failed') return
+    if (!info.createdBy) return
+
+    const bot = this.sessions.get(info.createdBy)
+    if (!bot || bot.role !== 'bot') return
+
+    // A re-run of the same graph is a different run id, so it reports again; a repeated event for
+    // the same run does not.
+    const batch = this.pendingRunReports.get(bot.id) ?? new Map<string, RunReportEntry>()
+    batch.set(`${info.slug}:${info.runId}`, {
+      title: info.title,
+      slug: info.slug,
+      runId: info.runId,
+      status: info.status,
+      done: info.done,
+      failed: info.failed,
+      total: info.total,
+      ...(info.orchestratorSessionId ? { orchestratorSessionId: info.orchestratorSessionId } : {}),
+      ...(info.firstFailure ? { firstFailure: info.firstFailure } : {}),
+    })
+    this.pendingRunReports.set(bot.id, batch)
+    this.scheduleReportFlush(bot.id)
+  }
+
+  /**
+   * Schedule the one message that carries whatever has finished.
+   *
+   * Shared by both kinds on purpose: three tasks finishing together is one interruption, and the
+   * assistant can compare them in a sentence — which is the whole point of reporting at all.
+   */
+  private scheduleReportFlush(parentId: string): void {
+    if (this.childReportTimers.has(parentId)) return
+    const timer = setTimeout(() => {
+      this.childReportTimers.delete(parentId)
+      void this.flushChildReport(parentId).catch(err => {
+        sessionLog.error(`Failed to report finished work to ${parentId}:`, err)
+      })
+    }, CHILD_REPORT_DELAY_MS)
+    // A pending report is not a reason to keep the process alive.
+    timer.unref?.()
+    this.childReportTimers.set(parentId, timer)
+  }
+
+  private async flushChildReport(botSessionId: string): Promise<void> {
+    const batch = this.pendingChildReports.get(botSessionId)
+    this.pendingChildReports.delete(botSessionId)
+    const runBatch = this.pendingRunReports.get(botSessionId)
+    this.pendingRunReports.delete(botSessionId)
+    if ((!batch || batch.size === 0) && (!runBatch || runBatch.size === 0)) return
+
+    const bot = this.sessions.get(botSessionId)
+    if (!bot) return
+
+    const entries: ChildReportEntry[] = []
+    for (const [id, status] of batch ?? []) {
+      const child = this.sessions.get(id)
+      if (!child) continue
+      const last = [...child.messages]
+        .reverse()
+        .find(m => m.role === 'assistant' && !m.isThinking && typeof m.content === 'string' && m.content.trim())
+      entries.push({
+        name: child.name ?? id,
+        workspaceName: child.workspace.name,
+        sessionId: id,
+        status,
+        ...(last?.content ? { lastText: last.content } : {}),
+      })
+    }
+    const runs = [...(runBatch?.values() ?? [])]
+    if (entries.length === 0 && runs.length === 0) return
+
+    // One message, one turn. The closing instructions are appended once, by whichever block is
+    // present last — two closed paragraphs telling the model the same thing read as two errands.
+    const blocks: string[] = []
+    const both = entries.length > 0 && runs.length > 0
+    if (entries.length > 0) blocks.push(formatChildReport(entries, { instructions: !both }))
+    if (runs.length > 0) blocks.push(formatRunReport(runs, { instructions: !both }))
+    await this.sendMessage(botSessionId, blocks.join('\n\n'), [], [], { hidden: true, origin: 'system' })
   }
 
   /**

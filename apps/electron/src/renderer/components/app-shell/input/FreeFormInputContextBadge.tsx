@@ -4,7 +4,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
 import { FadingText } from '@/components/ui/fading-text'
 import { cn } from '@/lib/utils'
 
-export interface FreeFormInputContextBadgeProps {
+export interface FreeFormInputContextBadgeProps
+  // Native button props are forwarded to the underlying <button> so the badge
+  // works as a Radix `asChild` trigger (dropdowns inject onPointerDown / onKeyDown
+  // / aria-*, which must reach the DOM element or the trigger is dead).
+  extends Omit<React.ComponentPropsWithoutRef<'button'>, 'children'> {
   /** Left area - fully customizable (icon, avatar stack, etc.) */
   icon: React.ReactNode
   /** Label text - shown in expanded state or collapsed with selection */
@@ -15,14 +19,10 @@ export interface FreeFormInputContextBadgeProps {
   hasSelection?: boolean
   /** Show chevron indicator (for dropdowns) - only visible in expanded state */
   showChevron?: boolean
-  /** Click handler */
-  onClick?: () => void
   /** Tooltip content - can be string or ReactNode for rich content */
   tooltip?: React.ReactNode
   /** Whether the badge is currently "open" (e.g., dropdown is shown) */
   isOpen?: boolean
-  /** Whether the badge is disabled */
-  disabled?: boolean
   /** Additional className for the button */
   className?: string
   /** Ref forwarding for positioning dropdowns */
@@ -55,6 +55,7 @@ export const FreeFormInputContextBadge = React.forwardRef<HTMLButtonElement, Fre
       className,
       buttonRef,
       'data-tutorial': dataTutorial,
+      ...buttonProps
     },
     ref
   ) {
@@ -69,6 +70,7 @@ export const FreeFormInputContextBadge = React.forwardRef<HTMLButtonElement, Fre
         ref={mergedRef as React.Ref<HTMLButtonElement>}
         type="button"
         aria-label={label}
+        {...buttonProps}
         onClick={onClick}
         disabled={disabled}
         data-tutorial={dataTutorial}

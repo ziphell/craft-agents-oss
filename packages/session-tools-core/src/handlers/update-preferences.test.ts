@@ -39,7 +39,7 @@ describe('handleUpdatePreferences', () => {
 
   it('ignores `uiLanguage` argument (internal field — not user-editable here)', async () => {
     const { ctx, writes } = createCtx();
-    await handleUpdatePreferences(ctx, { uiLanguage: 'hu' } as unknown as UpdatePreferencesArgs);
+    await handleUpdatePreferences(ctx, { uiLanguage: 'zh-Hans' } as unknown as UpdatePreferencesArgs);
     expect(writes).toHaveLength(0);
   });
 

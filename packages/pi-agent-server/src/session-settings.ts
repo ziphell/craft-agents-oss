@@ -14,6 +14,8 @@
  * explicitly. The main process surfaces the resulting `auto_retry_*` events —
  * see `packages/shared/src/agent/backend/pi/event-adapter.ts`.
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { SettingsManager } from '@earendil-works/pi-coding-agent';
 import { LLM_QUERY_TIMEOUT_MS } from '../../shared/src/agent/llm-tool.ts';
 
@@ -74,6 +76,32 @@ export const CRAFT_PI_EPHEMERAL_MAX_BACKOFF_MS =
     (CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.maxRetries + 1) +
   CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.baseDelayMs *
     (2 ** CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.maxRetries - 1);
+
+/**
+ * Resolve Git Bash for the Pi Bash tool on Windows.
+ *
+ * The Pi SDK resolves the shell itself (`getShellConfig`): an explicit
+ * `shellPath`, then `%ProgramFiles%\Git\bin\bash.exe`, then `bash.exe` on PATH.
+ * It does not know about per-user installs (`%LOCALAPPDATA%\Programs\Git`, the
+ * Git for Windows default) — the same gap the Claude SDK path fixed via
+ * `CLAUDE_CODE_GIT_BASH_PATH`. Craft's onboarding already detects and persists a
+ * usable bash path; the host surfaces it to this subprocess through that env var.
+ *
+ * Returns `undefined` off Windows or when nothing exists, so the SDK's own
+ * resolution (including the PATH lookup) stays in charge.
+ */
+export function resolveGitBashPath(): string | undefined {
+  if (process.platform !== 'win32') return undefined;
+
+  const candidates = [
+    process.env.CLAUDE_CODE_GIT_BASH_PATH,
+    process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'),
+    process.env.ProgramFiles && join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
+    process.env['ProgramFiles(x86)'] && join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'),
+  ];
+
+  return candidates.find((candidate): candidate is string => !!candidate && existsSync(candidate));
+}
 
 /** Settings applied to one Pi session, isolated from project/global Pi files. */
 export function buildCraftPiSettings(purpose: CraftPiSessionPurpose = 'main'): PiSettings {

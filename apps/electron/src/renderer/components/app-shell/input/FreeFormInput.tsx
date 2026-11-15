@@ -1,8 +1,8 @@
 import * as React from 'react'
+import { useAtomValue } from 'jotai'
 import { useTranslation } from "react-i18next"
 import { AnimatePresence, motion } from 'motion/react'
 import {
-  Paperclip,
   ArrowUp,
   Square,
   Check,
@@ -11,6 +11,7 @@ import {
   ChevronUp,
   AlertCircle,
   Image as ImageIcon,
+  X,
 } from 'lucide-react'
 import { Icon_Home, Spinner } from '@craft-agent/ui'
 
@@ -19,6 +20,7 @@ import { Button } from '@/components/ui/button'
 import {
   InlineSlashCommand,
   useInlineSlashCommand,
+  LAYER_COMMANDS,
   type SlashCommandId,
 } from '@/components/ui/slash-command-menu'
 import {
@@ -33,10 +35,16 @@ import {
 } from '@/components/ui/label-menu'
 import type { LabelConfig } from '@craft-agent/shared/labels'
 import { parseMentions } from '@/lib/mentions'
+import type { TabRef } from '@craft-agent/shared/mentions'
+import { browserInstancesAtom, filterInstancesForWorkspace } from '@/atoms/browser-pane'
+import { windowIsRemoteAtom, windowServerScopeAtom } from '@/atoms/window-mode'
+import { browserProfilesAtom } from '@/atoms/browser-profiles'
+import { sessionAtomFamily, sessionMetaMapAtom } from '@/atoms/sessions'
+import { tabRefOf } from '@/components/browser/utils'
 import { RichTextInput, type RichTextInputHandle } from '@/components/ui/rich-text-input'
 import { useInputAvailableHeight } from '@/hooks/useInputAvailableHeight'
 import { getComposerMaxHeight } from './composer-height'
-import { getContextDisplay, getContextDisplayLabels, type ContextStatus } from './context-display'
+import { getContextDisplay, getContextDisplayLabels, shouldShowCompactBadge, type ContextStatus } from './context-display'
 import { createPendingPlanDispatcher } from './pending-plan-dispatch'
 import { scrollFocusedCaretIntoView } from '@/lib/scroll-focused-caret'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
@@ -58,12 +66,19 @@ import { coerceInputText } from '@/lib/input-text'
 import { isMac } from '@/lib/platform'
 import { applySmartTypography } from '@/lib/smart-typography'
 import { AttachmentPreview } from '../AttachmentPreview'
+import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
+import { readServerAttachment } from '@/lib/server-attachments'
+import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
+import { toast } from 'sonner'
+import { ComposerPlusMenu } from './ComposerPlusMenu'
 import { ImageSupportWarningBanner } from './ImageSupportWarningBanner'
-import { ANTHROPIC_MODELS, getModelShortName, getModelDisplayName, getModelContextWindow, type ModelDefinition } from '@config/models'
+import { ANTHROPIC_MODELS, getModelDisplayName, getModelContextWindow, type ModelDefinition } from '@config/models'
 import {
   resolveEffectiveConnectionSlug,
   isCompatProvider,
   modelSupportsImages,
+  modelSupportsThinking,
+  resolveImageModel,
 } from '@config/llm-connections'
 import { useOptionalAppShellContext } from '@/context/AppShellContext'
 import { EditPopover, getEditConfig } from '@/components/ui/EditPopover'
@@ -77,6 +92,7 @@ import { derivePickerMode } from './picker-mode'
 import type { FileAttachment, LoadedSource, LoadedSkill } from '../../../../shared/types'
 import { isPermissionMode, planExecutionMode, type PermissionMode } from '@craft-agent/shared/agent/modes'
 import { useAvailablePermissionModes } from '@/hooks/useAvailablePermissionModes'
+import type { SessionMode } from '@craft-agent/shared/protocol'
 import { type ThinkingLevel, THINKING_LEVELS, getThinkingLevelNameKey } from '@craft-agent/shared/agent/thinking-levels'
 import { useEscapeInterrupt } from '@/context/EscapeInterruptContext'
 import { hasOpenOverlay } from '@/lib/overlay-detection'
@@ -91,8 +107,10 @@ import {
 import { WorkingDirectorySelector, formatPathForDisplay } from './WorkingDirectorySelector'
 import { CompactPermissionModeSelector } from './CompactPermissionModeSelector'
 import { CompactModelSelector } from './CompactModelSelector'
+import { CompactProfileSelector } from './CompactProfileSelector'
 import {
   groupConnectionsByProvider,
+  modelLabel,
   stripPiPrefixForDisplay,
 } from './model-picker-helpers'
 import { useModelVisionToggle } from './useModelVisionToggle'
@@ -234,9 +252,9 @@ export interface FreeFormInputProps {
    */
   enableCompactModelPicker?: boolean
   // Connection selection (hierarchical connection → model selector)
-  /** Current LLM connection slug (locked after first message) */
+  /** Current LLM connection slug (auto-pinned on first message) */
   currentConnection?: string
-  /** Callback when connection changes (only works when session is empty) */
+  /** Callback when the user explicitly picks a model/connection (works mid-session) */
   onConnectionChange?: (connectionSlug: string) => void
   /** When true, the session's locked connection has been removed */
   connectionUnavailable?: boolean
@@ -344,13 +362,16 @@ export function FreeFormInput({
     return conn.defaultModel ?? null
   }, [currentConnection, workspaceDefaultConnection, llmConnections])
 
-  // Decide which of the four picker UIs to render. The `switcher` branch
-  // wins over `locked-single` so users with a single-model pi_compat default
-  // can still reach the connection list on a fresh session (#727).
+  // Decide which of the four picker UIs to render. `switcher` wins whenever more
+  // than one connection exists — including mid-session, since a conversation can
+  // move to another connection's models (the session pin only blocks implicit
+  // rewrites, see SessionManager.setSessionConnection). It also covers the case
+  // where the session's connection was deleted but others remain: the user picks
+  // the replacement here. The `switcher` over `locked-single` precedence keeps a
+  // single-model pi_compat connection from being a dead end (#727).
   const pickerMode = derivePickerMode({
     connectionUnavailable,
     connectionDefaultModel,
-    isEmptySession,
     connectionCount: llmConnections.length,
   })
 
@@ -372,12 +393,6 @@ export function FreeFormInput({
   }, [llmConnections, currentConnection, workspaceDefaultConnection, connectionUnavailable])
 
   const availableThinkingLevels = THINKING_LEVELS
-
-  // Disable thinking selector when the current model explicitly doesn't support it
-  const thinkingDisabled = React.useMemo(() => {
-    const model = availableModels.find(m => typeof m !== 'string' && m.id === currentModel)
-    return typeof model !== 'string' && model?.supportsThinking === false
-  }, [availableModels, currentModel])
 
   // Get display name for current model (full name, not short name)
   const currentModelDisplayName = React.useMemo(() => {
@@ -403,22 +418,24 @@ export function FreeFormInput({
     [llmConnections],
   )
 
-  // Find current connection details for display
-  const currentConnectionDetails = React.useMemo(() => {
-    if (!currentConnection) return null
-    return llmConnections.find(c => c.slug === currentConnection) ?? null
-  }, [llmConnections, currentConnection])
-
   // Effective connection: canonical fallback chain (session → workspace default → global default → first)
   const effectiveConnection = resolveEffectiveConnectionSlug(currentConnection, workspaceDefaultConnection, llmConnections)
 
-  // Effective connection details (with fallbacks) for model list
-  // Unlike currentConnectionDetails which is null when no explicit connection is set,
-  // this resolves to the actual connection being used (including workspace default)
+  // Effective connection details (with fallbacks) for model list — resolves to the
+  // actual connection being used, including the workspace default when the session
+  // has no explicit pin.
   const effectiveConnectionDetails = React.useMemo(() => {
     if (!effectiveConnection) return null
     return llmConnections.find(c => c.slug === effectiveConnection) ?? null
   }, [llmConnections, effectiveConnection])
+
+  // Disable the thinking selector only when the model explicitly opts out.
+  // Custom endpoints default to capable; built-in catalogs keep their own
+  // default — see the helper.
+  const thinkingDisabled = React.useMemo(() => {
+    const model = availableModels.find(m => typeof m !== 'string' && m.id === currentModel)
+    return !modelSupportsThinking(model)
+  }, [availableModels, currentModel])
 
 
   // Access sessionStatuses and onSessionStatusChange from context for the # menu state picker
@@ -440,6 +457,87 @@ export function FreeFormInput({
   // Read panel focus state from context (for multi-panel unfocused styling)
   const appShellContext = useOptionalAppShellContext()
   const isFocusedPanel = appShellContext?.isFocusedPanel ?? true
+
+  /**
+   * This workspace's browser tabs, for the `@` menu.
+   *
+   * Read straight from the atoms, the way the input's browser status bar does, rather
+   * than threaded down through the composer's parents: the composer is inside the
+   * shell, and which tabs exist is the shell's own state. A tab mentioned this way
+   * becomes a chip naming that tab (see tab-mention) — the tabs are the workspace
+   * window's, so this is one window's list, not every window's.
+   */
+  const allBrowserInstances = useAtomValue(browserInstancesAtom)
+  const serverScope = useAtomValue(windowServerScopeAtom)
+  const browserTabs = React.useMemo((): TabRef[] => {
+    return filterInstancesForWorkspace(allBrowserInstances, workspaceId ?? null, serverScope)
+      .flatMap(instance => instance.tabs ?? [])
+      .map(tabRefOf)
+  }, [allBrowserInstances, workspaceId, serverScope])
+
+  /**
+   * A conversation can keep a pick whose profile has since been deleted (the window stays usable),
+   * but it cannot send: the person has to choose an existing profile first. Derived from the live
+   * session + registry so the guard updates the moment either changes.
+   */
+  const sessionForProfile = useAtomValue(sessionAtomFamily(sessionId ?? ''))
+  const browserProfiles = useAtomValue(browserProfilesAtom)
+  const pickedBrowserProfile = sessionForProfile?.browserProfile?.trim()
+  const browserProfileMissing =
+    !!pickedBrowserProfile
+    && browserProfiles.length > 0
+    && !browserProfiles.some((profile) => profile.id === pickedBrowserProfile)
+
+  /**
+   * The same holds for the folder this conversation works in: the path stays in the header, but
+   * once its folder is gone no turn may start. The check runs where the path lives (the server),
+   * so remote workspaces answer for their own disk. A folder that is re-created makes it valid
+   * again; the next send re-checks server-side regardless.
+   */
+  const pickedWorkingDirectory = workingDirectory?.trim()
+  const [workingDirectoryCheck, setWorkingDirectoryCheck] = React.useState<
+    { path: string; exists: boolean } | null
+  >(null)
+  React.useEffect(() => {
+    if (!pickedWorkingDirectory) {
+      setWorkingDirectoryCheck(null)
+      return
+    }
+    let cancelled = false
+    const check = () => {
+      void window.electronAPI
+        .checkServerDirectory(pickedWorkingDirectory)
+        .then((exists) => {
+          if (!cancelled) setWorkingDirectoryCheck({ path: pickedWorkingDirectory, exists })
+        })
+        .catch(() => {
+          // Unknown is not missing: the server rejects a send against a vanished folder anyway.
+        })
+    }
+    check()
+    // The folder can be removed or re-created outside the app while this conversation stays open.
+    window.addEventListener('focus', check)
+    document.addEventListener('visibilitychange', check)
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', check)
+      document.removeEventListener('visibilitychange', check)
+    }
+  }, [pickedWorkingDirectory, sessionId])
+  const workingDirectoryMissing =
+    !!pickedWorkingDirectory
+    && workingDirectoryCheck?.path === pickedWorkingDirectory
+    && !workingDirectoryCheck.exists
+
+  // The layer this conversation works on (`goal`/`spec`/`plan`) — session state, read
+  // from the atom the server's `mode_changed` broadcast feeds. Only conversations
+  // that belong to a project get the commands: those files' home is the project
+  // folder, so for a conversation outside a project there is nothing to point at.
+  const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
+  const sessionMeta = sessionId ? sessionMetaMap.get(sessionId) : undefined
+  const layerMode: SessionMode | undefined = sessionMeta?.mode
+  const layersEnabled = !!sessionMeta?.projectId
+  const layerCommand = layerMode ? LAYER_COMMANDS.find(c => c.id === layerMode) : undefined
 
   // Shuffle placeholder order once per mount so each session feels fresh.
   // In compact mode, suppress desktop-keyboard guidance that is noisy or misleading
@@ -470,6 +568,13 @@ export function FreeFormInput({
   // Sync TO parent on blur/submit (debounced persistence)
   const [input, setInput] = React.useState(() => coerceInputText(inputValue))
   const [attachments, setAttachments] = React.useState<FileAttachment[]>(attachmentsValue ?? [])
+
+  // A remote window's files live on the hub. Attaching then means "a file that is already on
+  // the server" by default, with the hidden <input type="file"> kept as the way to push one up
+  // from this machine.
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
+  const [serverFilePickerOpen, setServerFilePickerOpen] = React.useState(false)
+  const canBrowseServerFiles = !!window.electronAPI?.isChannelAvailable?.(RPC_CHANNELS.fs.LIST_DIRECTORY)
 
   // Ref to track current attachments for use in event handlers (avoids stale closure issues)
   const attachmentsRef = React.useRef<FileAttachment[]>([])
@@ -570,8 +675,13 @@ export function FreeFormInput({
   const [isFocused, setIsFocused] = React.useState(false)
   const [modelDropdownOpen, setModelDropdownOpen] = React.useState(false)
 
+  // A turn can start while the picker is open (e.g. a queued send lands); close it
+  // so the "switch only between turns" rule holds.
+  React.useEffect(() => {
+    if (isProcessing) setModelDropdownOpen(false)
+  }, [isProcessing])
+
   // Input settings (loaded from config)
-  const [autoCapitalisation, setAutoCapitalisation] = React.useState(true)
   const [sendMessageKey, setSendMessageKey] = React.useState<'enter' | 'cmd-enter'>('enter')
   const [spellCheck, setSpellCheck] = React.useState(false)
 
@@ -580,12 +690,10 @@ export function FreeFormInput({
     const loadInputSettings = async () => {
       if (!window.electronAPI) return
       try {
-        const [autoCapEnabled, sendKey, spellCheckEnabled] = await Promise.all([
-          window.electronAPI.getAutoCapitalisation(),
+        const [sendKey, spellCheckEnabled] = await Promise.all([
           window.electronAPI.getSendMessageKey(),
           window.electronAPI.getSpellCheck(),
         ])
-        setAutoCapitalisation(autoCapEnabled)
         setSendMessageKey(sendKey ?? 'enter')
         setSpellCheck(spellCheckEnabled)
       } catch (error) {
@@ -644,6 +752,14 @@ export function FreeFormInput({
 
   const handleToggleModelVision = useModelVisionToggle()
 
+  /**
+   * The draft as it goes out.
+   *
+   * Nothing is rewritten here any more: every reference chip — source, skill, file, folder, tab,
+   * design, picked element — travels as its own marker in the text, so the sent message keeps it
+   * and the chip can be redrawn from it (see `lib/mentions`). The agent rewrites the markers into
+   * readable references at the model boundary (shared/mentions, `resolve*Mentions`).
+   */
   const consumeInputDraftSnapshot = React.useCallback((): string => {
     const snapshot = input.trim()
     clearInputDraft()
@@ -854,19 +970,27 @@ export function FreeFormInput({
     return () => window.removeEventListener('craft:paste-files', handlePasteFiles as unknown as EventListener)
   }, [disabled, sessionId, isFocusedPanel, richInputRef])
 
-  // Build active commands list for slash command menu
-  const activeCommands = React.useMemo(() => {
-    const active: SlashCommandId[] = []
-    // Add the currently active permission mode
-    if (permissionMode) active.push(permissionMode)
-    return active
-  }, [permissionMode])
+  // What the `/` menu ticks: the layer this conversation is on, if any. The
+  // permission mode is not offered there any more, so it is not ticked there.
+  const activeCommands = React.useMemo((): SlashCommandId[] => {
+    return layerMode ? [layerMode] : []
+  }, [layerMode])
 
-  // Handle slash command selection (mode/feature commands)
+  // Summarize the context now. Same command as `/compact`, and the same guard:
+  // a turn in flight cannot be summarized, so the `+` menu disables it instead.
+  const handleCompactClick = React.useCallback(() => {
+    if (!isProcessing) onSubmit('/compact', undefined)
+  }, [isProcessing, onSubmit])
+
+  // Handle slash command selection (`/` offers the layer and the commands that
+  // act on this conversation — not the permission modes, which have their own
+  // badge above the composer).
   const handleSlashCommand = React.useCallback((commandId: SlashCommandId) => {
-    if (isPermissionMode(commandId)) onPermissionModeChange?.(commandId)
-    else if (commandId === 'compact' && !isProcessing) onSubmit('/compact', undefined)
-  }, [onPermissionModeChange, isProcessing, onSubmit])
+    if (commandId === 'goal' || commandId === 'spec' || commandId === 'plan') {
+      if (sessionId) window.electronAPI.sessionCommand(sessionId, { type: 'setMode', mode: commandId })
+    }
+    else if (commandId === 'compact') handleCompactClick()
+  }, [handleCompactClick, sessionId])
 
   // Handle folder selection from slash command menu
   const handleSlashFolderSelect = React.useCallback((path: string) => {
@@ -876,6 +1000,16 @@ export function FreeFormInput({
     }
   }, [onWorkingDirectoryChange, workspaceId])
 
+  // Set the layer this conversation works on (the `+` menu and `/` both set one).
+  const selectLayer = React.useCallback((layer: SessionMode) => {
+    if (sessionId) window.electronAPI.sessionCommand(sessionId, { type: 'setMode', mode: layer })
+  }, [sessionId])
+
+  // Turn the layer off — the prefix chip's own affordance (the menus only set it).
+  const clearLayerMode = React.useCallback(() => {
+    if (sessionId) window.electronAPI.sessionCommand(sessionId, { type: 'setMode', mode: null })
+  }, [sessionId])
+
   // Get recent folders and home directory for slash menu and mention menu
   const [recentFolders, setRecentFolders] = React.useState<string[]>([])
   const [homeDir, setHomeDir] = React.useState<string>('')
@@ -884,7 +1018,7 @@ export function FreeFormInput({
     setRecentFolders(getRecentWorkingDirs(workspaceId))
     window.electronAPI?.getHomeDir?.().then((dir: string) => {
       if (dir) setHomeDir(dir)
-    })
+    }).catch(() => {})
   }, [workspaceId])
 
   // Inline slash command hook (modes, features, and folders); Guarded only while it is offered
@@ -897,9 +1031,10 @@ export function FreeFormInput({
     activeCommands,
     recentFolders,
     homeDir,
+    showLayerCommands: layersEnabled,
   })
 
-  // Handle mention selection (sources, skills, files)
+  // Handle mention selection (sources, skills, files, tabs)
   const handleMentionSelect = React.useCallback((item: MentionItem) => {
     // For sources: enable the source immediately
     if (item.type === 'source' && item.source && onSourcesChange) {
@@ -915,12 +1050,13 @@ export function FreeFormInput({
     // Skills also don't need special handling beyond text insertion.
   }, [optimisticSourceSlugs, onSourcesChange])
 
-  // Inline mention hook (for skills, sources, and files)
+  // Inline mention hook (for skills, sources, files and the window's tabs)
   const inlineMention = useInlineMention({
     inputRef: richInputRef,
     skills,
     sources,
     basePath: workingDirectory,
+    tabs: browserTabs,
     onSelect: handleMentionSelect,
     // Use workspace slug (not UUID) for SDK skill qualification
     workspaceId: workspaceSlug,
@@ -1012,7 +1148,33 @@ export function FreeFormInput({
   // File attachment handlers
   const handleAttachClick = () => {
     if (disabled) return
+    if (isRemoteWindow) {
+      setServerFilePickerOpen(true)
+      return
+    }
     fileInputRef.current?.click()
+  }
+
+  // The remote-only extra entry: pick on this machine, upload the bytes to the hub.
+  const handleAttachFromComputer = () => {
+    if (disabled) return
+    fileInputRef.current?.click()
+  }
+
+  // Read the picked server file through the hub so the attachment matches what the local
+  // picker would have produced (same shape, same downstream store/send path).
+  const handleServerFileSelected = async (path: string) => {
+    setServerFilePickerOpen(false)
+    setLoadingCount(prev => prev + 1)
+    try {
+      const attachment = await readServerAttachment(path)
+      setAttachments(prev => [...prev, attachment])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      toast.error(t('toast.failedToAttachFile'), { description: message })
+    } finally {
+      setLoadingCount(prev => prev - 1)
+    }
   }
 
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1188,6 +1350,14 @@ export function FreeFormInput({
     // Tutorial may disable sending to guide user through specific steps
     if (disableSend) return false
 
+    // The conversation's browser profile no longer exists. Keep the reference visible (its window
+    // stays usable), but no turn may start until the person picks a valid one.
+    if (browserProfileMissing) return false
+
+    // The conversation's working directory was removed. Keep the path visible, but the person has
+    // to point the conversation at an existing folder before a turn can start.
+    if (workingDirectoryMissing) return false
+
     // Parse all @mentions (skills, sources, folders)
     const skillSlugs = skills.map(s => s.slug)
     const sourceSlugs = sources.map(s => s.config.slug)
@@ -1223,7 +1393,7 @@ export function FreeFormInput({
     })
 
     return true
-  }, [input, attachments, followUpItems, disabled, disableSend, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
+  }, [input, attachments, followUpItems, disabled, disableSend, browserProfileMissing, workingDirectoryMissing, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {
@@ -1391,31 +1561,15 @@ export function FreeFormInput({
     // Update inline label state (for #labels)
     inlineLabel.handleInputChange(nextValue, cursorPosition)
 
-    // Auto-capitalize first letter (but not for slash commands, @mentions, or #labels)
-    // Only if autoCapitalisation setting is enabled
-    let newValue = nextValue
-    if (autoCapitalisation && nextValue.length > 0 && nextValue.charAt(0) !== '/' && nextValue.charAt(0) !== '@' && nextValue.charAt(0) !== '#') {
-      const capitalizedFirst = nextValue.charAt(0).toUpperCase()
-      if (capitalizedFirst !== nextValue.charAt(0)) {
-        newValue = capitalizedFirst + nextValue.slice(1)
-        // Set cursor position BEFORE state update so it's used when useEffect syncs the value
-        richInputRef.current?.setSelectionRange(cursorPosition, cursorPosition)
-        setInput(newValue)
-        syncToParent(newValue)
-        return
-      }
-    }
-
     // Apply smart typography (-> to →, etc.)
     const typography = applySmartTypography(nextValue, cursorPosition)
     if (typography.replaced) {
-      newValue = typography.text
       // Set cursor position BEFORE state update so it's used when useEffect syncs the value
       richInputRef.current?.setSelectionRange(typography.cursor, typography.cursor)
-      setInput(newValue)
-      syncToParent(newValue)
+      setInput(typography.text)
+      syncToParent(typography.text)
     }
-  }, [inlineSlash, inlineMention, inlineLabel, syncToParent, autoCapitalisation])
+  }, [inlineSlash, inlineMention, inlineLabel, syncToParent])
 
   // Handle inline slash command selection (removes the /command text)
   const handleInlineSlashCommandSelect = React.useCallback((commandId: SlashCommandId) => {
@@ -1493,16 +1647,21 @@ export function FreeFormInput({
 
   const hasContent = input.trim() || attachments.length > 0 || followUpItems.length > 0
 
-  // Pre-flight image-support check: warn when staged images would be silently
-  // stripped by Pi SDK because the active custom-endpoint model is text-only.
-  // Gate on pi_compat — built-in catalogs (anthropic/pi) are owned by the SDK
-  // and we can't repair them from the UI here.
+  // Pre-flight image-support check: warn when staged images would be stripped
+  // because the active model's entry says supportsImages: false. The model entry
+  // is the only gate (whatever the connection type), so the warning follows it.
   const hasStagedImages = attachments.some(a => a.type === 'image' || a.mimeType?.startsWith('image/'))
   const showVisionWarning =
     hasStagedImages
     && !!effectiveConnectionDetails
-    && isCompatProvider(effectiveConnectionDetails.providerType)
     && !modelSupportsImages(effectiveConnectionDetails, currentModel)
+  // When the session can route images to a vision-capable model, the warning
+  // becomes an informational note naming that model; otherwise it stays the
+  // "images will be dropped" warning with its one-click enable action.
+  const routedVisionModel =
+    showVisionWarning && effectiveConnectionDetails
+      ? resolveImageModel(effectiveConnectionDetails, currentModel)
+      : undefined
   const contextDisplay = getContextDisplay(contextStatus, getModelContextWindow(currentModel))
   const contextLabels = getContextDisplayLabels(contextDisplay, t)
 
@@ -1539,7 +1698,7 @@ export function FreeFormInput({
           position={inlineSlash.position}
         />
 
-        {/* Inline Mention Autocomplete (skills, sources, files) */}
+        {/* Inline Mention Autocomplete (skills, sources, files, the window's tabs) */}
         <InlineMentionMenu
           open={inlineMention.isOpen}
           onOpenChange={(open) => !open && inlineMention.close()}
@@ -1599,6 +1758,7 @@ export function FreeFormInput({
         {showVisionWarning && effectiveConnectionDetails && (
           <ImageSupportWarningBanner
             modelName={currentModelDisplayName}
+            routedToModelName={routedVisionModel ? getModelDisplayName(routedVisionModel) : undefined}
             onEnable={() => handleToggleModelVision(effectiveConnectionDetails.slug, currentModel, true)}
           />
         )}
@@ -1610,6 +1770,18 @@ export function FreeFormInput({
           disabled={disabled}
           loadingCount={loadingCount}
         />
+
+        {/* Where a remote window's "attach" lands: the workspace's own disk on the hub. */}
+        {serverFilePickerOpen && (
+          <ServerDirectoryBrowser
+            open={serverFilePickerOpen}
+            mode={canBrowseServerFiles ? 'browse' : 'manual'}
+            selectionKind="file"
+            initialPath={workingDirectory ?? workspaceRootPath ?? undefined}
+            onSelect={handleServerFileSelected}
+            onCancel={() => setServerFilePickerOpen(false)}
+          />
+        )}
 
         {/* Follow-up context chips */}
         <AnimatePresence initial={false}>
@@ -1697,32 +1869,58 @@ export function FreeFormInput({
 
         {/* Rich Text Input with inline mention badges */}
         {/* In compact mode, hide input while the agent is processing — until the
-            user clicks / hovers the collapsed bar to expand it back. */}
+            user clicks / hovers the collapsed bar to expand it back.
+
+            The scroll lives on this wrapper (not the editor) so the layer prefix
+            below scrolls with the first line instead of floating over it. */}
         {!isCollapsedInCompact && (
-        <RichTextInput
-          ref={richInputRef}
-          value={input}
-          onChange={handleInputChange}
-          onInput={handleRichInput}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          onLongTextPaste={handleLongTextPaste}
-          onFocus={() => { setIsFocused(true); onFocusChange?.(true) }}
-          onBlur={() => {
-            // Save caret position before losing focus (for restoration via craft:focus-input)
-            lastCaretPositionRef.current = richInputRef.current?.selectionStart ?? null
-            setIsFocused(false)
-            onFocusChange?.(false)
-          }}
-          placeholder={effectivePlaceholder}
-          disabled={disabled}
-          skills={skills}
-          sources={sources}
-          workspaceId={workspaceSlug}
-          className="pl-5 pr-4 pt-4 pb-3 min-h-[88px]"
-          data-tutorial="chat-input"
-          spellCheck={spellCheck}
-        />
+        <div className="relative">
+          {/* Layer prefix — indents the first line only (the editor's text-indent),
+              so the caret starts to its right while the rest of the text wraps back
+              to the normal left edge. It is outside the editor's content: never
+              serialized, never sent. The menus only set it; its X clears it. */}
+          {layerCommand && (
+            <span className="absolute left-5 top-4 z-10 inline-flex h-5 items-center gap-1 rounded-[5px] bg-foreground/5 pl-1.5 pr-1 text-xs leading-none text-foreground/80 select-none">
+              <span className="shrink-0 flex items-center [&>svg]:h-3 [&>svg]:w-3">{layerCommand.icon}</span>
+              <span>{layerCommand.label}</span>
+              <button
+                type="button"
+                aria-label={t('common.remove')}
+                onClick={clearLayerMode}
+                className="h-4 w-4 shrink-0 inline-flex items-center justify-center rounded-[3px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          )}
+          <RichTextInput
+            ref={richInputRef}
+            value={input}
+            onChange={handleInputChange}
+            onInput={handleRichInput}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onLongTextPaste={handleLongTextPaste}
+            onFocus={() => { setIsFocused(true); onFocusChange?.(true) }}
+            onBlur={() => {
+              // Save caret position before losing focus (for restoration via craft:focus-input)
+              lastCaretPositionRef.current = richInputRef.current?.selectionStart ?? null
+              setIsFocused(false)
+              onFocusChange?.(false)
+            }}
+            placeholder={effectivePlaceholder}
+            disabled={disabled}
+            skills={skills}
+            sources={sources}
+            workspaceId={workspaceSlug}
+            className={cn(
+              "pl-5 pr-4 pt-4 pb-3 min-h-[88px]",
+              layerCommand && "[text-indent:84px]"
+            )}
+            data-tutorial="chat-input"
+            spellCheck={spellCheck}
+          />
+        </div>
         )}
 
         </div>
@@ -1750,7 +1948,7 @@ export function FreeFormInput({
               anchored to the right (craft-agents-oss#798). overflow-hidden is safe — Radix Drawer /
               dropdowns inside render via portals, so they aren't clipped. */}
           {compactMode && (
-          <div className="flex items-center gap-1 min-w-0 shrink overflow-hidden">
+          <div className="flex items-center gap-1 min-w-0 shrink overflow-hidden p-px -m-px">
           {onPermissionModeChange && (
             <CompactPermissionModeSelector
               permissionMode={permissionMode}
@@ -1765,23 +1963,21 @@ export function FreeFormInput({
               onConnectionChange={onConnectionChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
-              isEmptySession={isEmptySession}
+              isProcessing={isProcessing}
               connectionUnavailable={connectionUnavailable}
               contextStatus={contextStatus}
             />
           )}
-          <FreeFormInputContextBadge
-            icon={<Paperclip className="h-4 w-4" />}
-            label={attachments.length > 0
-              ? t("chat.filesCount", { count: attachments.length })
-              : t("chat.attach")
-            }
-            isExpanded={false}
-            hasSelection={attachments.length > 0}
-            showChevron={false}
-            onClick={handleAttachClick}
-            tooltip={t("chat.attachFilesTooltip")}
+          <ComposerPlusMenu
             disabled={disabled}
+            layersEnabled={layersEnabled}
+            layerMode={layerMode}
+            attachmentCount={attachments.length}
+            isProcessing={isProcessing}
+            onAttach={handleAttachClick}
+            onAttachFromComputer={isRemoteWindow ? handleAttachFromComputer : undefined}
+            onSelectLayer={selectLayer}
+            onCompact={handleCompactClick}
           />
           {onSourcesChange && (
             <div className="relative shrink min-w-0">
@@ -1861,27 +2057,29 @@ export function FreeFormInput({
               sessionFolderPath={sessionFolderPath}
               isEmptySession={false}
               workspaceId={workspaceId}
+              missing={workingDirectoryMissing}
             />
           )}
+          {/* The conversation's browser profile, right of the folder it works in. */}
+          {sessionId && <CompactProfileSelector sessionId={sessionId} />}
           </div>
           )}
 
           {/* Desktop: full badges row with labels and working directory */}
           {!compactMode && (
           <div className="flex items-center gap-1 min-w-32 shrink overflow-hidden">
-          {/* 1. Attach Files Badge */}
-          <FreeFormInputContextBadge
-            icon={<Paperclip className="h-4 w-4" />}
-            label={attachments.length > 0
-              ? t("chat.filesCount", { count: attachments.length })
-              : t("chat.attachFiles")
-            }
-            isExpanded={isEmptySession}
-            hasSelection={attachments.length > 0}
-            showChevron={false}
-            onClick={handleAttachClick}
-            tooltip={t("chat.attachFilesTooltip")}
+          {/* 1. Add / Command Badge — files, the layer, compact (`/` still works) */}
+          <ComposerPlusMenu
             disabled={disabled}
+            layersEnabled={layersEnabled}
+            layerMode={layerMode}
+            attachmentCount={attachments.length}
+            isProcessing={isProcessing}
+            onAttach={handleAttachClick}
+            onAttachFromComputer={isRemoteWindow ? handleAttachFromComputer : undefined}
+            onSelectLayer={selectLayer}
+            onCompact={handleCompactClick}
+            data-tutorial="composer-plus-menu"
           />
 
           {/* 2. Source Selector Badge - only show if onSourcesChange is provided */}
@@ -1969,8 +2167,12 @@ export function FreeFormInput({
               sessionFolderPath={sessionFolderPath}
               isEmptySession={isEmptySession}
               workspaceId={workspaceId}
+              missing={workingDirectoryMissing}
             />
           )}
+          {/* The conversation's browser profile, right of the folder it works in. */}
+          {sessionId && <CompactProfileSelector sessionId={sessionId} />}
+
           </div>
           )}
 
@@ -1995,14 +2197,25 @@ export function FreeFormInput({
           <div className="flex items-center shrink-0">
           {/* 5. Model/Connection Selector - Hidden in compact mode (EditPopover embedding) */}
           {!compactMode && (
-          <DropdownMenu open={modelDropdownOpen} onOpenChange={setModelDropdownOpen}>
+          <DropdownMenu
+            open={modelDropdownOpen}
+            onOpenChange={(open) => {
+              // Switching is only allowed between turns: while the session is
+              // generating the input shows the stop button and this picker stays
+              // shut (the model for a turn is fixed when the turn is sent).
+              if (open && isProcessing) return
+              setModelDropdownOpen(open)
+            }}
+          >
             <Tooltip>
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
+                    disabled={isProcessing}
                     className={cn(
-                      "input-toolbar-btn inline-flex items-center h-7 px-1.5 gap-0.5 text-[13px] shrink-0 rounded-[6px] hover:bg-foreground/5 transition-colors select-none",
+                      "input-toolbar-btn inline-flex items-center h-7 px-1.5 gap-0.5 text-[13px] shrink-0 rounded-[6px] transition-colors select-none",
+                      isProcessing ? "opacity-50 cursor-not-allowed" : "hover:bg-foreground/5",
                       modelDropdownOpen && "bg-foreground/5",
                       connectionUnavailable && "text-destructive",
                     )}
@@ -2011,6 +2224,7 @@ export function FreeFormInput({
                       <>
                         <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                         {t('common.unavailable')}
+                        <ChevronDown className="h-3 w-3 opacity-50 shrink-0" />
                       </>
                     ) : (
                       <>
@@ -2038,10 +2252,9 @@ export function FreeFormInput({
                 </div>
               ) : pickerMode === 'locked-single' && connectionDefaultModel ? (
                 (() => {
-                  // Single-model pi_compat connection on a non-empty session (or
-                  // when there's only one connection, so no switcher to show).
-                  // Model row is disabled (locked to this session); vision toggle
-                  // remains interactive.
+                  // Single-model pi_compat connection with only one connection
+                  // configured, so there is nothing else to pick. Model row is
+                  // disabled; vision toggle remains interactive.
                   const showVisionToggle =
                     !!effectiveConnectionDetails && isCompatProvider(effectiveConnectionDetails.providerType)
                   const visionOn = showVisionToggle && modelSupportsImages(effectiveConnectionDetails!, connectionDefaultModel)
@@ -2097,7 +2310,9 @@ export function FreeFormInput({
                   )
                 })()
               ) : pickerMode === 'switcher' ? (
-                /* Hierarchical view: Provider → Connection → Models (empty session with multiple connections — lets the user switch BEFORE the first message locks the connection) */
+                /* Hierarchical view: Provider → Connection → Models. Shown whenever
+                   more than one connection is configured, including mid-session —
+                   picking a model under another connection switches it explicitly. */
                 connectionsByProvider.map(([providerName, connections], index) => (
                   <React.Fragment key={providerName}>
                     {/* Provider group label */}
@@ -2132,11 +2347,10 @@ export function FreeFormInput({
                               {/* Show models for this connection - use provider-specific models as fallback */}
                               {(conn.models || ANTHROPIC_MODELS).map((model) => {
                                 const modelId = typeof model === 'string' ? model : model.id
-                                const modelName = typeof model === 'string'
-                                  ? stripPiPrefixForDisplay(getModelShortName(model))
-                                  : (model.name ?? stripPiPrefixForDisplay(model.id))
+                                const customEndpoint = isCompatProvider(conn.providerType)
+                                const modelName = modelLabel(model, { customEndpoint })
                                 const isSelectedModel = isCurrentConnection && currentModel === modelId
-                                const showVisionToggle = isCompatProvider(conn.providerType)
+                                const showVisionToggle = customEndpoint
                                 const visionOn = showVisionToggle && modelSupportsImages(conn, modelId)
                                 return (
                                   <StyledDropdownMenuItem
@@ -2207,28 +2421,19 @@ export function FreeFormInput({
                   </React.Fragment>
                 ))
               ) : (
-                /* Flat model list (single connection or session started) */
+                /* Flat model list — only reachable with a single configured
+                   connection, so there is no connection to disambiguate */
                 <>
-                  {/* Indicator showing which connection is being used */}
-                  {!isEmptySession && currentConnectionDetails && llmConnections.length > 1 && (
-                    <>
-                      <div className="flex items-center gap-2 px-2 py-1.5 text-xs select-none text-muted-foreground">
-                        <span>{t('chat.usingConnection', { name: currentConnectionDetails.name })}</span>
-                      </div>
-                      <StyledDropdownMenuSeparator className="my-1" />
-                    </>
-                  )}
                   {/* Model options based on effective connection's provider type */}
                   {availableModels.map((model) => {
                     const modelId = typeof model === 'string' ? model : model.id
-                    const modelName = typeof model === 'string'
-                      ? stripPiPrefixForDisplay(getModelShortName(model))
-                      : (model.name ?? stripPiPrefixForDisplay(model.id))
+                    const customEndpoint =
+                      !!effectiveConnectionDetails && isCompatProvider(effectiveConnectionDetails.providerType)
+                    const modelName = modelLabel(model, { customEndpoint })
                     const isSelected = currentModel === modelId
                     const descriptionKey = typeof model !== 'string' && 'descriptionKey' in model ? (model.descriptionKey as string) : undefined
                     const description = descriptionKey ? t(descriptionKey) : (typeof model !== 'string' && 'description' in model ? (model.description as string) : '')
-                    const showVisionToggle =
-                      !!effectiveConnectionDetails && isCompatProvider(effectiveConnectionDetails.providerType)
+                    const showVisionToggle = customEndpoint
                     const visionOn = showVisionToggle && modelSupportsImages(effectiveConnectionDetails!, modelId)
                     return (
                       <StyledDropdownMenuItem
@@ -2352,16 +2557,24 @@ export function FreeFormInput({
           </DropdownMenu>
           )}
 
-          {/* Context usage warning/action. Percent text is truthful and may exceed 100%; action requires explicit canCompact. */}
-          {contextDisplay.showWarning && contextDisplay.percent !== null && (
+          {/* 5.5 Context Usage Warning Badge — one source of truth with the model
+              popover: the SDK's own snapshot, measured against the window
+              compaction actually triggers on (contextWindow − reserveTokens), not
+              a hardcoded share of the raw window. A 0.775-of-window heuristic
+              reads 99% a quarter of the window before that trigger (on a 1M
+              window: 767k vs 983,616), and its 99 cap hides ever crossing it. */}
+          {shouldShowCompactBadge(contextDisplay) && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
                   onClick={() => {
-                    if (!isProcessing && contextDisplay.canCompact) onSubmit('/compact', [])
+                    if (!isProcessing) {
+                      onSubmit('/compact', [])
+                    }
                   }}
-                  disabled={isProcessing || !contextDisplay.canCompact}
+                  disabled={isProcessing}
+                  aria-label={t('chat.contextUsage.compact')}
                   className="inline-flex items-center h-6 px-2 text-[12px] font-medium bg-info/10 rounded-[6px] shadow-tinted select-none cursor-pointer hover:bg-info/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   style={{
                     '--shadow-color': 'var(--info-rgb)',
@@ -2371,14 +2584,11 @@ export function FreeFormInput({
                   {contextDisplay.percent}%
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-[260px]">
-                <div className="space-y-0.5">
-                  <div>{contextLabels.window}: {contextLabels.usage}</div>
-                  {contextLabels.qualifier && <div className="text-foreground/60">{contextLabels.qualifier}</div>}
-                  {contextDisplay.canCompact && (
-                    <div>{isProcessing ? t('chat.contextUsage.waitToCompact') : t('chat.contextUsage.compact')}</div>
-                  )}
-                </div>
+              <TooltipContent side="top">
+                {isProcessing
+                  ? t('chat.contextUsage.waitToCompact')
+                  : `${contextLabels.usage} · ${t('chat.contextUsage.compact')}`
+                }
               </TooltipContent>
             </Tooltip>
           )}
@@ -2401,7 +2611,12 @@ export function FreeFormInput({
               size="icon"
               aria-label={t('shortcuts.sendMessage')}
               className="send-btn h-7 w-7 rounded-full shrink-0 ml-2"
-              disabled={!hasContent || disabled || disableSend}
+              disabled={!hasContent || disabled || disableSend || browserProfileMissing || workingDirectoryMissing}
+              title={browserProfileMissing
+                ? t('composer.browserProfileMissingHint', 'This profile was deleted. Choose a valid profile before sending.')
+                : workingDirectoryMissing
+                  ? t('composer.workingDirectoryMissingHint', 'This folder no longer exists. Choose an existing working directory before sending.')
+                  : undefined}
               data-tutorial="send-button"
             >
               <ArrowUp className="h-4 w-4" />
@@ -2418,9 +2633,10 @@ export function FreeFormInput({
 /**
  * WorkingDirectoryBadge - chat-input trigger for the shared WorkingDirectorySelector.
  *
- * Renders the context-badge trigger; the picker popover + folder state machine
- * live in {@link WorkingDirectorySelector} so the Tasks editor reuses the same
- * picker (and can supply its own trigger).
+ * Renders the context-badge trigger; the picker popover + its state machine live in
+ * {@link WorkingDirectorySelector} so the Tasks editor reuses the same picker (and can
+ * supply its own trigger). The badge answers one question — which folder this
+ * conversation works in.
  */
 function WorkingDirectoryBadge({
   workingDirectory,
@@ -2428,12 +2644,15 @@ function WorkingDirectoryBadge({
   sessionFolderPath,
   isEmptySession = false,
   workspaceId,
+  missing = false,
 }: {
   workingDirectory?: string
   onWorkingDirectoryChange: (path: string) => void
   sessionFolderPath?: string
   isEmptySession?: boolean
   workspaceId?: string
+  /** The selected folder was removed; the picker stays usable so it can be replaced. */
+  missing?: boolean
 }) {
   const { t } = useTranslation()
   return (
@@ -2445,14 +2664,21 @@ function WorkingDirectoryBadge({
       renderTrigger={({ open, hasFolder, folderName, workingDirectory: wd, homeDir, gitBranch }) => (
         <span className="shrink min-w-0 overflow-hidden">
           <FreeFormInputContextBadge
-            icon={<Icon_Home className="h-4 w-4" />}
-            label={folderName ?? t('chat.workInFolder')}
+            icon={<Icon_Home className={cn('h-4 w-4', missing && 'text-destructive')} />}
+            label={missing ? t('composer.workingDirectoryMissing', 'Deleted folder') : (folderName ?? t('chat.workInFolder'))}
             isExpanded={isEmptySession}
             hasSelection={hasFolder}
             showChevron={true}
             isOpen={open}
+            className={missing ? 'text-destructive' : undefined}
             tooltip={
-              hasFolder ? (
+              missing ? (
+                <span className="flex flex-col gap-0.5">
+                  <span className="font-medium text-destructive">{t('composer.workingDirectoryMissing', 'Deleted folder')}</span>
+                  <span className="text-xs opacity-70">{formatPathForDisplay(wd, homeDir)}</span>
+                  <span className="text-xs opacity-70">{t('composer.workingDirectoryMissingHint', 'This folder no longer exists. Choose an existing working directory before sending.')}</span>
+                </span>
+              ) : hasFolder ? (
                 <span className="flex flex-col gap-0.5">
                   <span className="font-medium">{t("chat.workingDirectory")}</span>
                   <span className="text-xs opacity-70">{formatPathForDisplay(wd, homeDir)}</span>

@@ -15,6 +15,9 @@ import type { LoadedSource, ApiConfig } from './types.ts';
 import { isMultiHeaderCredential, type ApiCredential } from './credential-manager.ts';
 import { isSourceUsable } from './storage.ts';
 import { createApiServer, type SummarizeCallback } from './api-tools.ts';
+import { createEmailServer } from './email/tools.ts';
+import { resolveEndpoints } from './email/presets.ts';
+import type { EmailAccountConfig } from './email/types.ts';
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { debug } from '../utils/debug.ts';
 
@@ -44,6 +47,8 @@ export interface SourceWithCredential {
   /** Token for MCP sources, or ApiCredential for API sources */
   token?: string | null;
   credential?: ApiCredential | null;
+  /** Mail login for email sources (stored as a basic credential). */
+  emailCredential?: { user: string; pass: string } | null;
 }
 
 /**
@@ -301,6 +306,49 @@ export class SourceServerBuilder {
   }
 
   /**
+   * Build the in-process server for an email source.
+   *
+   * Throws on an unusable configuration (unknown provider without explicit
+   * hosts) so the error reaches the user; returns null when the mailbox has no
+   * credential yet, which the caller reports as "credentials needed".
+   */
+  buildEmailServer(
+    source: LoadedSource,
+    credential: { user: string; pass: string } | null | undefined,
+    sessionPath?: string
+  ): ReturnType<typeof createSdkMcpServer> | null {
+    const email = source.config.email;
+    if (!email) return null;
+
+    const account: EmailAccountConfig = {
+      address: email.address,
+      provider: email.provider,
+      displayName: email.displayName,
+      defaultMailbox: email.defaultMailbox,
+      imap: email.imap,
+      smtp: email.smtp,
+    };
+
+    const endpoints = resolveEndpoints(account);
+    if ('error' in endpoints) throw new Error(endpoints.error);
+
+    if (!credential?.pass) {
+      debug(`[SourceServerBuilder] Email source ${source.config.slug} has no credential`);
+      return null;
+    }
+
+    debug(`[SourceServerBuilder] Building email server for ${source.config.slug}`);
+    return createEmailServer({
+      slug: source.config.slug,
+      account,
+      imap: endpoints.imap,
+      smtp: endpoints.smtp,
+      auth: { user: credential.user, pass: credential.pass },
+      sessionPath,
+    });
+  }
+
+  /**
    * Build all MCP and API servers for enabled sources
    *
    * @param sourcesWithCredentials - Sources with their pre-loaded credentials
@@ -323,11 +371,18 @@ export class SourceServerBuilder {
     const apiServers: Record<string, ReturnType<typeof createSdkMcpServer>> = {};
     const errors: BuiltServers['errors'] = [];
 
-    for (const { source, token, credential } of sourcesWithCredentials) {
+    for (const { source, token, credential, emailCredential } of sourcesWithCredentials) {
       if (!isSourceUsable(source)) continue;
 
       try {
-        if (source.config.type === 'mcp') {
+        if (source.config.type === 'email') {
+          const emailServer = this.buildEmailServer(source, emailCredential, sessionPath);
+          if (emailServer) {
+            apiServers[source.config.slug] = emailServer;
+          } else {
+            errors.push({ sourceSlug: source.config.slug, error: SERVER_BUILD_ERRORS.CREDENTIALS_NEEDED });
+          }
+        } else if (source.config.type === 'mcp') {
           const config = this.buildMcpServer(source, token ?? null, credential);
           if (config) {
             debug(`[SourceServerBuilder] Built MCP server for ${source.config.slug}`);

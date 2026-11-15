@@ -7,9 +7,6 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ElectronDir = Split-Path -Parent $ScriptDir
 $RootDir = Split-Path -Parent (Split-Path -Parent $ElectronDir)
 
-# Configuration
-$BunVersion = "bun-v1.3.9"  # Pinned version for reproducible builds
-
 Write-Host "=== Building Craft Agents Windows Installer using electron-builder ===" -ForegroundColor Cyan
 
 # Debug: System information
@@ -100,58 +97,34 @@ try {
     Pop-Location
 }
 
-# 3. Download Bun binary for Windows
-# Use baseline build - works on all x64 CPUs (no AVX2 requirement)
-Write-Host "Downloading Bun $BunVersion for Windows x64 (baseline)..."
-New-Item -ItemType Directory -Force -Path "$ElectronDir\vendor\bun" | Out-Null
-
-$BunDownload = "bun-windows-x64-baseline"
-$TempDir = Join-Path $env:TEMP "bun-download-$(Get-Random)"
-New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
-
+# 3. Stage the bundled Bun runtime into vendor\bun.
+#    Shared, cached step (scripts/fetch-bun.ts -> scripts/build/common.ts):
+#    pinned version + checksum verification live in ONE place and are reused
+#    offline. fetch-bun retries the copy to ride out transient Windows file
+#    locks (Defender / a previous build holding bun.exe).
+Write-Host "Staging bundled Bun for win32 x64..."
+Push-Location $RootDir
 try {
-    # Download binary and checksums
-    $ZipUrl = "https://github.com/oven-sh/bun/releases/download/$BunVersion/$BunDownload.zip"
-    $ChecksumUrl = "https://github.com/oven-sh/bun/releases/download/$BunVersion/SHASUMS256.txt"
-
-    Write-Host "Downloading from $ZipUrl..."
-    Invoke-WebRequest -Uri $ZipUrl -OutFile "$TempDir\$BunDownload.zip"
-    Invoke-WebRequest -Uri $ChecksumUrl -OutFile "$TempDir\SHASUMS256.txt"
-
-    # Verify checksum
-    Write-Host "Verifying checksum..."
-    $ExpectedHash = (Get-Content "$TempDir\SHASUMS256.txt" | Select-String "$BunDownload.zip").ToString().Split(" ")[0]
-    $ActualHash = (Get-FileHash "$TempDir\$BunDownload.zip" -Algorithm SHA256).Hash.ToLower()
-
-    if ($ActualHash -ne $ExpectedHash) {
-        throw "Checksum verification failed! Expected: $ExpectedHash, Got: $ActualHash"
-    }
-    Write-Host "Checksum verified successfully" -ForegroundColor Green
-
-    # Extract and install using robocopy for better file handle management
-    Write-Host "Extracting Bun..."
-    Expand-Archive -Path "$TempDir\$BunDownload.zip" -DestinationPath $TempDir -Force
-
-    # Unblock in temp first (before copy)
-    Unblock-File -Path "$TempDir\$BunDownload\bun.exe" -ErrorAction SilentlyContinue
-
-    # Use robocopy with retries - handles transient file locks better than Copy-Item
-    # /R:5 = 5 retries, /W:3 = 3 second wait between retries, /NP = no progress, /NFL /NDL = quiet
-    Write-Host "Copying bun.exe with robocopy..."
-    $robocopyResult = robocopy "$TempDir\$BunDownload" "$ElectronDir\vendor\bun" "bun.exe" /R:5 /W:3 /NP /NFL /NDL
-    # Robocopy exit codes: 0-7 are success, 8+ are errors
-    if ($LASTEXITCODE -ge 8) {
-        throw "robocopy failed with exit code $LASTEXITCODE"
-    }
-
-    $BunExePath = "$ElectronDir\vendor\bun\bun.exe"
-    Write-Host "Bun extracted to: $BunExePath" -ForegroundColor Green
-
-    # Give Windows time to release any file handles from the copy
-    Write-Host "Waiting for file handles to release..."
-    Start-Sleep -Seconds 3
+    bun run scripts/fetch-bun.ts win32 x64
+    if ($LASTEXITCODE -ne 0) { throw "fetch-bun failed with exit code $LASTEXITCODE" }
+    Write-Host "Bun staged to: $ElectronDir\vendor\bun\bun.exe" -ForegroundColor Green
 } finally {
-    Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
+    Pop-Location
+}
+
+# 3b. Fetch the vendored drawio webapp.
+#     gitignored and produced only by this script; it must be on disk before
+#     copy-assets.ts copies resources\ -> dist\resources\, or the packaged app
+#     ships without the diagram editor. A failed fetch exits non-zero, which
+#     $ErrorActionPreference = "Stop" turns into a failed build. It writes to
+#     apps\electron\resources\drawio regardless of the current directory.
+Write-Host "Fetching drawio assets..."
+Push-Location $RootDir
+try {
+    bun run apps/electron/scripts/fetch-drawio-assets.ts
+    if ($LASTEXITCODE -ne 0) { throw "fetch-drawio-assets failed with exit code $LASTEXITCODE" }
+} finally {
+    Pop-Location
 }
 
 # 4. Copy SDK from root node_modules (monorepo hoisting).
@@ -241,7 +214,31 @@ foreach ($dep in @("interceptor-common.ts", "feature-flags.ts", "interceptor-req
     }
 }
 
-# 6. Build Electron app
+# Build the bundled interceptor the Pi subprocess --requires at runtime. Packaged,
+# resolveInterceptorBundlePath looks for <app>/dist/interceptor.cjs; this script
+# builds the app itself (not via electron:build:main), so it must build this too —
+# otherwise the packaged app has no interceptor and silently loses tool metadata.
+Write-Host "  Building interceptor bundle..."
+Push-Location $RootDir
+try {
+    bun run scripts/build/pi-subprocess.ts interceptor apps/electron/dist/interceptor.cjs
+    if ($LASTEXITCODE -ne 0) { throw "Interceptor bundle build failed" }
+} finally {
+    Pop-Location
+}
+
+# 6. Build subprocess servers (Pi agent server)
+Write-Host "  Building subprocess servers..."
+Push-Location $RootDir
+try {
+    # Builds pi-agent-server to packages/pi-agent-server/dist/index.js
+    bun run server:build:subprocess
+    if ($LASTEXITCODE -ne 0) { throw "Subprocess server build failed" }
+} finally {
+    Pop-Location
+}
+
+# Build Electron app
 Write-Host "Building Electron app..."
 
 # Build main process with OAuth credentials
@@ -258,7 +255,9 @@ $MainArgs = @(
     # the app on load (ERR_INVALID_ARG_VALUE). Externalize it so Node loads it natively
     # as ESM — the SDK core is staged into the app's node_modules above (step 4).
     # Must stay in sync with package.json build:main and scripts/electron-dev.ts.
-    "--external:@anthropic-ai/claude-agent-sdk"
+    "--external:@anthropic-ai/claude-agent-sdk",
+    # koffi is a native FFI (Windows-only); keep it external so Node loads the .node at runtime.
+    "--external:koffi"
 )
 # Add OAuth defines if env vars are set
 if ($env:GOOGLE_OAUTH_CLIENT_ID) {
@@ -278,7 +277,7 @@ if ($env:MICROSOFT_OAUTH_CLIENT_ID) {
 }
 Push-Location $RootDir
 try {
-    & npx esbuild @MainArgs
+    & bunx esbuild @MainArgs
     if ($LASTEXITCODE -ne 0) { throw "Main process build failed" }
 } finally {
     Pop-Location
@@ -303,7 +302,7 @@ try {
     if (Test-Path $RendererDir) { Remove-Item -Recurse -Force $RendererDir }
 
     # Run vite build
-    npx vite build --config apps/electron/vite.config.ts
+    bunx vite build --config apps/electron/vite.config.ts
     if ($LASTEXITCODE -ne 0) { throw "Renderer build failed" }
 
     # Verify renderer was built
@@ -324,8 +323,43 @@ try {
     bun scripts/copy-assets.ts
     if ($LASTEXITCODE -ne 0) { throw "Asset copy failed" }
     Write-Host "  Assets copied" -ForegroundColor Green
+
+    # The office editors are vendored artifacts (gitignored, built from a GenOffice checkout), so a
+    # machine that never ran scripts\build-office-assets.ts produces an installer that silently
+    # cannot open a .docx. A release must not ship without them.
+    Write-Host "  Validating assets (a release requires the office editors)..."
+    bun scripts/validate-assets.ts --strict
+    if ($LASTEXITCODE -ne 0) { throw "Asset validation failed — see the missing blocks above" }
+    Write-Host "  Assets validated" -ForegroundColor Green
 } finally {
     Pop-Location
+}
+
+# Copy the Pi agent server subprocess to resources/
+# Required by electron-builder.yml (resources/pi-agent-server/**/*)
+Write-Host "  Copying Pi subprocess..."
+$SubprocessServers = @(
+    @{ Name = "pi-agent-server";    Source = "$RootDir\packages\pi-agent-server\dist\index.js" }
+)
+foreach ($server in $SubprocessServers) {
+    $DestDir = "$ElectronDir\resources\$($server.Name)"
+    if (Test-Path $server.Source) {
+        New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
+        Copy-Item $server.Source "$DestDir\index.js"
+        Write-Host "    Copied $($server.Name)/index.js" -ForegroundColor Green
+        # The bundle resolves its image-processing wasm from a path beside index.js
+        # (see scripts/build/photon-wasm.ts). Without it next to the staged copy,
+        # every image attachment is dropped on any machine that did not build it.
+        $WasmSource = Join-Path (Split-Path $server.Source -Parent) "photon_rs_bg.wasm"
+        if (Test-Path $WasmSource) {
+            Copy-Item $WasmSource "$DestDir\photon_rs_bg.wasm"
+            Write-Host "    Copied $($server.Name)/photon_rs_bg.wasm" -ForegroundColor Green
+        } else {
+            Write-Host "    WARNING: photon_rs_bg.wasm not found at $WasmSource" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "    WARNING: $($server.Name) build not found at $($server.Source)" -ForegroundColor Yellow
+    }
 }
 
 # 7. Package with electron-builder
@@ -428,7 +462,7 @@ while (-not $builderSuccess -and $builderRetry -lt $maxBuilderRetries) {
         Start-Sleep -Seconds 1
     }
 
-    npx electron-builder --win --x64 2>&1 | Tee-Object -Variable builderOutput
+    bunx electron-builder --win --x64 2>&1 | Tee-Object -Variable builderOutput
 
     if ($LASTEXITCODE -eq 0) {
         $builderSuccess = $true

@@ -39,6 +39,39 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 
+# -----------------------------------------------------------------------------
+# The printing host
+#
+# `convert --to pdf` and `render` are the two conversions the GenOffice engine
+# cannot do on its own: it spawns "the app" as `<app> --headless-export …` and
+# waits for a file. On a desktop that app is Electron; on a hub there is none, so
+# `packages/render-host` answers the same contract with a headless Chromium.
+#
+# Two things here are load-bearing and neither is optional:
+#
+# - **The fonts.** A PDF without `fonts-noto-cjk` does not fail — it silently
+#   paginates a substituted face, so Chinese text reflows and nobody finds out
+#   until a person opens the file. `fontconfig` is what makes them visible.
+# - **The Chromium's own runtime libraries.** Playwright downloads a browser, not
+#   the shared objects it needs; without libnss3/libgbm1/libasound2 the launcher
+#   exits with "failed to start" and every export becomes a timeout.
+#
+# The browser is Playwright's pinned `chromium-headless-shell` rather than the
+# distribution's `chromium`: the driver and the browser speak one CDP dialect
+# when their versions match, and the headless shell is ~250 MB instead of ~500.
+# -----------------------------------------------------------------------------
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      fontconfig \
+      fonts-noto-cjk \
+      fonts-dejavu-core \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+      libgbm1 libasound2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+      libxrandr2 libpango-1.0-0 libcairo2 libx11-6 libxcb1 libxext6 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 # Create non-root user (Claude Code SDK refuses to run as root).
 # At runtime, override with --user $(id -u):$(id -g) to match host permissions.
 RUN groupadd -r craftagents && \
@@ -76,7 +109,48 @@ RUN bun install --frozen-lockfile
 # Copy source
 COPY . .
 
-# Build the Pi agent server subprocess (required by runtime-resolver.ts)
+# Stage the bundled assets the runtime reads on launch (docs → ~/.craft-agent/docs,
+# plus themes, permissions, tool-icons, release-notes, config-defaults.json) into the
+# distribution's own resources/ — the same layout scripts/build-server.ts produces.
+# Without this the assets root would have to point at apps/electron/resources, which
+# is an Electron packaging detail the server does not otherwise depend on.
+#
+# The drawio editor is fetched rather than committed (`bun apps/electron/scripts/fetch-drawio-assets.ts`
+# on the build host). When fetched, it is staged too and the web UI serves it at `/drawio/`;
+# when it is not, the editor reports itself as not installed.
+#
+# The office feature is part of the server too — the hub serves the editors at `/office/` and the
+# agent's `office_tool` spawns `resources/cli/genoffice.cjs` with Bun. Like drawio, these are
+# vendored artifacts (`bun scripts/build-office-assets.ts`, `build-office-engine.ts`): absent, the
+# editor reports itself as not installed rather than failing the build. `xlsx-sidecar` is the
+# Linux binary (`bun scripts/build-office-native.ts` compiles it from the vendored Rust source);
+# without it a workbook still opens and saves in the editor, but formula/range reads fail.
+RUN mkdir -p /app/resources && \
+    cp -R /app/apps/electron/resources/docs \
+          /app/apps/electron/resources/themes \
+          /app/apps/electron/resources/permissions \
+          /app/apps/electron/resources/tool-icons \
+          /app/apps/electron/resources/release-notes \
+          /app/resources/ && \
+    cp /app/apps/electron/resources/config-defaults.json /app/resources/ && \
+    if [ -d /app/apps/electron/resources/drawio ]; then cp -R /app/apps/electron/resources/drawio /app/resources/; fi && \
+    if [ -d /app/apps/electron/resources/office ]; then cp -R /app/apps/electron/resources/office /app/resources/; fi && \
+    if [ -d /app/apps/electron/resources/office-engine ]; then cp -R /app/apps/electron/resources/office-engine /app/resources/; fi && \
+    if [ -d /app/apps/electron/resources/cli ]; then cp -R /app/apps/electron/resources/cli /app/resources/; fi && \
+    if [ -f /app/apps/electron/resources/office-native/xlsx-sidecar ]; then \
+        mkdir -p /app/resources/office-native && \
+        cp /app/apps/electron/resources/office-native/xlsx-sidecar /app/resources/office-native/; \
+    fi
+
+# The hub's own printing host: the bundle the engine spawns, and the browser it drives.
+RUN node node_modules/playwright-core/cli.js install chromium-headless-shell && \
+    bun run --cwd packages/render-host build:cli && \
+    mkdir -p /app/resources/render-host && \
+    cp /app/packages/render-host/dist/cli.mjs /app/resources/render-host/ && \
+    cp /app/packages/render-host/dist/craft-headless-export /app/resources/render-host/ && \
+    chmod +x /app/resources/render-host/craft-headless-export
+
+# Build the Pi agent server (bundled CJS — required by runtime-resolver.ts)
 RUN bun build packages/pi-agent-server/src/index.ts \
       --outfile packages/pi-agent-server/dist/index.js --target node --format cjs
 
@@ -104,11 +178,13 @@ USER craftagents
 ENV CRAFT_RPC_HOST=0.0.0.0
 ENV CRAFT_RPC_PORT=9100
 ENV CRAFT_WEBUI_DIR=/app/apps/webui/dist
-ENV CRAFT_BUNDLED_ASSETS_ROOT=/app/apps/electron
+# Runtime bundled assets are the image's own resources/ staged above, not
+# apps/electron/resources — same layout as the tarball from scripts/build-server.ts.
+ENV CRAFT_BUNDLED_ASSETS_ROOT=/app
+ENV CRAFT_RESOURCES_PATH=/app/resources
 # WhatsApp worker — Bun cannot run the CJS worker, so we point the adapter at
-# system `node` (installed above). If CRAFT_BUNDLED_ASSETS_ROOT changes, update
-# CRAFT_MESSAGING_WA_WORKER to match; the default in packages/server resolves
-# against CRAFT_BUNDLED_ASSETS_ROOT, but the layout above flattens to /app.
+# system `node` (installed above). This now matches the path packages/server
+# derives from CRAFT_BUNDLED_ASSETS_ROOT, and stays explicit so it is visible here.
 ENV CRAFT_MESSAGING_WA_WORKER=/app/packages/messaging-whatsapp-worker/dist/worker.cjs
 ENV CRAFT_MESSAGING_NODE_BIN=node
 

@@ -12,7 +12,11 @@
 
 import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
 import type { SpawnSessionFn } from './spawn-session-tool.ts';
-import type { BrowserPaneFns } from './browser-tools.ts';
+import type { BrowserPaneFns } from './browser-pane.ts';
+import type { DrawioRenderFns } from '../drawio/cli-fns.ts';
+import type { RecordingFns } from '../recording/cli-fns.ts';
+import type { OfficeEditRequest } from '../office/open-documents.ts';
+import type { DeviceToolFns } from './device-tool.ts';
 import type { AuthRequest } from '@craft-agent/session-tools-core';
 import { debug } from '../utils/debug.ts';
 
@@ -39,10 +43,20 @@ export interface SessionScopedToolCallbacks {
   queryFn?: (request: LLMQueryRequest) => Promise<LLMQueryResult>;
 
   /**
+   * Resolve the model that reads images / video frames when a tool is handed
+   * pictures and the caller named none (see `resolveImageModel`). Wired by
+   * SessionManager so it re-resolves the effective connection + model at call
+   * time (the session may switch connection or model between calls); absent
+   * means no image-capable model is configured, so image tools refuse.
+   */
+  getImageModelFn?: () => string | undefined;
+
+  /**
    * Callback for spawn_session tool — creates an independent session and sends initial prompt.
    * Each agent backend delegates to its onSpawnSession callback.
    */
   spawnSessionFn?: SpawnSessionFn;
+
 
   /**
    * Browser pane functions for browser_* tools.
@@ -50,6 +64,98 @@ export interface SessionScopedToolCallbacks {
    * with the session's bound browser instance.
    */
   browserPaneFns?: BrowserPaneFns;
+
+  /**
+   * A host that can draw a diagram **without a window** — a hub's launcher.
+   *
+   * Registered beside `browserPaneFns` rather than instead of it, because the two answer the same
+   * question on different hosts: the pane is the desktop's, this is a server's, and `drawio_tool`
+   * prefers the pane when it has one.
+   */
+  drawioRenderFns?: DrawioRenderFns;
+
+  /**
+   * A host that can decode a recording **without a window** — a hub's render host.
+   *
+   * Registered beside `browserPaneFns` rather than instead of it: the pane is the desktop's, this
+   * is a server's, and `recording_tool` prefers the pane when it has one (one hop instead of two).
+   */
+  recordingFns?: RecordingFns;
+
+  /**
+   * Deliver a system note into this conversation when background work it started settles.
+   *
+   * Wired by the session manager: idle sessions are woken with a hidden follow-up so the agent
+   * can present the result, while a turn already running is left alone (it can poll). Absent on a
+   * host with no session machinery, and the tool then says "poll" instead of "you will be told".
+   */
+  notifyBackgroundResultFn?: (message: string) => void;
+
+  /**
+   * Apply an anchored edit **inside the editor showing a document**.
+   *
+   * A different thing from writing the file: the change becomes one step of that editor's history,
+   * so the person can undo it and their caret stays put. Answers `null` when nothing is showing the
+   * document, which the tool reports rather than falling back to a write behind an absent editor.
+   */
+  officeApplyEditFn?: (path: string, edit: OfficeEditRequest) => Promise<{ ok: boolean; message?: string } | null>;
+
+  /**
+   * Draw one page of a document, as its own editor lays it out.
+   *
+   * The same route a poster takes (`officePageCapture()`), reached by `render` so looking at a page
+   * costs 1.5 s instead of printing the whole document. Answers the PNG files written; an empty
+   * list means "this host cannot draw", and the command prints the page instead.
+   */
+  /**
+   * Draw an html file in a window nobody sees, and answer the PNG written.
+   *
+   * Installed by the process that owns a browser (`setOfficeWebShot`), and used by `html_tool shot`:
+   * the same picture the `html-preview` reader is — the page, its scripts run, photographed after
+   * they have painted.
+   */
+  /**
+   * Draw a markdown file with the app's own renderer, and answer the PNG written.
+   *
+   * Installed by the process that owns the renderer (`setOfficeMarkdownShot`). Unset on a host with
+   * no renderer, and `markdown_tool shot` then says so rather than drawing nothing.
+   */
+  officeMarkdownShotFn?: (request: { path: string; width: number; height: number; outDir: string }) => Promise<string[]>
+
+  officeWebShotFn?: (request: { path: string; width: number; height: number; outDir: string }) => Promise<string[]>
+
+  officeCapturePagesFn?: (request: {
+    path: string
+    page: number
+    outDir: string
+    target?: { sheet?: string; range?: string }
+  }) => Promise<string[]>;
+
+  /**
+   * Ask every editor holding unsaved work to save it, before the agent touches anything.
+   *
+   * The file is what the agent reads, and the editors write to it on a debounce — so a document
+   * somebody is typing into is ahead of its file by up to a couple of seconds, and ahead of it for
+   * as long as they keep typing. Flushing first makes the rest of the step read the screen instead
+   * of the recent past. Unset on a host with no clients, which has no editors to ask.
+   */
+  documentFlushFn?: (paths: string[]) => Promise<{ path: string; ok: boolean; message?: string }[]>;
+
+  /**
+   * Device functions for `device_tool` — shell/files/browser on this machine or another one
+   * connected to the hub. Set by SessionManager; absent means no device can be reached, and the
+   * tool says so instead of guessing.
+   */
+  deviceFns?: DeviceToolFns;
+  /**
+   * Whether this hub has ever paired a device (online or offline) — the gate for advertising
+   * `device_tool` at all. Read when a tool list is built, so it is a snapshot rather than a live
+   * answer: a hub that has never paired a machine does not pay for the tool's brief every turn.
+   * Absent means "unknown", and the tool stays offered (tests, hosts without a device registry).
+   */
+  hasDevicesFn?: () => boolean;
+  /** This machine's desktop, for `computer_tool`. Absent on a host without one. */
+  getComputerPaneFns?: () => Promise<import('./computer-pane.ts').ComputerPaneFns>;
 
   /** Set labels on a session (defaults to current). */
   setSessionLabelsFn?: (sessionId: string | undefined, labels: string[]) => void | Promise<void>;
@@ -79,20 +185,16 @@ export interface SessionScopedToolCallbacks {
     reason?: string;
     availability?: 'immediate' | 'next-turn';
   }>;
-  /** Get messaging bindings for a session. */
-  getMessagingBindingsFn?: (sessionId: string) => Array<{ platform: string; channelId: string; threadId?: number; channelName?: string; enabled: boolean }>;
-  /** Unbind messaging channels from a session. Returns count of removed bindings. */
-  unbindMessagingChannelFn?: (sessionId: string, platform?: string) => number;
   /** Create a Craft Agents Task (board card + task.yaml + orchestrator session) without running it. */
   createTaskFn?: (
     input: import('@craft-agent/session-tools-core').CreateTaskInput
   ) => Promise<import('@craft-agent/session-tools-core').CreateTaskResult>;
   /**
-   * Pages tools (list/get/create/update/write data/delete) — grouped in one
-   * object because the six operations always ship together. Wired by
-   * SessionManager to the invoking session's workspace.
+   * Tweaks tools (list/get/create/update/delete/export) — the standing edits that run on
+   * pages nobody here owns. Grouped because the operations ship together, and wired the
+   * same way.
    */
-  pages?: import('@craft-agent/session-tools-core').PagesToolCallbacks;
+  tweaks?: import('@craft-agent/session-tools-core').TweakToolCallbacks;
   /**
    * Decision-layer callback for the `decide` tool (Jev / System One). Wired by
    * SessionManager from `@craft-agent/shared/decisions`; gating (Settings switch,

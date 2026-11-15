@@ -469,3 +469,61 @@ describe('hidden messages', () => {
     expect((userTurns[0] as { message: Message }).message.content).toBe('real user question')
   })
 })
+
+describe('queued mid-stream messages', () => {
+  it('stays out of the transcript while it waits in the composer tray', () => {
+    // A message sent while the agent is running has not been sent yet. It lives
+    // in the composer's queued tray, not inside the in-flight turn.
+    const messages: Message[] = [
+      { id: 'u1', role: 'user', content: 'first', timestamp: 1000 },
+      {
+        id: 'tool-1',
+        role: 'tool',
+        content: '',
+        timestamp: 1100,
+        toolName: 'Read',
+        toolUseId: 'tu-1',
+        toolStatus: 'running',
+        turnId: 'turn-1',
+      },
+      { id: 'u2', role: 'user', content: 'queued', timestamp: 1150, isQueued: true },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'finished response',
+        timestamp: 1200,
+        isStreaming: false,
+        isIntermediate: false,
+        turnId: 'turn-1',
+      },
+    ]
+
+    const turns = groupMessagesByTurn(messages)
+
+    expect(turns.map(t => t.type)).toEqual(['user', 'assistant'])
+    expect(turns.some(t => t.type === 'user' && t.message.id === 'u2')).toBe(false)
+  })
+
+  it('enters the transcript in queue order once replay starts', () => {
+    // processNextQueuedMessage clears `isQueued` and re-stamps the timestamp, so
+    // the message sorts after the prior turn's finalized reply.
+    const messages: Message[] = [
+      { id: 'u1', role: 'user', content: 'first', timestamp: 1000 },
+      { id: 'u2', role: 'user', content: 'queued-1', timestamp: 1400 },
+      { id: 'u3', role: 'user', content: 'queued-2', timestamp: 1500 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'finished response',
+        timestamp: 1300,
+        isStreaming: false,
+        isIntermediate: false,
+      },
+    ]
+
+    const turns = groupMessagesByTurn(messages)
+
+    expect(turns.map(t => t.type)).toEqual(['user', 'assistant', 'user', 'user'])
+    expect(turns.slice(2).map(t => (t as { message: Message }).message.id)).toEqual(['u2', 'u3'])
+  })
+})

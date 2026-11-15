@@ -69,7 +69,7 @@ export const MermaidBlock = Node.create({
           }}
         >
           <RichBlockShell onEdit={handleEditClick} editTitle="Edit Mermaid">
-            <MarkdownMermaidBlock code={(node.attrs.code as string) ?? ''} showExpandButton={false} tapToOpen={false} minHeight={140} />
+            <MarkdownMermaidBlock code={(node.attrs.code as string) ?? ''} showExpandButton={false} interactive={false} minHeight={140} />
           </RichBlockShell>
         </NodeViewWrapper>
       )

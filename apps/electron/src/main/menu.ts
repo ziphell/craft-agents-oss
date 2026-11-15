@@ -115,12 +115,13 @@ export async function rebuildMenu(): Promise<void> {
           registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => {
             const focused = BrowserWindow.getFocusedWindow()
-            if (focused) {
-              const workspaceId = windowManager.getWorkspaceForWindow(focused.webContents.id)
-              if (workspaceId) {
-                windowManager.createWindow({ workspaceId })
-              }
-            }
+            if (!focused) return
+            const webContentsId = focused.webContents.id
+            const workspaceId = windowManager.getWorkspaceForWindow(webContentsId)
+            if (!workspaceId) return
+            // Remote is a window property: a new window from a remote window stays on that server.
+            const remote = windowManager.getRemoteForWindow(webContentsId)
+            windowManager.createWindow({ workspaceId, ...(remote ? { remote } : {}) })
           }
         },
         { type: 'separator' as const },
@@ -285,7 +286,10 @@ function toElectronMenuItem(item: MenuItem): Electron.MenuItemConstructorOptions
       label: i18n.t(item.labelKey),
       accelerator: item.shortcut,
       registerAccelerator: false,  // Action registry handles the keyboard shortcut
-      click: () => sendToRenderer(item.ipcChannel as MenuBroadcastChannel),
+      // A renderer-only action has no channel; it is dispatched by the actionId instead.
+      ...(item.ipcChannel
+        ? { click: () => sendToRenderer(item.ipcChannel as MenuBroadcastChannel) }
+        : {}),
     }
   }
 

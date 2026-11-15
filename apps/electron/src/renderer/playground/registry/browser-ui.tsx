@@ -14,7 +14,6 @@ import { EMPTY_STATE_PROMPT_SAMPLES } from '@/components/browser/empty-state-pro
 import type { BrowserInstanceInfo } from '../../../shared/types'
 import { BROWSER_LIVE_FX_BORDER, getBrowserLiveFxCornerRadii } from '../../../shared/browser-live-fx'
 import { routes } from '../../../shared/routes'
-import { isLinux, isMac, isWindows } from '@/lib/platform'
 
 interface BrowserTraceSidebarSampleProps {
   scenario: 'core' | 'all-native-tools' | 'browser-tool-wrapper' | 'full-matrix'
@@ -30,15 +29,7 @@ type AgentVisualState = 'idle' | 'active' | 'failed'
 type BrowserSurfaceMode = 'content' | 'empty-state'
 
 const now = Date.now()
-const PLAYGROUND_LIVE_FX_CORNERS = getBrowserLiveFxCornerRadii(
-  isMac
-    ? 'darwin'
-    : isWindows
-      ? 'win32'
-      : isLinux
-        ? 'linux'
-        : 'other',
-)
+const PLAYGROUND_LIVE_FX_CORNERS = getBrowserLiveFxCornerRadii()
 
 const CORE_TURN: ActivityItem[] = [
   {
@@ -528,6 +519,33 @@ function BrowserEmptyStatePlayground({
 type BrowserTabStripMode = 'auto' | 'live' | 'mock'
 type BrowserTabStripMockPreset = 'default' | 'long-names' | 'many-running' | 'stress-mix'
 
+/**
+ * One mock tab, for mocks written as window-level data.
+ *
+ * Which conversation a window belongs to is per **tab** now — one window holds several
+ * conversations' tabs — so a mock window gets a tab, or the badge's ordering and
+ * its "open the conversation" item would have nothing to read.
+ */
+function tabOf(sessionId: string | null): Pick<BrowserInstanceInfo, 'tabs'> {
+  return {
+    tabs: [{
+      id: 'tab-mock',
+      url: '',
+      title: '',
+      profileId: 'default',
+      favicon: null,
+      isLoading: false,
+      active: true,
+      disposition: null,
+      belongsTo: sessionId ? { kind: 'session', sessionId } : null,
+      drivenBy: null,
+      cursorOf: [],
+      lockedBy: null,
+      overlayDismissed: false,
+    }],
+  }
+}
+
 // NOTE: Theme colors below are derived from the same extraction logic used by browser-pane-manager
 // (meta tags + top-surface sampling fallback) and then applied to realistic mock scenarios.
 const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInfo[]> = {
@@ -540,9 +558,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-high-comet',
-      ownerType: 'session',
-      ownerSessionId: '260228-high-comet',
+      ...tabOf('260228-high-comet'),
       isVisible: true,
       agentControlActive: false,
       themeColor: '#4f46e5',
@@ -555,9 +571,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: true,
       canGoBack: true,
       canGoForward: true,
-      boundSessionId: '260228-vital-thistle',
-      ownerType: 'session',
-      ownerSessionId: '260228-vital-thistle',
+      ...tabOf('260228-vital-thistle'),
       isVisible: true,
       agentControlActive: true,
       themeColor: 'lch(96.667% 0 282.863 / 1)',
@@ -570,9 +584,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-quick-bobcat',
-      ownerType: 'session',
-      ownerSessionId: '260228-quick-bobcat',
+      ...tabOf('260228-quick-bobcat'),
       isVisible: false,
       agentControlActive: false,
       themeColor: '#6db33f',
@@ -585,9 +597,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: true,
-      boundSessionId: '260228-high-comet',
-      ownerType: 'session',
-      ownerSessionId: '260228-high-comet',
+      ...tabOf('260228-high-comet'),
       isVisible: true,
       agentControlActive: false,
       themeColor: '#1e2327',
@@ -600,9 +610,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-high-comet',
-      ownerType: 'session',
-      ownerSessionId: '260228-high-comet',
+      ...tabOf('260228-high-comet'),
       isVisible: true,
       agentControlActive: false,
       themeColor: '#002244',
@@ -617,9 +625,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: true,
-      boundSessionId: '260228-high-comet',
-      ownerType: 'session',
-      ownerSessionId: '260228-high-comet',
+      ...tabOf('260228-high-comet'),
       isVisible: true,
       agentControlActive: false,
       themeColor: null,
@@ -632,9 +638,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-vital-thistle',
-      ownerType: 'session',
-      ownerSessionId: '260228-vital-thistle',
+      ...tabOf('260228-vital-thistle'),
       isVisible: true,
       agentControlActive: true,
       themeColor: 'lch(96.667% 0 282.863 / 1)',
@@ -647,9 +651,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-quick-bobcat',
-      ownerType: 'session',
-      ownerSessionId: '260228-quick-bobcat',
+      ...tabOf('260228-quick-bobcat'),
       isVisible: false,
       agentControlActive: false,
       themeColor: null,
@@ -664,9 +666,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: true,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-high-comet',
-      ownerType: 'session',
-      ownerSessionId: '260228-high-comet',
+      ...tabOf('260228-high-comet'),
       isVisible: true,
       agentControlActive: true,
       themeColor: null,
@@ -679,9 +679,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: true,
       canGoBack: true,
       canGoForward: true,
-      boundSessionId: '260228-high-comet',
-      ownerType: 'session',
-      ownerSessionId: '260228-high-comet',
+      ...tabOf('260228-high-comet'),
       isVisible: true,
       agentControlActive: true,
       themeColor: 'lch(96.667% 0 282.863 / 1)',
@@ -694,9 +692,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: true,
       canGoBack: false,
       canGoForward: false,
-      boundSessionId: '260228-vital-thistle',
-      ownerType: 'session',
-      ownerSessionId: '260228-vital-thistle',
+      ...tabOf('260228-vital-thistle'),
       isVisible: true,
       agentControlActive: false,
       themeColor: '#1e2327',
@@ -709,9 +705,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: true,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-quick-bobcat',
-      ownerType: 'session',
-      ownerSessionId: '260228-quick-bobcat',
+      ...tabOf('260228-quick-bobcat'),
       isVisible: true,
       agentControlActive: false,
       themeColor: '#6db33f',
@@ -724,9 +718,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: true,
       canGoBack: true,
       canGoForward: true,
-      boundSessionId: '260228-quick-bobcat',
-      ownerType: 'session',
-      ownerSessionId: '260228-quick-bobcat',
+      ...tabOf('260228-quick-bobcat'),
       isVisible: false,
       agentControlActive: false,
       themeColor: '#111111',
@@ -741,9 +733,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-high-comet',
-      ownerType: 'session',
-      ownerSessionId: '260228-high-comet',
+      ...tabOf('260228-high-comet'),
       isVisible: true,
       agentControlActive: false,
       themeColor: null,
@@ -756,9 +746,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: true,
       canGoBack: true,
       canGoForward: true,
-      boundSessionId: '260228-vital-thistle',
-      ownerType: 'session',
-      ownerSessionId: '260228-vital-thistle',
+      ...tabOf('260228-vital-thistle'),
       isVisible: true,
       agentControlActive: true,
       themeColor: 'lch(96.667% 0 282.863 / 1)',
@@ -771,9 +759,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-quick-bobcat',
-      ownerType: 'session',
-      ownerSessionId: '260228-quick-bobcat',
+      ...tabOf('260228-quick-bobcat'),
       isVisible: false,
       agentControlActive: false,
       themeColor: null,
@@ -786,9 +772,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: true,
-      boundSessionId: '260228-high-comet',
-      ownerType: 'session',
-      ownerSessionId: '260228-high-comet',
+      ...tabOf('260228-high-comet'),
       isVisible: true,
       agentControlActive: false,
       themeColor: '#1e2327',
@@ -801,9 +785,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: false,
       canGoForward: false,
-      boundSessionId: '260228-vital-thistle',
-      ownerType: 'session',
-      ownerSessionId: '260228-vital-thistle',
+      ...tabOf('260228-vital-thistle'),
       isVisible: true,
       agentControlActive: false,
       themeColor: '#1abcfe',
@@ -816,9 +798,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: true,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-quick-bobcat',
-      ownerType: 'session',
-      ownerSessionId: '260228-quick-bobcat',
+      ...tabOf('260228-quick-bobcat'),
       isVisible: true,
       agentControlActive: false,
       themeColor: '#1a73e8',
@@ -831,9 +811,7 @@ const MOCK_BROWSER_PRESETS: Record<BrowserTabStripMockPreset, BrowserInstanceInf
       isLoading: false,
       canGoBack: true,
       canGoForward: false,
-      boundSessionId: '260228-high-comet',
-      ownerType: 'session',
-      ownerSessionId: '260228-high-comet',
+      ...tabOf('260228-high-comet'),
       isVisible: true,
       agentControlActive: false,
       themeColor: '#002244',
@@ -855,19 +833,12 @@ function BrowserTabStripPlayground({
     ? (hasBrowserPaneBridge ? 'live' : 'mock')
     : mode
 
-  const mockInstances = useMemo(() => {
-    const items = [...(MOCK_BROWSER_PRESETS[mockPreset] ?? MOCK_BROWSER_PRESETS.default)]
-    if (!activeSessionId) return items
-
-    items.sort((a, b) => {
-      const aInActiveSession = a.boundSessionId === activeSessionId ? 0 : 1
-      const bInActiveSession = b.boundSessionId === activeSessionId ? 0 : 1
-      if (aInActiveSession !== bInActiveSession) return aInActiveSession - bInActiveSession
-      return a.id.localeCompare(b.id)
-    })
-
-    return items
-  }, [activeSessionId, mockPreset])
+  // The control orders the windows itself (the one in use, then the conversation's, then profile
+  // order), so a mock only has to supply the windows.
+  const mockInstances = useMemo(
+    () => MOCK_BROWSER_PRESETS[mockPreset] ?? MOCK_BROWSER_PRESETS.default,
+    [mockPreset],
+  )
 
   if (resolvedMode === 'live' && !hasBrowserPaneBridge) {
     return (

@@ -14,6 +14,8 @@ import type {
   SourcesChangedEvent,
   LabelsChangedEvent,
   ProjectIdChangedEvent,
+  ModeChangedEvent,
+  BrowserProfileChangedEvent,
   SessionStatusChangedEvent,
   SessionMetadataChangedEvent,
   SessionFlaggedEvent,
@@ -36,6 +38,8 @@ import type {
   SessionModelChangedEvent,
   LLMConnectionChangedEvent,
   UserMessageEvent,
+  QueuedMessageCancelledEvent,
+  QueuedMessagesStateEvent,
   MessageAnnotationsUpdatedEvent,
   SessionSharedEvent,
   SessionUnsharedEvent,
@@ -84,18 +88,10 @@ export function handleComplete(
     })
   }
 
-  // Clear isQueued from any user messages once the turn completes. Pi's steer
-  // path never emits a 'processing' status update to clear it (the message is
-  // injected mid-stream and absorbed into the current response), so this is
-  // the natural place to drop the indicator. Claude's queued path has already
-  // cleared via the 'processing' status update before this fires; this is
-  // a safe no-op for that case.
-  const hasQueuedUserBubbles = updatedMessages.some(m => m.role === 'user' && m.isQueued)
-  if (hasQueuedUserBubbles) {
-    updatedMessages = updatedMessages.map(m =>
-      m.role === 'user' && m.isQueued ? { ...m, isQueued: false } : m
-    )
-  }
+  // Queued bubbles stay queued until the backend says otherwise: either a
+  // 'processing' event when the message is replayed, or an 'accepted' event
+  // when the user steers it into the running turn. Clearing here would mark
+  // every queued message as sent at once and hide the rest of the queue.
 
   return {
     state: {
@@ -541,6 +537,27 @@ export function handleConnectionChanged(
 }
 
 /**
+ * Handle browser_profile_changed - sync the session's account to renderer state
+ *
+ * No notice: the composer's badge already shows the account, and a switch made here is the
+ * person's own action — saying it back to them is noise.
+ */
+export function handleBrowserProfileChanged(
+  state: SessionState,
+  event: BrowserProfileChangedEvent
+): ProcessResult {
+  const { session, streaming } = state
+
+  return {
+    state: {
+      session: { ...session, browserProfile: event.profileId ?? undefined },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
  * Handle user_message - confirms optimistic user message from backend
  *
  * Three statuses:
@@ -555,12 +572,13 @@ export function handleUserMessage(
   const { session, streaming } = state
   const { message, status } = event
 
-  // Find existing message by ID match (backend ID, optimistic ID, or content+timestamp fallback)
+  // Find existing message by id. Ids are authoritative: matching by content
+  // would collide when the same text is sent more than once (a queued replay
+  // and an older identical message are indistinguishable).
   const existingIndex = session.messages.findIndex(m =>
     m.role === 'user' && (
       m.id === message.id ||
-      (event.optimisticMessageId && m.id === event.optimisticMessageId) ||
-      (m.content === message.content && Math.abs(m.timestamp - message.timestamp) < 5000)
+      (event.optimisticMessageId ? m.id === event.optimisticMessageId : false)
     )
   )
 
@@ -621,9 +639,107 @@ export function handleUserMessage(
         messages: updatedMessages,
         lastMessageAt: Date.now(),
         lastMessageRole: 'user',  // Clear plan badge when user responds
-        // Set isProcessing when message is accepted/processing (enables multi-window sync)
-        isProcessing: status === 'accepted' || status === 'processing',
+        // A user_message event always means a turn is running. `queued` is only
+        // emitted while the current turn is still processing, so it must not
+        // clear the flag: doing so made a mid-stream send look like the turn had
+        // ended (streaming indicator, Stop and Send-now all disappear while the
+        // backend keeps working).
+        isProcessing: true,
       },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
+ * Handle queued_messages_state - reconcile the tray with the backend's queue.
+ *
+ * The event is authoritative: a user message is queued iff its id appears in
+ * `order`. That clears ghosts whose `processing` event was missed (the message
+ * has been sent and must render in the transcript) and adopts messages whose
+ * `queued` event was missed. The listed messages are then placed into the
+ * previously queued slots in the backend's order.
+ */
+export function handleQueuedMessagesState(
+  state: SessionState,
+  event: QueuedMessagesStateEvent
+): ProcessResult {
+  const { session, streaming } = state
+
+  const findMessage = (entry: { messageId: string; optimisticMessageId?: string }) =>
+    session.messages.find(m =>
+      m.role === 'user' && (
+        m.id === entry.messageId ||
+        (entry.optimisticMessageId ? m.id === entry.optimisticMessageId : false)
+      )
+    )
+
+  const listed = new Set<Message>()
+  const ordered: Message[] = []
+  for (const entry of event.order) {
+    const message = findMessage(entry)
+    if (!message || listed.has(message)) continue
+    listed.add(message)
+    ordered.push(message)
+  }
+
+  let changed = false
+  let messages = session.messages.map(m => {
+    if (m.role !== 'user') return m
+    const shouldQueue = listed.has(m)
+    if (!!m.isQueued === shouldQueue) return m
+    changed = true
+    return { ...m, isQueued: shouldQueue }
+  })
+
+  // Fill the queued slots with the authoritative order. Non-queued messages
+  // keep their positions; queued ones are invisible in the transcript anyway.
+  const queuedNow = messages.filter(m => m.role === 'user' && m.isQueued)
+  if (queuedNow.length === ordered.length) {
+    let index = 0
+    messages = messages.map(m => {
+      if (m.role !== 'user' || !m.isQueued) return m
+      const next = ordered[index++]
+      if (next.id === m.id) return m
+      changed = true
+      // `ordered` holds pre-update objects; keep the authoritative flag.
+      return next.isQueued ? next : { ...next, isQueued: true }
+    })
+  }
+
+  if (!changed) return { state, effects: [] }
+  return {
+    state: {
+      session: { ...session, messages },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
+ * Handle queued_message_cancelled - drop a queued bubble the backend removed.
+ *
+ * The text is restored to the composer by the renderer that initiated the
+ * cancel, so this stays a pure transcript edit and syncs other windows.
+ */
+export function handleQueuedMessageCancelled(
+  state: SessionState,
+  event: QueuedMessageCancelledEvent
+): ProcessResult {
+  const { session, streaming } = state
+  const messages = session.messages.filter(
+    m => m.id !== event.messageId && m.id !== event.optimisticMessageId
+  )
+
+  if (messages.length === session.messages.length) {
+    return { state, effects: [] }
+  }
+
+  return {
+    state: {
+      session: { ...session, messages },
       streaming,
     },
     effects: [],
@@ -719,6 +835,27 @@ export function handleProjectIdChanged(
 }
 
 /**
+ * Handle mode_changed - update the layer this session is working in
+ */
+export function handleModeChanged(
+  state: SessionState,
+  event: ModeChangedEvent
+): ProcessResult {
+  const { session, streaming } = state
+
+  return {
+    state: {
+      session: {
+        ...session,
+        mode: event.mode ?? undefined,
+      },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
  * Handle session_status_changed - update session's sessionStatus (external metadata change or agent tool)
  */
 export function handleSessionStatusChanged(
@@ -737,20 +874,30 @@ export function handleSessionStatusChanged(
 
 /**
  * Handle session_metadata_changed - merge programmatic metadata changes (taskNodeCount,
- * kanbanColumn, and the taskDraft→taskSlug promotion on orchestrator adoption) that don't
- * propagate via the header-signature file watch.
+ * taskAwaitingApproval, kanbanColumn, and the taskDraft→taskSlug promotion on orchestrator
+ * adoption) that don't propagate via the header-signature file watch.
  */
 export function handleSessionMetadataChanged(
   state: SessionState,
   event: SessionMetadataChangedEvent
 ): ProcessResult {
   const { session, streaming } = state
+  const effects: Effect[] = []
+
+  // A gate parking is the one metadata change that is about work *stopping*: the run cannot move
+  // until a person answers. Notify on the rise (0→N, or one more gate parked) — never on a
+  // re-published count, or every scheduling pass would nag again.
+  const waiting = event.changes.taskAwaitingApproval
+  if (typeof waiting === 'number' && waiting > (session.taskAwaitingApproval ?? 0)) {
+    effects.push({ type: 'task_awaiting_approval' })
+  }
+
   return {
     state: {
       session: { ...session, ...event.changes },
       streaming,
     },
-    effects: [],
+    effects,
   }
 }
 

@@ -34,6 +34,11 @@ const PLATFORM = platform()
 const IS_MAC = PLATFORM === 'darwin'
 const IS_WINDOWS = PLATFORM === 'win32'
 
+// TEMPORARILY DISABLED: kills every update check — the automatic one on launch
+// and the manual ones (app menu / Settings → About). No request reaches the
+// update server. Set to `true` to restore normal behavior.
+const UPDATE_CHECKS_ENABLED: boolean = false
+
 // Get the update cache directory path (for file watcher fallback on macOS)
 // electron-updater uses these paths:
 // - Windows: %LOCALAPPDATA%/{appName}-updater/pending
@@ -357,6 +362,17 @@ function checkForExistingDownload(): { exists: boolean; version?: string } {
  * @param options.autoDownload - If false, only checks without downloading (for manual "Check Now")
  */
 export async function checkForUpdates(options: CheckOptions = {}): Promise<UpdateInfo> {
+  // TEMPORARILY DISABLED: see UPDATE_CHECKS_ENABLED.
+  if (!UPDATE_CHECKS_ENABLED) {
+    autoUpdateLog.info('Update check skipped (temporarily disabled)')
+    const current = getUpdateInfo()
+    // An already downloaded update stays installable; otherwise report the
+    // skipped check as an error so callers don't claim "you're up to date".
+    return current.downloadState === 'ready'
+      ? current
+      : { ...current, downloadState: 'error', error: 'Update checks are temporarily disabled' }
+  }
+
   const { autoDownload = true } = options
 
   // Temporarily override autoDownload for this check if needed
@@ -491,6 +507,12 @@ export interface UpdateOnLaunchResult {
  * - Auto-downloads if update available
  */
 export async function checkForUpdatesOnLaunch(): Promise<UpdateOnLaunchResult> {
+  // TEMPORARILY DISABLED: see UPDATE_CHECKS_ENABLED.
+  if (!UPDATE_CHECKS_ENABLED) {
+    autoUpdateLog.info('Update check skipped on launch (temporarily disabled)')
+    return { action: 'skipped', reason: 'disabled' }
+  }
+
   autoUpdateLog.info('Checking for updates on launch...')
 
   const info = await checkForUpdates({ autoDownload: true })

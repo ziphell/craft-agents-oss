@@ -8,6 +8,7 @@ import { existsSync, rmSync, cpSync, readFileSync, statSync, mkdirSync } from "f
 import { join, basename } from "path";
 import * as esbuild from "esbuild";
 import { downloadUv, type Platform, type Arch } from "./build/common";
+import { preparePhotonWasm, reportPhotonWasm } from "./build/photon-wasm";
 
 const ROOT_DIR = join(import.meta.dir, "..");
 const ELECTRON_DIR = join(ROOT_DIR, "apps/electron");
@@ -195,6 +196,26 @@ function copyResources(): void {
   }
 }
 
+// Stage the bundled Bun runtime for the host. `vendor/bun` is shared with the
+// dist scripts, which stage x64 last for universal macOS builds — without this
+// a dev run after `electron:dist:mac` picks up the x86_64 binary and Pi fails
+// with an architecture mismatch. Runs the canonical script so the version and
+// cache stay in sync with the packaged build.
+async function ensureBundledBunForCurrentPlatform(): Promise<void> {
+  console.log("🥟 Ensuring bundled Bun for current platform...");
+  const proc = spawn({
+    cmd: ["bun", "run", "scripts/fetch-bun.ts"],
+    cwd: ROOT_DIR,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    console.error("❌ Bundled Bun staging failed");
+    process.exit(1);
+  }
+}
+
 // Build the WhatsApp worker bundle (dist/worker.cjs). Runs the canonical
 // `scripts/build-wa-worker.ts` as a subprocess so the dev path stays in
 // sync with the packaged/CI build. Cheap (~70ms) so we always rebuild.
@@ -258,10 +279,6 @@ function getOAuthDefines(): Record<string, string> {
 function getElectronEnv(): Record<string, string> {
   const vitePort = process.env.CRAFT_VITE_PORT || "5173";
 
-  // Codex binary path is resolved at runtime by the binary-resolver module.
-  // It checks: CODEX_PATH env var > bundled binary > local dev fork > system PATH.
-  // You can override with CODEX_PATH env var if needed for debugging.
-
   return {
     ...process.env as Record<string, string>,
     VITE_DEV_SERVER_URL: `http://localhost:${vitePort}`,
@@ -282,7 +299,7 @@ function getElectronEnv(): Record<string, string> {
 //   TLA-free ESM, so the runtime `require('@anthropic-ai/claude-agent-sdk')`
 //   resolves correctly. Mirror of the same flag in `scripts/electron-build-main.ts`
 //   and `apps/electron/package.json` build:main.
-const MAIN_BUNDLE_EXTERNALS = ["electron", "@anthropic-ai/claude-agent-sdk"];
+const MAIN_BUNDLE_EXTERNALS = ["electron", "@anthropic-ai/claude-agent-sdk", "koffi"];
 
 // Run a one-shot esbuild using the JavaScript API
 async function runEsbuild(
@@ -317,7 +334,20 @@ async function runEsbuild(
 async function buildPiAgentServer(): Promise<{ success: boolean; error?: string }> {
   try {
     const proc = spawn({
-      cmd: ["bun", "build", "src/index.ts", "--outdir=dist", "--target=bun", "--format=esm"],
+      // electron / electron-log are Electron-only (see electron-build-main.ts):
+      // absent here by design, and every caller handles that.
+      cmd: [
+        "bun",
+        "build",
+        "src/index.ts",
+        "--outdir=dist",
+        "--target=bun",
+        "--format=esm",
+        "--external",
+        "electron",
+        "--external",
+        "electron-log",
+      ],
       cwd: PI_AGENT_SERVER_DIR,
       stdout: "pipe",
       stderr: "pipe",
@@ -327,6 +357,9 @@ async function buildPiAgentServer(): Promise<{ success: boolean; error?: string 
     if (exitCode !== 0) {
       return { success: false, error: stderr };
     }
+    // Dev resolves this bundle straight from dist/, so it needs the same repair
+    // and the same neighbouring wasm as the packaged copy.
+    reportPhotonWasm(preparePhotonWasm(PI_AGENT_SERVER_OUTPUT));
     return { success: true };
   } catch (err) {
     return { success: false, error: String(err) };
@@ -409,6 +442,7 @@ async function main(): Promise<void> {
   }
 
   await ensureBundledUvForCurrentPlatform();
+  await ensureBundledBunForCurrentPlatform();
 
   copyResources();
 

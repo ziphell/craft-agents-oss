@@ -12,6 +12,7 @@ import {
   XCircle,
   Circle,
   MessageCircleDashed,
+  Brain,
   FileText,
   ArrowUpRight,
   Ban,
@@ -23,6 +24,7 @@ import {
   Pencil,
   FilePenLine,
   GitBranch,
+  MessageSquareQuote,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Markdown } from '../markdown'
@@ -99,7 +101,7 @@ import {
  * Removes markdown syntax to show plain text preview.
  * Code block content is preserved as plain text.
  */
-function stripMarkdown(text: string): string {
+export function stripMarkdown(text: string): string {
   return text
     // Extract content from fenced code blocks (remove ``` and optional language)
     .replace(/```(?:\w+)?\n?([\s\S]*?)```/g, '$1')
@@ -340,6 +342,13 @@ export interface TurnCardProps {
   isLastResponse?: boolean
   /** Session folder path for stripping from file paths in tool display */
   sessionFolderPath?: string
+  /**
+   * The folder this turn's file links are relative to — the conversation's working directory.
+   *
+   * A response that names a file as `docs/plan.md` means the one beside that folder, not beside the
+   * app; without it the click reaches the host as a relative path and cannot be opened at all.
+   */
+  baseDir?: string
   /** Display mode: 'detailed' shows all info, 'informative' hides MCP/API names and params */
   displayMode?: 'informative' | 'detailed'
   /** Animate response appearance (for playground demos) */
@@ -366,6 +375,13 @@ export interface TurnCardProps {
   openAnnotationRequest?: OpenAnnotationRequest | null
   /** Annotation interaction mode (viewer uses tooltip-only to suppress the island) */
   annotationInteractionMode?: AnnotationInteractionMode
+  /**
+   * Answer this turn's final response.
+   *
+   * A reply is an ordinary message carrying a pointer back (see `MessageReply`): the excerpt is for
+   * the reader, and the model already has this turn in context.
+   */
+  onReply?: (message: { id: string; role: 'assistant'; content: string }) => void
 }
 
 // ============================================================================
@@ -715,7 +731,7 @@ function formatToolDisplay(
 }
 
 /** Get the primary preview text for collapsed state */
-function getPreviewText(
+export function getPreviewText(
   activities: ActivityItem[],
   intent?: string,
   isStreaming?: boolean,
@@ -738,12 +754,12 @@ function getPreviewText(
     return runningTask.toolInput.description as string
   }
 
-  // While still streaming, show the latest intermediate message content
+  // While still streaming, show the latest reasoning or intermediate content
   // This gives visibility into what the LLM is "thinking"
   if (isStreaming && !isComplete) {
     const latestIntermediate = [...activities]
       .reverse()
-      .find(a => a.type === 'intermediate' && a.content)
+      .find(a => (a.type === 'thinking' || a.type === 'intermediate') && a.content)
     if (latestIntermediate?.content) {
       return latestIntermediate.content
     }
@@ -906,9 +922,11 @@ function TreeViewConnector({ depth }: { depth: number; isLastChild?: boolean }) 
 function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, displayMode = 'detailed' }: ActivityRowProps) {
   const depth = activity.depth || 0
 
-  // Intermediate messages (LLM commentary) - render with dashed circle icon
-  // Show "Thinking" while streaming, stripped markdown content when complete
-  if (activity.type === 'intermediate') {
+  // Intermediate messages (LLM commentary) and reasoning blocks share one row
+  // shape: dashed circle / brain icon, one-line preview, click for the details
+  // overlay (rendered as markdown). Reasoning arrives complete, so it never
+  // shows the streaming "Thinking..." placeholder.
+  if (activity.type === 'intermediate' || activity.type === 'thinking') {
     const isThinking = activity.status === 'running'
     const displayContent = isThinking ? 'Thinking...' : stripMarkdown(activity.content || '')
     const isComplete = activity.status === 'completed'
@@ -926,6 +944,8 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, 
             <div className={cn(SIZE_CONFIG.iconSize, "flex items-center justify-center shrink-0")}>
               <Spinner className={SIZE_CONFIG.spinnerSize} />
             </div>
+          ) : activity.type === 'thinking' ? (
+            <Brain className={cn(SIZE_CONFIG.iconSize, "shrink-0 opacity-70")} />
           ) : (
             <MessageCircleDashed className={cn(SIZE_CONFIG.iconSize, "shrink-0")} />
           )}
@@ -989,8 +1009,7 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, 
   // - Intent: For MCP tools (activity.intent), for Bash (toolInput.description)
   // - Params: Remaining tool input summary
   const toolDisplay = formatToolDisplay(activity)
-  const fullDisplayName = toolDisplay.name
-    || (activity.type === 'thinking' ? 'Thinking' : 'Processing')
+  const fullDisplayName = toolDisplay.name || 'Processing'
 
   // Detect MCP/API tools (toolName starts with "mcp__")
   const isMcpOrApiTool = activity.toolName?.startsWith('mcp__') ?? false
@@ -1389,6 +1408,8 @@ function ActivityGroupRow({ group, expandedGroups: externalExpandedGroups, onExp
 // ============================================================================
 
 export interface ResponseCardProps {
+  /** Answer this response (a reply is an ordinary message that points back at it). */
+  onReply?: (message: { id: string; role: 'assistant'; content: string }) => void
   /** The content to display (markdown) */
   text: string
   /** Whether the content is still streaming */
@@ -1399,6 +1420,8 @@ export interface ResponseCardProps {
   onOpenFile?: (path: string) => void
   /** Callback to open URL */
   onOpenUrl?: (url: string) => void
+  /** The folder relative file links resolve against (the conversation's working directory). */
+  baseDir?: string
   /** Callback to open response in Monaco editor */
   onPopOut?: () => void
   /** Card variant - 'response' for AI messages, 'plan' for plan messages */
@@ -1481,8 +1504,6 @@ function BranchDropdown({ onBranch }: BranchDropdownProps) {
     </DropdownMenu>
   )
 }
-
-const MAX_HEIGHT = 540
 
 function clearAnnotationMarks(root: HTMLElement): void {
   const annotatedInlineCodeNodes = root.querySelectorAll<HTMLElement>('code[data-ca-annotation-inline-code="true"]')
@@ -1659,6 +1680,7 @@ export function ResponseCard({
   streamStartTime,
   onOpenFile,
   onOpenUrl,
+  baseDir,
   onPopOut,
   variant = 'response',
   sessionId,
@@ -1666,6 +1688,7 @@ export function ResponseCard({
   annotations,
   onAccept,
   onAcceptWithCompact,
+  onReply,
   isLastResponse = true,
   showAcceptPlan = true,
   compactMode = false,
@@ -1687,8 +1710,6 @@ export function ResponseCard({
   const [copied, setCopied] = useState(false)
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState(false)
-  // Dark mode detection - scroll fade only shown in dark mode
-  const [isDarkMode, setIsDarkMode] = useState(false)
   // Pending text selection waiting for explicit follow-up action
   const interaction = useAnnotationInteractionController()
   const {
@@ -1728,19 +1749,6 @@ export function ResponseCard({
     isStreaming,
   })
   const allowAnnotationIsland = annotationInteractionMode === 'interactive'
-
-  // Detect dark mode from document class and listen for changes
-  useEffect(() => {
-    const checkDarkMode = () => {
-      setIsDarkMode(document.documentElement.classList.contains('dark'))
-    }
-    checkDarkMode()
-
-    // Observe class changes on documentElement for theme switches
-    const observer = new MutationObserver(checkDarkMode)
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-    return () => observer.disconnect()
-  }, [])
 
   const closeSelectionMenu = useCallback(() => {
     closeAll()
@@ -2455,24 +2463,14 @@ export function ResponseCard({
 
     return (
       <>
-        <div className="bg-background shadow-minimal rounded-[8px] overflow-hidden relative group">
-          {/* Fullscreen button - desktop only; compact mode keeps message chrome minimal */}
-          {!compactMode && (
-          <button
-            onClick={() => setIsFullscreen(true)}
-            className={cn(
-              "absolute top-2 right-2 p-1 rounded-[6px] transition-all z-10 select-none",
-              "opacity-0 group-hover:opacity-100",
-              "bg-background shadow-minimal",
-              "text-muted-foreground/50 hover:text-foreground",
-              "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:opacity-100"
-            )}
-            title={t('common.viewFullscreen')}
-          >
-            <Maximize2 className="w-3.5 h-3.5" />
-          </button>
-          )}
-
+        {/* A plain response is text on the conversation's own surface. It used to be a
+            white card with a 1px ring, which made every preview block inside it a box
+            inside a box. A plan keeps the card: its header and Accept footer are a
+            deliverable's chrome, not a message's. */}
+        <div className={cn(
+          'overflow-hidden relative group',
+          isPlan && 'bg-background shadow-minimal rounded-[8px]'
+        )}>
           {/* Plan header - only shown for plan variant */}
           {isPlan && (
             <div
@@ -2486,25 +2484,19 @@ export function ResponseCard({
             </div>
           )}
 
-          {/* Scrollable content area with subtle fade at edges (dark mode only) */}
+          {/* The response is read whole: no height cap and no scrolling of its own —
+              a reply taller than the screen is read by scrolling the conversation. */}
           <div
             ref={contentRef}
             data-search-root="response"
             onMouseDown={handleSelectionPointerDown}
             onMouseUp={handleTextSelection}
-            className="pl-[22px] pr-[16px] py-3 text-sm overflow-y-auto scrollbar-hover"
-            style={{
-              maxHeight: MAX_HEIGHT,
-              // Subtle fade at top and bottom edges (16px) - only in dark mode for better contrast
-              ...(isDarkMode && {
-                maskImage: 'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)',
-                WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)',
-              }),
-            }}
+            className="pl-[22px] pr-[16px] py-3 text-sm"
           >
             <div ref={contentLayerRef} className="relative">
               <Markdown
                 mode="minimal"
+                baseDir={baseDir}
                 onUrlClick={onOpenUrl}
                 onFileClick={onOpenFile}
               >
@@ -2518,11 +2510,27 @@ export function ResponseCard({
               Compact mode falls through to the slim Accept-Plan-only footer below. */}
           {!compactMode && (
             <div className={cn(
-              "pl-4 pr-2.5 py-2 border-t border-border/30 flex items-center justify-between bg-muted/20",
+              "pl-4 pr-2.5 py-2 flex items-center justify-between",
+              // The tint and the hairline were the card's bottom edge; with no card
+              // they would read as a strip with no sides.
+              isPlan && "border-t border-border/30 bg-muted/20",
               SIZE_CONFIG.fontSize
             )}>
               {/* Left side - Copy, View as Markdown, Annotation hint */}
               <div className="flex items-center gap-3">
+                {onReply && messageId && !!text?.trim() && !isStreaming && (
+                  <button
+                    onClick={() => onReply({ id: messageId, role: 'assistant', content: text })}
+                    className={cn(
+                      "turn-action-btn flex items-center gap-1.5 transition-colors select-none",
+                      "text-muted-foreground hover:text-foreground",
+                      "focus:outline-none focus-visible:underline"
+                    )}
+                  >
+                    <MessageSquareQuote className={SIZE_CONFIG.iconSize} />
+                    <span>{t("chat.reply", { defaultValue: "Reply" })}</span>
+                  </button>
+                )}
                 <button
                   onClick={handleCopy}
                   className={cn(
@@ -2579,6 +2587,21 @@ export function ResponseCard({
                   </div>
                 )}
                 {onBranch && <BranchDropdown onBranch={onBranch} />}
+                {/* Read the response at window size. It sits with the other actions rather
+                    than floating over the text, so it is not a frame on the message. */}
+                <button
+                  type="button"
+                  onClick={() => setIsFullscreen(true)}
+                  aria-label={t('common.viewFullscreen')}
+                  title={t('common.viewFullscreen')}
+                  className={cn(
+                    "p-1 rounded-[4px] transition-colors select-none",
+                    "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
+                    "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  )}
+                >
+                  <Maximize2 className={SIZE_CONFIG.iconSize} />
+                </button>
               </div>
             </div>
           )}
@@ -2627,30 +2650,24 @@ export function ResponseCard({
     )
   }
 
-  // Streaming response - show throttled content with spinner
+  // Streaming response - show throttled content with spinner.
+  // Plan always renders through the completed branch above (its header/footer are
+  // delivery chrome), so this branch is plain responses only — flat, no card.
   return (
     <>
-      <div className="bg-background shadow-minimal rounded-[8px] overflow-hidden group">
+      <div className="overflow-hidden group">
         {/* Content area - uses displayedText (throttled) for performance */}
-        {/* Subtle fade at top and bottom edges (dark mode only) */}
         <div
           ref={contentRef}
           data-search-root="response"
           onMouseDown={handleSelectionPointerDown}
           onMouseUp={handleTextSelection}
-          className="pl-[22px] pr-4 py-3 text-sm overflow-y-auto scrollbar-hover"
-          style={{
-            maxHeight: MAX_HEIGHT,
-            // Subtle fade at top and bottom edges (16px) - only in dark mode for better contrast
-            ...(isDarkMode && {
-              maskImage: 'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)',
-              WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 16px, black calc(100% - 16px), transparent 100%)',
-            }),
-          }}
+          className="pl-[22px] pr-4 py-3 text-sm"
         >
           <div ref={contentLayerRef} className="relative">
             <Markdown
               mode="minimal"
+              baseDir={baseDir}
               onUrlClick={onOpenUrl}
               onFileClick={onOpenFile}
             >
@@ -2663,7 +2680,10 @@ export function ResponseCard({
         {/* Desktop streaming footer; compact mode renders nothing here
             (the Accept-Plan footer only applies to completed plans). */}
         {!compactMode && (
-          <div className={cn("px-4 py-2 border-t border-border/30 flex items-center bg-muted/20", SIZE_CONFIG.fontSize)}>
+          <div className={cn(
+            "px-4 py-2 flex items-center",
+            SIZE_CONFIG.fontSize
+          )}>
             <div className="flex items-center gap-2 text-muted-foreground">
               <Spinner className={SIZE_CONFIG.spinnerSize} />
               <span>Streaming...</span>
@@ -2792,6 +2812,7 @@ export const TurnCard = React.memo(function TurnCard({
   onAcceptPlanWithCompact,
   isLastResponse,
   sessionFolderPath,
+  baseDir,
   displayMode = 'detailed',
   animateResponse = false,
   compactMode = false,
@@ -2804,6 +2825,7 @@ export const TurnCard = React.memo(function TurnCard({
   hasActiveFollowUpAnnotations = false,
   openAnnotationRequest,
   annotationInteractionMode = 'interactive',
+  onReply,
 }: TurnCardProps) {
   // Derive the turn phase from props using the state machine.
   // This provides a single source of truth for lifecycle state,
@@ -2940,8 +2962,8 @@ export const TurnCard = React.memo(function TurnCard({
     && activities.every(a => {
       // Tool activities must be errors (interrupted/failed)
       if (a.type === 'tool') return a.status === 'error'
-      // Intermediate activities must have no meaningful content
-      if (a.type === 'intermediate') return !a.content?.trim()
+      // Intermediate / reasoning activities must have no meaningful content
+      if (a.type === 'intermediate' || a.type === 'thinking') return !a.content?.trim()
       // Plan activities are meaningful work
       if (a.type === 'plan') return false
       // Other activity types - consider as no meaningful work
@@ -3149,6 +3171,7 @@ export const TurnCard = React.memo(function TurnCard({
             sessionId={sessionId}
             onOpenFile={onOpenFile}
             onOpenUrl={onOpenUrl}
+            baseDir={baseDir}
             onPopOut={onPopOut ? () => onPopOut(planActivity.content || '') : undefined}
             variant="plan"
             messageId={planActivity.messageId}
@@ -3159,6 +3182,7 @@ export const TurnCard = React.memo(function TurnCard({
             onSaveAndSendFollowUp={onSaveAndSendFollowUp}
             onAccept={onAcceptPlan}
             onAcceptWithCompact={onAcceptPlanWithCompact}
+            onReply={onReply}
             isLastResponse={isLastResponse && index === planActivities.length - 1}
             compactMode={compactMode}
             onBranch={onBranch ? (options?: { newPanel?: boolean }) => onBranch(planActivity.messageId ?? planActivity.id, options) : undefined}
@@ -3188,6 +3212,7 @@ export const TurnCard = React.memo(function TurnCard({
                 sessionId={sessionId}
                 onOpenFile={onOpenFile}
                 onOpenUrl={onOpenUrl}
+                baseDir={baseDir}
                 onPopOut={onPopOut ? () => onPopOut(response.text) : undefined}
                 variant={response.isPlan ? 'plan' : 'response'}
                 messageId={response.messageId}
@@ -3261,6 +3286,9 @@ export const TurnCard = React.memo(function TurnCard({
 
   // Re-render if displayMode changed
   if (prev.displayMode !== next.displayMode) return false
+
+  // Re-render if the folder file links resolve against changed
+  if (prev.baseDir !== next.baseDir) return false
 
   // Re-render if compactMode changed (affects ResponseCard footer rendering)
   if (prev.compactMode !== next.compactMode) return false

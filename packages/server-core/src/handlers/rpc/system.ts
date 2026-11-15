@@ -1,4 +1,3 @@
-import { resolve } from 'path'
 import { join } from 'path'
 import { homedir } from 'os'
 import { execSync } from 'child_process'
@@ -6,7 +5,7 @@ import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId, getGitBashPath, setGitBashPath, clearGitBashPath } from '@craft-agent/shared/config'
 import { classifyExternalUrl, formatBlockedUrlError } from '@craft-agent/shared/utils/url-safety'
 import { isUsableGitBashPath, validateGitBashPath } from '@craft-agent/server-core/services'
-import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
+import { validateFilePath, getWorkspaceAllowedDirs, resolveWorkspacePath } from '@craft-agent/server-core/handlers'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import {
@@ -131,14 +130,6 @@ function parseInternalCraftAgentsDeepLink(parsed: URL): ParsedInternalDeepLink |
   }
 
   return null
-}
-
-/** Guard: reject filesystem-path actions on remote workspaces where local paths are meaningless. */
-function assertLocalWorkspace(ctx: { workspaceId: string | null }, action: string): void {
-  const ws = getWorkspaceByNameOrId(ctx.workspaceId ?? '')
-  if (ws?.remoteServer) {
-    throw new Error(`${action} is not available for remote workspaces`)
-  }
 }
 
 export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps): void {
@@ -330,12 +321,8 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
   })
 
   server.handle(RPC_CHANNELS.shell.OPEN_FILE, async (ctx, path: string) => {
-    assertLocalWorkspace(ctx, 'Open file')
     try {
-      // Expand ~ before resolve() — resolve() treats ~ as a literal path component
-      const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
-      const absolutePath = resolve(expanded)
-      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(ctx.workspaceId))
+      const safePath = await validateFilePath(resolveWorkspacePath(path, ctx.workspaceId), getWorkspaceAllowedDirs(ctx.workspaceId, { sessionManager: deps.sessionManager }))
       const result = await requestClientOpenPath(server, ctx.clientId, safePath)
       if (result.error) throw new Error(result.error)
     } catch (error) {
@@ -346,11 +333,8 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
   })
 
   server.handle(RPC_CHANNELS.shell.SHOW_IN_FOLDER, async (ctx, path: string) => {
-    assertLocalWorkspace(ctx, 'Show in folder')
     try {
-      const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
-      const absolutePath = resolve(expanded)
-      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(ctx.workspaceId))
+      const safePath = await validateFilePath(resolveWorkspacePath(path, ctx.workspaceId), getWorkspaceAllowedDirs(ctx.workspaceId, { sessionManager: deps.sessionManager }))
       await requestClientShowInFolder(server, ctx.clientId, safePath)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'

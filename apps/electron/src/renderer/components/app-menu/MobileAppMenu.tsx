@@ -18,6 +18,8 @@ import {
   type MobileMenuRow,
 } from './mobile-menu-pages'
 import type { AppMenuProps } from './types'
+import { openServerList } from '@/lib/native-shell'
+import { logOutWebUI } from '@/lib/webui-logout'
 
 const SNAPPY_SPRING = { type: 'spring' as const, stiffness: 400, damping: 36, mass: 0.8 }
 const BACKDROP_FADE = { duration: 0.18 }
@@ -152,6 +154,10 @@ export function MobileAppMenu(props: AppMenuProps) {
           case 'newChat': props.onNewChat(); break
           case 'newWindow': props.onNewWindow?.(); break
           case 'openSettings': props.onOpenSettings(); break
+          case 'serverList': openServerList(); break
+          case 'logout':
+            if (window.confirm(t('dialog.logoutConfirmation'))) void logOutWebUI()
+            break
         }
         close()
         return
@@ -181,7 +187,7 @@ export function MobileAppMenu(props: AppMenuProps) {
         data-state={state.isOpen ? 'open' : 'closed'}
         className="rounded-[8px]"
       >
-        <CraftAgentsSymbol className="!h-5 !w-auto text-accent" />
+        <CraftAgentsSymbol className="!h-4 !w-auto text-accent" />
       </TopBarButton>
       <MobileMenuSheet
         state={state}

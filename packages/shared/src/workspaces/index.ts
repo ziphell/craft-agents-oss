@@ -21,9 +21,14 @@ export {
   getWorkspaceSourcesPath,
   getWorkspaceSessionsPath,
   getWorkspaceSkillsPath,
+  getWorkspaceTweaksPath,
+  TWEAKS_DIRNAME,
   // Config operations
   loadWorkspaceConfig,
   saveWorkspaceConfig,
+  // Per-workspace settings
+  getWorkspaceBrowserProfile,
+  setWorkspaceBrowserProfile,
   // Load operations
   loadWorkspace,
   getWorkspaceSummary,

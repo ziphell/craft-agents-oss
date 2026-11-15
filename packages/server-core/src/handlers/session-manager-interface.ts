@@ -10,7 +10,7 @@ import type { Workspace, WorkspaceInfo, ActiveSessionInfo } from '@craft-agent/c
 import type { StoredAttachment, AnnotationV1 } from '@craft-agent/core/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/mode-types'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
-import type { AuthResult } from '@craft-agent/shared/agent'
+import type { AuthResult, DeviceToolInfo } from '@craft-agent/shared/agent'
 import type {
   Session,
   SessionStatus,
@@ -23,7 +23,7 @@ import type {
   UnreadSummary,
   ShareResult,
 } from '@craft-agent/shared/protocol'
-import type { SessionBundle, DispatchMode } from '@craft-agent/shared/sessions'
+import type { SessionBundle, DispatchMode, SessionMode } from '@craft-agent/shared/sessions'
 import type { EventSink } from '../transport'
 
 export interface ISessionManager {
@@ -42,7 +42,11 @@ export interface ISessionManager {
   // ---------------------------------------------------------------------------
 
   getSessions(workspaceId?: string): Session[]
-  getSession(sessionId: string): Promise<Session | null>
+  /**
+   * `messagePage` narrows the payload (newest-first pages), not the stored
+   * history — see `SessionManager.getSession`.
+   */
+  getSession(sessionId: string, messagePage?: { limit?: number; before?: string }): Promise<Session | null>
   /** Creates a session and (unless `internal.emitCreatedEvent === false`) announces it to the
    *  renderer so it hydrates full metadata instead of fabricating a "New Chat" placeholder. */
   createSession(
@@ -53,6 +57,8 @@ export interface ISessionManager {
   /** Resolved working directory of a live session (Tasks Conductor uses it so children inherit
    *  the orchestrator's cwd). */
   getSessionWorkingDirectory(sessionId: string): string | undefined
+  /** The browser profile a live session picked, so children inherit the orchestrator's account. */
+  getSessionBrowserProfile(sessionId: string): string | undefined
   deleteSession(sessionId: string): Promise<void>
 
   // ---------------------------------------------------------------------------
@@ -63,6 +69,8 @@ export interface ISessionManager {
   unflagSession(sessionId: string): Promise<void>
   archiveSession(sessionId: string): Promise<void>
   unarchiveSession(sessionId: string): Promise<void>
+  /** Presentation only: keeps a conversation out of the workspace's session list, still reachable by id. */
+  setSessionHidden(sessionId: string, hidden: boolean): Promise<void>
   renameSession(sessionId: string, name: string): Promise<void>
   setSessionStatus(sessionId: string, status: SessionStatus): Promise<void>
   markSessionRead(sessionId: string): Promise<void>
@@ -88,8 +96,12 @@ export interface ISessionManager {
     opts?: { parentSessionId?: string },
   ): Promise<{ labelId: string } | undefined>
   setSessionProjectId(sessionId: string, projectId: string | null): Promise<void>
+  /** Set (or clear, with `null`) the layer a session is working in (only meaningful inside its project). */
+  setSessionMode(sessionId: string, mode: SessionMode | null): Promise<void>
   setKanbanColumn(sessionId: string, column: string | null): Promise<void>
   setTaskNodeCount(sessionId: string, count: number): Promise<void>
+  /** How many `kind: approval` gates of this session's active task run are waiting on a person. */
+  setTaskAwaitingApproval(sessionId: string, count: number): Promise<void>
   adoptGeneratedTaskOrchestrator(
     sessionId: string,
     taskSlug: string,
@@ -101,6 +113,11 @@ export interface ISessionManager {
     reconcile?: { name?: string; projectId?: string; workingDirectory?: string; model?: string; llmConnection?: string; permissionMode?: PermissionMode },
   ): Promise<boolean>
   setSessionConnection(sessionId: string, connectionSlug: string): Promise<void>
+  /**
+   * Set (or clear, with `null`) the browser profile this conversation's new tabs run in.
+   * A tab already open keeps the profile it was born on; the pick applies from the next one.
+   */
+  setSessionBrowserProfile(sessionId: string, profileId: string | null): Promise<void>
   updateSessionModel(sessionId: string, workspaceId: string, model: string | null, connection?: string): Promise<void>
 
   // ---------------------------------------------------------------------------
@@ -116,9 +133,14 @@ export interface ISessionManager {
     existingMessageId?: string,
     _isAuthRetry?: boolean,
     onAck?: (messageId: string) => void,
-    rpcContext?: { callerClientId?: string },
   ): Promise<void>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
+  cancelQueuedMessage(sessionId: string, messageId: string, content?: string): Promise<{ cancelled: boolean }>
+  reorderQueuedMessage(sessionId: string, messageId: string, toIndex: number): Promise<{ reordered: boolean }>
+  sendQueuedMessageNow(
+    sessionId: string,
+    messageId: string,
+  ): Promise<{ sent: boolean; reason?: 'not-processing' | 'not-queued' | 'compacting' }>
   killShell(sessionId: string, shellId: string): Promise<{ success: boolean; error?: string }>
   getTaskOutput(taskId: string): Promise<string | null>
 
@@ -247,13 +269,6 @@ export interface ISessionManager {
    */
   notifyConfigFileChange(workspaceRootPath: string, relativePath: string): void
 
-  /**
-   * Request a (re)capture of a page's preview poster. No-op unless a capturer
-   * was injected (Electron main only); headless/WebUI hosts fall back to the
-   * placeholder tile.
-   */
-  enqueuePageThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void
-
   // ---------------------------------------------------------------------------
   // Server-level observability
   // ---------------------------------------------------------------------------
@@ -264,6 +279,22 @@ export interface ISessionManager {
   getWorkspaceAutomationSummary(workspaceId: string): { automationCount: number; schedulerRunning: boolean }
   /** Active sessions across all workspaces (sessions with running backend processes). */
   getActiveSessionsInfo(): ActiveSessionInfo[]
+  /**
+   * Every device that has connected to this hub, online or offline — what Server settings lists.
+   * Being connected is not the same as being usable; `device_tool` uses {@link getAgentDevices}.
+   */
+  getConnectedDevices(): DeviceToolInfo[]
+  /** Devices the agent may use right now (connected and allowed by the device). */
+  getAgentDevices(workspaceId?: string): DeviceToolInfo[]
+  /**
+   * Whether this hub has ever paired a device, online or offline — the gate for advertising
+   * `device_tool`. A hub that has never paired one does not pay for the tool's brief.
+   */
+  hasPairedDevices(): boolean
+  /** Set the person's own name for a device (`null` clears it) and return its updated row. */
+  setDeviceAlias(deviceId: string, alias: string | null): DeviceToolInfo
+  /** Forget an offline device record. */
+  forgetDevice(deviceId: string): void
 
   // ---------------------------------------------------------------------------
   // Auth

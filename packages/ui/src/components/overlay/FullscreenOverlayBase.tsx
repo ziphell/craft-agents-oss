@@ -8,21 +8,26 @@
  * - Accessibility (role="dialog", aria-modal)
  *
  * Additionally handles:
- * - macOS traffic light hiding (via PlatformContext)
+ * - macOS traffic light hiding for as long as any overlay is open (via PlatformContext)
  * - Default scenic background (bg-foreground-3 + fullscreen-overlay-background blur)
  *   Callers can override via className (twMerge resolves conflicts)
  * - Optional structured header with badges (typeBadge, filePath, title, subtitle)
+ *   That header row is also the window's drag handle — this overlay portals to `document.body`, so
+ *   nothing above it is inside the app's own title-bar strip (see `PreviewHeader`). An overlay with
+ *   no header has to draw its own top drag row: `WorkspaceCreationScreen` and `OnboardingWizard`
+ *   each bring one.
  * - Optional built-in copy button (copyContent prop)
  * - Full-viewport scroll container with edge-to-edge gradient fade mask (iOS-style contentInset).
  *   The scroll area covers the entire viewport — content scrolls behind the floating header.
  *   A CSS mask gradient fades content at both edges (top and bottom, starting from y=0).
  *   The header floats on top and covers content behind it.
- *   Content padding clears the header at rest so nothing is clipped initially.
+ *   Content clears the header at rest (`paddingTop = header` — directly under it, no empty row) and
+ *   keeps `CONTENT_GUTTER` from the other three edges.
  *
  * Layout:
  *   Dialog.Content (fixed inset-0, relative)
  *   ├── Masked area (absolute inset-0, CSS mask gradient)
- *   │   └── Scroll container (h-full, overflow-y-auto, paddingTop = header + fade)
+ *   │   └── Scroll container (h-full, overflow-y-auto, paddingTop = header, bottom = gutter)
  *   │       └── {error banner}
  *   │       └── {children}
  *   └── Header (absolute top-0, z-10, floating on top of scroll content)
@@ -30,7 +35,7 @@
  * Used by: PreviewOverlay, DocumentFormattedMarkdownOverlay, WorkspaceCreationScreen
  */
 
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { usePlatform } from '../../context/PlatformContext'
 import { cn } from '../../lib/utils'
@@ -43,13 +48,17 @@ import { OverlayErrorBanner, type OverlayErrorBannerProps } from './OverlayError
 const Z_FULLSCREEN = 'var(--z-fullscreen, 350)'
 
 // HEADER_HEIGHT must match PreviewHeader's height prop (48px).
-// FADE_SIZE is the transition zone where content fades in/out at edges.
+// CONTENT_GUTTER is the room the content keeps from the window's edges — the same on all three
+// sides, and the width of the mask's fade as well, so content never begins inside the fade (a card
+// whose own edge is half-faded reads as a rendering fault). The header is not part of it: content
+// starts directly under the header, which already carries the gap (its badges are 26px in a 48px
+// bar). It used to keep another 24px there — an empty row between the title and what it titled.
 const HEADER_HEIGHT = 48
-const FADE_SIZE = 24
+const CONTENT_GUTTER = 16
 
-// Edge-to-edge gradient fade mask — starts at y=0, fades over FADE_SIZE at both edges.
+// Edge-to-edge gradient fade mask — starts at y=0, fades over CONTENT_GUTTER at both edges.
 // The floating header covers content behind it; the mask just provides the smooth fade.
-const FADE_MASK = `linear-gradient(to bottom, transparent 0px, black ${FADE_SIZE}px, black calc(100% - ${FADE_SIZE}px), transparent 100%)`
+const FADE_MASK = `linear-gradient(to bottom, transparent 0px, black ${CONTENT_GUTTER}px, black calc(100% - ${CONTENT_GUTTER}px), transparent 100%)`
 
 export interface FullscreenOverlayBaseProps {
   /** Whether the overlay is visible */
@@ -80,15 +89,46 @@ export interface FullscreenOverlayBaseProps {
   headerActions?: ReactNode
   /** When provided, renders a built-in copy button in the header right actions area */
   copyContent?: string
+  /** Open the file in a browser — a menu item on the file badge (`PreviewOverlay` threads it). */
+  onOpenInBrowser?: (filePath: string) => void
 
   /** Optional error banner — rendered between header and children */
   error?: OverlayErrorBannerProps
+
+  /**
+   * Close when the empty space around the content is clicked. The content itself
+   * must be marked with `data-overlay-card` — clicks inside a card never close.
+   */
+  closeOnBackdropClick?: boolean
 }
 
 export function handleFullscreenEscapeWithStack(): boolean {
   const bridge = getDismissibleLayerBridge()
   if (!bridge) return false
   return bridge.handleEscape()
+}
+
+/**
+ * How many overlays are asking for the window's own controls to be put away.
+ *
+ * macOS's traffic lights belong to the OS and are painted over the page, so no z-index can hold an
+ * overlay off them — taking them away while one is open is the only lever (the call is a no-op on
+ * the other platforms). But overlays nest: a second one can open on top of the first, and a lone
+ * boolean cannot say what two overlays need — the first one to close would put the lights back over
+ * an overlay still on screen. So requests are counted, and the platform is told only on an edge.
+ */
+let windowControlsHideRequests = 0
+
+/** One overlay asks. Returns true on the 0 → 1 edge — the point at which they need hiding. */
+export function requestWindowControlsHidden(): boolean {
+  windowControlsHideRequests += 1
+  return windowControlsHideRequests === 1
+}
+
+/** That overlay is done asking. Returns true on the 1 → 0 edge — the point at which they can return. */
+export function releaseWindowControlsHidden(): boolean {
+  windowControlsHideRequests = Math.max(0, windowControlsHideRequests - 1)
+  return windowControlsHideRequests === 0
 }
 
 export function FullscreenOverlayBase({
@@ -104,7 +144,9 @@ export function FullscreenOverlayBase({
   subtitle,
   headerActions,
   copyContent,
+  onOpenInBrowser,
   error,
+  closeOnBackdropClick = false,
 }: FullscreenOverlayBaseProps) {
   const { onSetTrafficLightsVisible } = usePlatform()
 
@@ -127,18 +169,49 @@ export function FullscreenOverlayBase({
     })
   }, [isOpen, onClose])
 
-  // Hide macOS traffic lights when overlay opens, restore when it closes
-  // This prevents accidental clicks on window controls behind the fullscreen overlay
+  // The platform actions object is rebuilt whenever one of App's callbacks changes identity —
+  // opening another file is enough — so `onSetTrafficLightsVisible` is not a stable dependency. The
+  // effect below keys off `isOpen` alone and reads the action through a ref: an identity change
+  // mid-overlay would otherwise drop the request count to zero and back, flashing the lights.
+  const setTrafficLightsVisible = useRef(onSetTrafficLightsVisible)
   useEffect(() => {
+    setTrafficLightsVisible.current = onSetTrafficLightsVisible
+  }, [onSetTrafficLightsVisible])
+
+  // Traffic lights (macOS — a no-op elsewhere) step aside for as long as any overlay is open, so a
+  // click meant for the overlay cannot land on the window's controls instead. Counted rather than
+  // set: see `requestWindowControlsHidden`. A *layout* effect, so the ask lands in the same commit
+  // as the overlay: the header is drawn knowing the corner is free, instead of reserving room for
+  // buttons that are about to go away and then moving when the state catches up one commit later.
+  useLayoutEffect(() => {
     if (!isOpen) return
 
-    onSetTrafficLightsVisible?.(false)
-    return () => onSetTrafficLightsVisible?.(true)
-  }, [isOpen, onSetTrafficLightsVisible])
+    if (requestWindowControlsHidden()) setTrafficLightsVisible.current?.(false)
+    return () => {
+      if (releaseWindowControlsHidden()) setTrafficLightsVisible.current?.(true)
+    }
+  }, [isOpen])
 
-  // Content padding clears the floating header at rest (when present).
-  // Without a header, just the fade zone inset.
-  const contentPaddingTop = hasHeader ? HEADER_HEIGHT + FADE_SIZE : FADE_SIZE
+  // Content padding clears the floating header at rest (when present), and keeps the gutter below.
+  // Without a header the gutter is all there is.
+  const contentPaddingTop = hasHeader ? HEADER_HEIGHT : CONTENT_GUTTER
+
+  // Backdrop clicks. The fullscreen dialog has no separate backdrop element — the
+  // scroll surface *is* the background — so a click counts as "outside" when its
+  // target is not inside a `data-overlay-card`. The press must also have started
+  // there: dragging a text selection out of the card must not close the overlay.
+  const pressedOnBackdrop = useRef(false)
+  const isBackdropTarget = (target: EventTarget | null): boolean =>
+    !(target instanceof Element) || !target.closest('[data-overlay-card]')
+  // Clicks inside an overlay opened *from* this content bubble here through React's
+  // portal tree even though they are not in this DOM subtree — treat those as unknown
+  // input rather than as a backdrop press. Without this, dragging inside a nested
+  // preview closes the overlay underneath it.
+  const isFromOwnSurface = (e: React.SyntheticEvent<HTMLDivElement>): boolean =>
+    e.target instanceof Node && e.currentTarget.contains(e.target)
+  // Clicks in the scrollbar gutter belong to the scroll surface, not the backdrop.
+  const isInScrollbar = (el: HTMLDivElement, clientX: number): boolean =>
+    clientX - el.getBoundingClientRect().left >= el.clientWidth
 
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -171,7 +244,28 @@ export function FullscreenOverlayBase({
           >
             <div
               className="h-full overflow-y-auto"
-              style={{ paddingTop: contentPaddingTop, paddingBottom: FADE_SIZE, scrollPaddingTop: contentPaddingTop }}
+              style={{ paddingTop: contentPaddingTop, paddingBottom: CONTENT_GUTTER, scrollPaddingTop: contentPaddingTop }}
+              onPointerDown={(e) => {
+                if (!closeOnBackdropClick) return
+                if (!isFromOwnSurface(e)) {
+                  pressedOnBackdrop.current = false
+                  return
+                }
+                if (isInScrollbar(e.currentTarget, e.clientX)) return
+                pressedOnBackdrop.current = isBackdropTarget(e.target)
+              }}
+              onClick={(e) => {
+                if (!closeOnBackdropClick) return
+                if (!isFromOwnSurface(e)) {
+                  pressedOnBackdrop.current = false
+                  return
+                }
+                if (!pressedOnBackdrop.current) return
+                pressedOnBackdrop.current = false
+                if (isInScrollbar(e.currentTarget, e.clientX)) return
+                if (!isBackdropTarget(e.target)) return
+                onClose()
+              }}
             >
               {/* Centering wrapper — error + content move together as a unit.
                   min-h-full ensures centering when content is small; content can grow beyond. */}
@@ -200,6 +294,7 @@ export function FullscreenOverlayBase({
                 subtitle={subtitle}
                 headerActions={headerActions}
                 copyContent={copyContent}
+                onOpenInBrowser={onOpenInBrowser}
               />
             </div>
           )}

@@ -1,0 +1,421 @@
+{
+ "display": {
+  "id": 1,
+  "bounds": {
+   "x": 0,
+   "y": 0,
+   "width": 1440,
+   "height": 900
+  },
+  "workArea": {
+   "x": 0,
+   "y": 25,
+   "width": 1440,
+   "height": 802
+  },
+  "scaleFactor": 2
+ },
+ "platform": "darwin",
+ "electron": "39.2.7",
+ "scenarios": [
+  {
+   "name": "A-higher-level-cover",
+   "clear": {
+    "label": "A1-uncovered",
+    "raf": 69,
+    "screenX": 120,
+    "screenY": 105,
+    "outer": [
+     900,
+     640
+    ],
+    "inner": [
+     900,
+     640
+    ],
+    "avail": [
+     1440,
+     802
+    ],
+    "screen": [
+     1440,
+     900
+    ],
+    "visibility": "visible",
+    "hidden": false,
+    "hasFocus": false,
+    "dpr": 2,
+    "rafTicksIn400ms": 25,
+    "capture": {
+     "size": {
+      "width": 1800,
+      "height": 1280
+     },
+     "bytes": 411677
+    }
+   },
+   "covered": {
+    "label": "A2-covered-by-screen-saver",
+    "raf": 140,
+    "screenX": 120,
+    "screenY": 105,
+    "outer": [
+     900,
+     640
+    ],
+    "inner": [
+     900,
+     640
+    ],
+    "avail": [
+     1440,
+     802
+    ],
+    "screen": [
+     1440,
+     900
+    ],
+    "visibility": "visible",
+    "hidden": false,
+    "hasFocus": false,
+    "dpr": 2,
+    "rafTicksIn400ms": 24,
+    "capture": {
+     "size": {
+      "width": 1800,
+      "height": 1280
+     },
+     "bytes": 411677
+    }
+   },
+   "coverVisible": true,
+   "afterUncover": {
+    "label": "A3-cover-removed",
+    "raf": 215,
+    "screenX": 120,
+    "screenY": 105,
+    "outer": [
+     900,
+     640
+    ],
+    "inner": [
+     900,
+     640
+    ],
+    "avail": [
+     1440,
+     802
+    ],
+    "screen": [
+     1440,
+     900
+    ],
+    "visibility": "visible",
+    "hidden": false,
+    "hasFocus": false,
+    "dpr": 2,
+    "rafTicksIn400ms": 24,
+    "capture": {
+     "size": {
+      "width": 1800,
+      "height": 1280
+     },
+     "bytes": 411677
+    }
+   }
+  },
+  {
+   "name": "B-normal-level-cover",
+   "clear": {
+    "label": "B1-uncovered",
+    "raf": 67,
+    "screenX": 120,
+    "screenY": 105,
+    "outer": [
+     900,
+     640
+    ],
+    "inner": [
+     900,
+     640
+    ],
+    "avail": [
+     1440,
+     802
+    ],
+    "screen": [
+     1440,
+     900
+    ],
+    "visibility": "visible",
+    "hidden": false,
+    "hasFocus": false,
+    "dpr": 2,
+    "rafTicksIn400ms": 24,
+    "capture": {
+     "size": {
+      "width": 1800,
+      "height": 1280
+     },
+     "bytes": 411677
+    }
+   },
+   "covered": {
+    "label": "B2-covered-by-normal",
+    "raf": 138,
+    "screenX": 120,
+    "screenY": 105,
+    "outer": [
+     900,
+     640
+    ],
+    "inner": [
+     900,
+     640
+    ],
+    "avail": [
+     1440,
+     802
+    ],
+    "screen": [
+     1440,
+     900
+    ],
+    "visibility": "visible",
+    "hidden": false,
+    "hasFocus": false,
+    "dpr": 2,
+    "rafTicksIn400ms": 24,
+    "capture": {
+     "size": {
+      "width": 1800,
+      "height": 1280
+     },
+     "bytes": 411677
+    }
+   },
+   "coverAlwaysOnTop": false
+  },
+  {
+   "name": "C-click-through",
+   "point": {
+    "x": 570,
+    "y": 425
+   },
+   "warmUp": {
+    "error": "36:51: execution error: “System Events”遇到一个错误：应用程序没有运行。 (-600)"
+   },
+   "baseline": {
+    "result": {
+     "error": "36:55: execution error: “System Events”遇到一个错误：“osascript”不允许辅助访问。 (-25211)"
+    },
+    "bottom": {
+     "down": 0,
+     "up": 0,
+     "move": 0
+    }
+   },
+   "through": {
+    "result": {
+     "error": "36:55: execution error: “System Events”遇到一个错误：“osascript”不允许辅助访问。 (-25211)"
+    },
+    "bottom": {
+     "down": 0,
+     "up": 0,
+     "move": 0
+    },
+    "top": {
+     "down": 0,
+     "up": 0,
+     "move": 0
+    }
+   },
+   "swallowed": {
+    "result": {
+     "error": "36:55: execution error: “System Events”遇到一个错误：“osascript”不允许辅助访问。 (-25211)"
+    },
+    "bottom": {
+     "down": 0,
+     "up": 0,
+     "move": 0
+    },
+    "top": {
+     "down": 0,
+     "up": 0,
+     "move": 0
+    }
+   },
+   "note": "baseline.bottom 必须是 down>=1；through.bottom 增加而 through.top 不增加才算穿透；swallowed.top 增加才算对照成立"
+  },
+  {
+   "name": "D-offscreen-D1-old-20000",
+   "requested": {
+    "x": 21440,
+    "y": 0
+   },
+   "landed": {
+    "x": 21440,
+    "y": 0,
+    "width": 900,
+    "height": 640
+   },
+   "primedCaptureBeforeMoveTop": "answered 0x0",
+   "row": {
+    "label": "D1-old-20000",
+    "raf": 27,
+    "screenX": 21440,
+    "screenY": 0,
+    "outer": [
+     900,
+     640
+    ],
+    "inner": [
+     900,
+     640
+    ],
+    "avail": [
+     1440,
+     802
+    ],
+    "screen": [
+     1440,
+     900
+    ],
+    "visibility": "visible",
+    "hidden": false,
+    "hasFocus": false,
+    "dpr": 2,
+    "rafTicksIn400ms": 25,
+    "capture": {
+     "size": {
+      "width": 1800,
+      "height": 1280
+     },
+     "bytes": 411677
+    }
+   },
+   "note": "screenX / screenY 是页面在\"完全屏外但被 moveTop\"时读到的数"
+  },
+  {
+   "name": "D-offscreen-D2-plan-b-48",
+   "requested": {
+    "x": 0,
+    "y": 948
+   },
+   "landed": {
+    "x": 0,
+    "y": 948,
+    "width": 900,
+    "height": 640
+   },
+   "primedCaptureBeforeMoveTop": "answered 0x0",
+   "row": {
+    "label": "D2-plan-b-48",
+    "raf": 26,
+    "screenX": 0,
+    "screenY": 948,
+    "outer": [
+     900,
+     640
+    ],
+    "inner": [
+     900,
+     640
+    ],
+    "avail": [
+     1440,
+     802
+    ],
+    "screen": [
+     1440,
+     900
+    ],
+    "visibility": "visible",
+    "hidden": false,
+    "hasFocus": false,
+    "dpr": 2,
+    "rafTicksIn400ms": 24,
+    "capture": {
+     "size": {
+      "width": 1800,
+      "height": 1280
+     },
+     "bytes": 411677
+    }
+   },
+   "note": "screenX / screenY 是页面在\"完全屏外但被 moveTop\"时读到的数"
+  },
+  {
+   "name": "E-navigate-on-a-display",
+   "before": {
+    "label": "E1-before-navigate",
+    "raf": 68,
+    "screenX": 120,
+    "screenY": 105,
+    "outer": [
+     900,
+     640
+    ],
+    "inner": [
+     900,
+     640
+    ],
+    "avail": [
+     1440,
+     802
+    ],
+    "screen": [
+     1440,
+     900
+    ],
+    "visibility": "visible",
+    "hidden": false,
+    "hasFocus": false,
+    "dpr": 2,
+    "rafTicksIn400ms": 24,
+    "capture": {
+     "size": {
+      "width": 1800,
+      "height": 1280
+     },
+     "bytes": 411677
+    }
+   },
+   "after": {
+    "label": "E2-after-navigate-no-moveTop",
+    "raf": 73,
+    "screenX": 120,
+    "screenY": 105,
+    "outer": [
+     900,
+     640
+    ],
+    "inner": [
+     900,
+     640
+    ],
+    "avail": [
+     1440,
+     802
+    ],
+    "screen": [
+     1440,
+     900
+    ],
+    "visibility": "visible",
+    "hidden": false,
+    "hasFocus": false,
+    "dpr": 2,
+    "rafTicksIn400ms": 24,
+    "capture": {
+     "size": {
+      "width": 1800,
+      "height": 1280
+     },
+     "bytes": 414706
+    }
+   },
+   "note": "导航后不补 moveTop；屏外方案在这种情况下会掉到 hidden / 0x0"
+  }
+ ]
+}

@@ -31,6 +31,12 @@
 ============================================================================= */
 
 :root {
+  /* The scheme this document says it is drawn for. Anything inlined into it that carries
+     `light-dark(...)` — drawio's diagrams do, all over — resolves against this: with no
+     `color-scheme` declared, `light-dark()` is *always* the light value, whatever the OS says.
+     The app's own theme is what an inlined diagram should follow. */
+  color-scheme: light;
+
   /* === 6 BASE COLORS === */
   --background: oklch(0.98 0.003 265);
   --foreground: oklch(0.185 0.01 270);
@@ -132,9 +138,9 @@
   --md-counters: var(--foreground-50);
 
   /* Fonts - System fonts for UI, JetBrains Mono for code */
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-serif: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --font-serif: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Sarasa Mono SC", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Sarasa Mono SC", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
   --font-default: var(--font-sans);
 
   /* Layout */
@@ -149,6 +155,10 @@
 ============================================================================= */
 
 .dark {
+  /* See the note on `:root`: this is the other half of it — a diagram inlined into a dark app
+     resolves its `light-dark(...)` colors dark because this document says it is dark. */
+  color-scheme: dark;
+
   /* === 6 BASE COLORS === */
   --background: oklch(0.2 0.005 270);
   --foreground: oklch(0.92 0.005 270);
@@ -210,7 +220,7 @@
 /* Inter font option (requires loading Inter from Google Fonts or locally)
    For best results, load Inter with optical sizing: family=Inter:opsz,wght@14..32,400;... */
 html[data-font="inter"] {
-  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
   --font-default: var(--font-sans);
   font-optical-sizing: auto;
   font-feature-settings: "cv01", "cv02", "cv03", "cv04", "case";
@@ -226,6 +236,14 @@ html[data-font="inter"] {
   --color-foreground: var(--foreground);
   --color-accent: var(--accent);
   --color-info: var(--info);
+  /*
+   * `warning` is the same amber as `info`, under the name the UI actually reaches for: eight
+   * components ask for `bg-warning` / `text-warning` / `border-warning` (the pending-invitation
+   * dot, the transport banner, a source's needs-auth chip, …) and there was no token behind the
+   * name, so those classes were silently nothing — the dot was invisible, not orange. One alias
+   * rather than renaming the call sites, and a theme that sets `info` moves both.
+   */
+  --color-warning: var(--info);
   --color-success: var(--success);
   --color-destructive: var(--destructive);
 

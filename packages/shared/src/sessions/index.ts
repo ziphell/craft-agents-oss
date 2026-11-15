@@ -11,6 +11,7 @@
 // Types
 export type {
   SessionStatus,
+  SessionMode,
   SessionTokenUsage,
   StoredMessage,
   SessionConfig,
@@ -40,6 +41,7 @@ export {
   getOrCreateSessionById,
   saveSession,
   loadSession,
+  loadSessionHeader,
   listSessions,
   deleteSession,
   clearSessionMessages,
@@ -95,6 +97,14 @@ export {
 
 // Field utilities
 export { pickSessionFields } from './utils.ts';
+
+// Message paging (what a client is sent, not what the server keeps)
+export {
+  SESSION_MESSAGE_PAGE_SIZE,
+  takeMessagePage,
+  type MessagePage,
+  type MessagePageOptions,
+} from './message-page.ts';
 
 // Slug generator utilities
 export {

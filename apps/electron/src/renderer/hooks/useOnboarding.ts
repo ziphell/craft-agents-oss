@@ -18,7 +18,7 @@ import type {
 import type { ProviderChoice } from '@/components/onboarding/ProviderSelectStep'
 import type { LocalModelSubmitData } from '@/components/onboarding/LocalModelStep'
 import type { ApiKeySubmitData } from '@/components/apisetup'
-import type { CustomEndpointConfig } from '@config/llm-connections'
+import { isMaskedCredential, type ConnectionModelEntry, type CustomEndpointConfig } from '@config/llm-connections'
 import type { SetupNeeds, LlmConnectionSetup, ClaudeOAuthIdentityDto } from '../../shared/types'
 
 interface UseOnboardingOptions {
@@ -140,7 +140,14 @@ export function apiSetupMethodToConnectionSetup(
     credential?: string
     baseUrl?: string
     connectionDefaultModel?: string
-    models?: string[]
+    /** Explicit small/fast model; absent = not picked, null = cleared. */
+    connectionFastModel?: string | null
+    /** Explicit vision model; absent = not picked, null = cleared. */
+    connectionVisionModel?: string | null
+    /** Explicit omni/audio-capable model; absent = not picked, null = cleared. */
+    connectionOmniModel?: string | null
+    /** Model ids, or ids with per-model parameters for custom endpoints. */
+    models?: ConnectionModelEntry[]
     piAuthProvider?: string
     modelSelectionMode?: 'automaticallySyncedFromProvider' | 'userDefined3Tier'
     customEndpoint?: CustomEndpointConfig
@@ -161,6 +168,9 @@ export function apiSetupMethodToConnectionSetup(
         credential: options.credential,
         baseUrl: options.baseUrl,
         defaultModel: options.connectionDefaultModel,
+        fastModel: options.connectionFastModel,
+        visionModel: options.connectionVisionModel,
+        omniModel: options.connectionOmniModel,
         models: options.models,
         customEndpoint: options.customEndpoint,
       }
@@ -182,6 +192,9 @@ export function apiSetupMethodToConnectionSetup(
         credential: options.credential,
         baseUrl: options.baseUrl,
         defaultModel: options.connectionDefaultModel,
+        fastModel: options.connectionFastModel,
+        visionModel: options.connectionVisionModel,
+        omniModel: options.connectionOmniModel,
         models: options.models,
         piAuthProvider: options.piAuthProvider,
         modelSelectionMode: options.modelSelectionMode,
@@ -247,7 +260,14 @@ export function useOnboarding({
     options?: {
       baseUrl?: string
       connectionDefaultModel?: string
-      models?: string[]
+      /** Explicit small/fast model; absent = not picked, null = cleared. */
+      connectionFastModel?: string | null
+      /** Explicit vision model; absent = not picked, null = cleared. */
+      connectionVisionModel?: string | null
+      /** Explicit omni/audio-capable model; absent = not picked, null = cleared. */
+      connectionOmniModel?: string | null
+      /** Model ids, or ids with per-model parameters for custom endpoints. */
+      models?: ConnectionModelEntry[]
       piAuthProvider?: string
       modelSelectionMode?: 'automaticallySyncedFromProvider' | 'userDefined3Tier'
       customEndpoint?: CustomEndpointConfig
@@ -273,6 +293,9 @@ export function useOnboarding({
         credential,
         baseUrl: options?.baseUrl,
         connectionDefaultModel: options?.connectionDefaultModel,
+        connectionFastModel: options?.connectionFastModel,
+        connectionVisionModel: options?.connectionVisionModel,
+        connectionOmniModel: options?.connectionOmniModel,
         models: options?.models,
         piAuthProvider: options?.piAuthProvider,
         modelSelectionMode: options?.modelSelectionMode,
@@ -385,6 +408,11 @@ export function useOnboarding({
     setState(s => ({ ...s, credentialStatus: 'validating', errorMessage: undefined }))
 
     const isPiApiKeyFlow = state.apiSetupMethod === 'pi_api_key'
+    // The edit form is pre-filled with the display mask (GET_API_KEY), so an
+    // untouched field submits the mask. It is not a credential: read it as "keep
+    // the stored key" — neither testing nor saving it (the • characters are not
+    // valid header bytes, so the endpoint would reject the request outright).
+    const apiKey = isMaskedCredential(data.apiKey) ? '' : data.apiKey
 
     try {
       // Bedrock (Pi+amazon-bedrock) — skip API key validation and connection test
@@ -392,6 +420,9 @@ export function useOnboarding({
         const saved = await handleSaveConfig(undefined, {
           baseUrl: data.baseUrl,
           connectionDefaultModel: data.connectionDefaultModel,
+          connectionFastModel: data.connectionFastModel,
+          connectionVisionModel: data.connectionVisionModel,
+          connectionOmniModel: data.connectionOmniModel,
           models: data.models,
           piAuthProvider: data.piAuthProvider,
           modelSelectionMode: data.modelSelectionMode,
@@ -408,10 +439,13 @@ export function useOnboarding({
       }
 
       // When editing an existing connection, API key is optional (empty = keep existing credential)
-      if (!data.apiKey.trim() && editingSlug) {
+      if (!apiKey.trim() && editingSlug) {
         const saved = await handleSaveConfig(undefined, {
           baseUrl: data.baseUrl,
           connectionDefaultModel: data.connectionDefaultModel,
+          connectionFastModel: data.connectionFastModel,
+          connectionVisionModel: data.connectionVisionModel,
+          connectionOmniModel: data.connectionOmniModel,
           models: data.models,
           piAuthProvider: data.piAuthProvider,
           modelSelectionMode: data.modelSelectionMode,
@@ -430,7 +464,7 @@ export function useOnboarding({
       // - Non-local endpoints require an API key
       const isLoopbackCustomEndpoint = isLoopbackEndpoint(data.baseUrl)
       if (isPiApiKeyFlow) {
-        if (!data.apiKey.trim() && !isLoopbackCustomEndpoint) {
+        if (!apiKey.trim() && !isLoopbackCustomEndpoint) {
           setState(s => ({
             ...s,
             credentialStatus: 'error',
@@ -439,7 +473,7 @@ export function useOnboarding({
           return
         }
       } else {
-        if (!data.apiKey.trim() && !isLoopbackCustomEndpoint) {
+        if (!apiKey.trim() && !isLoopbackCustomEndpoint) {
           setState(s => ({
             ...s,
             credentialStatus: 'error',
@@ -452,11 +486,14 @@ export function useOnboarding({
       // Validate connection by spawning a lightweight subprocess test.
       // Custom endpoint protocol routes through PiAgent at runtime, so test with Pi too.
       const setupTestProvider = data.customEndpoint ? 'pi' : (isPiApiKeyFlow ? 'pi' : 'anthropic')
+      // Models may carry per-model parameters — the test only needs the id.
+      const firstModel = data.models?.[0]
+      const testModel = typeof firstModel === 'string' ? firstModel : firstModel?.id
       const testResult = await window.electronAPI.testLlmConnectionSetup({
         provider: setupTestProvider,
-        apiKey: data.apiKey,
+        apiKey,
         baseUrl: data.baseUrl,
-        model: data.models?.[0],
+        model: testModel,
         piAuthProvider: data.piAuthProvider,
         customEndpoint: data.customEndpoint,
         // Editing: the key field may still hold the masked placeholder; the server
@@ -473,9 +510,12 @@ export function useOnboarding({
         return
       }
 
-      const saved = await handleSaveConfig(data.apiKey, {
+      const saved = await handleSaveConfig(apiKey, {
         baseUrl: data.baseUrl,
         connectionDefaultModel: data.connectionDefaultModel,
+        connectionFastModel: data.connectionFastModel,
+        connectionVisionModel: data.connectionVisionModel,
+        connectionOmniModel: data.connectionOmniModel,
         models: data.models,
         piAuthProvider: data.piAuthProvider,
         modelSelectionMode: data.modelSelectionMode,

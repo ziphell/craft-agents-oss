@@ -8,7 +8,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { AlertCircle, Globe, Copy, RefreshCw, Link2Off, Info, Pencil } from 'lucide-react'
+import { AlertCircle, Globe, Copy, RefreshCw, Link2Off, Info, Pencil, PanelRight, PanelRightClose } from 'lucide-react'
 import { ChatDisplay, type ChatDisplayHandle } from '@/components/app-shell/ChatDisplay'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { SessionMenu } from '@/components/app-shell/SessionMenu'
@@ -22,20 +22,55 @@ import { StyledDropdownMenuContent, StyledDropdownMenuItem, StyledDropdownMenuSe
 import { useAppShellContext, usePendingPermission, usePendingCredential, useSessionOptionsFor, useSession as useSessionData } from '@/context/AppShellContext'
 import { rendererPerf } from '@/lib/perf'
 import { isAbsolutePath } from '@/lib/drafts'
+import { buildHandoffBrief } from '@/lib/bot-handoff'
 import { navigate, routes } from '@/lib/navigate'
 import { coerceInputText } from '@/lib/input-text'
 import { deriveSessionMessagesLoadState, formatSessionLoadFailure } from '@/lib/session-load'
-import { ensureSessionMessagesLoadedAtom, forceSessionMessagesReloadAtom, loadedSessionsAtom, sessionMetaMapAtom } from '@/atoms/sessions'
+import { ensureSessionMessagesLoadedAtom, forceSessionMessagesReloadAtom, loadOlderSessionMessagesAtom, revealSessionMessageAtom, searchSessionMessagesAtom, sessionQuestionsAtom, loadedSessionsAtom, sessionMetaMapAtom } from '@/atoms/sessions'
+import { projectsAtom } from '@/atoms/projects'
+import { nextCanvasLayout, useCanvasLayout } from '@/atoms/canvas-layout'
 import { kanbanEditorTargetAtom } from '@/atoms/kanban'
 import { getSessionTitle } from '@/utils/session'
 // Model resolution: connection.defaultModel (no hardcoded defaults)
 import { resolveEffectiveConnectionSlug, isSessionConnectionUnavailable } from '@config/llm-connections'
 
-export interface ChatPageProps {
-  sessionId: string
+/**
+ * What an assistant's header shows instead of a conversation's.
+ *
+ * A conversation's header is a **menu of things you can do to a session**: move it to a project,
+ * label it, set its board column, share it, archive it. None of those are true of the assistant —
+ * it is not filed anywhere, it is not on the board, and it is not a thing you send someone a link
+ * to. So the slot replaces the two halves of that header rather than adding to them: the title
+ * stops being a dropdown, and the right-hand cluster stops carrying share.
+ */
+export interface AssistantHeaderChrome {
+  /** Beside the title: a fact about the assistant itself, e.g. how many turns are running. */
+  badge?: React.ReactNode
+  /**
+   * The title's menu — only the verbs that are actually true of an assistant (for now: binding an
+   * IM bot, which is how a person writes to it from a phone). Omit it and the title is plain text.
+   */
+  menu?: React.ReactNode
+  /** Replaces the right-hand cluster (share and session info are a conversation's verbs). */
+  actions?: React.ReactNode
 }
 
-const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
+export interface ChatPageProps {
+  sessionId: string
+  /** Set when this page is an assistant rather than a conversation. */
+  assistantHeader?: AssistantHeaderChrome
+}
+
+const ChatPage = React.memo(function ChatPage({ sessionId, assistantHeader }: ChatPageProps) {
+  // An assistant's composer is the same composer. What is NOT taken away is the part that writes
+  // the message: `@` references (sources, skills, files, tabs) and `/` commands are how a person
+  // points at a thing, and Trae's assistant has both — the assistant's job is *more* about
+  // referring to things than a chat's, not less.
+  //
+  // What it leaves out is the per-conversation plumbing: labels and the board column (it is not on
+  // the board), and the working-directory selector (it works in the workspace root; children decide
+  // their own). The directory itself is still passed, because file search for `@` needs a base path.
+  const isAssistant = !!assistantHeader
   const { t } = useTranslation()
   // Diagnostic: mark when component runs
   React.useLayoutEffect(() => {
@@ -59,6 +94,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     hydrateDraftAttachments,
     onInputChange,
     onAttachmentsChange,
+    onHandOffToBot,
     enabledSources,
     skills,
     labels,
@@ -101,9 +137,41 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
   const sessionMeta = sessionMetaMap.get(sessionId)
 
+  // Which board this conversation works on is the project's; how the board is shown beside the
+  // conversation is the project's layout (see `atoms/canvas-layout`). A conversation with no
+  // project has neither, so the control below does not exist there.
+  const sessionProjectId = session?.projectId ?? sessionMeta?.projectId ?? null
+  const [canvasLayoutMode, setCanvasLayoutMode] = useCanvasLayout(sessionProjectId)
+
   // Fallback: ensure messages are loaded when session is viewed
   const ensureMessagesLoaded = useSetAtom(ensureSessionMessagesLoadedAtom)
   const forceMessagesReload = useSetAtom(forceSessionMessagesReloadAtom)
+  const loadOlderMessages = useSetAtom(loadOlderSessionMessagesAtom)
+  const searchMessages = useSetAtom(searchSessionMessagesAtom)
+  const loadQuestions = useSetAtom(sessionQuestionsAtom)
+  const revealMessage = useSetAtom(revealSessionMessageAtom)
+  // A conversation opens on its newest page; scrolling past its oldest message
+  // asks for the page before it. Stable identity: the chat keeps this in a ref.
+  const handleLoadOlderMessages = React.useCallback(
+    () => loadOlderMessages(sessionId),
+    [loadOlderMessages, sessionId],
+  )
+  // Search asks the conversation, not the loaded page: a hit in a part of the
+  // history this panel never loaded still has to be found — and then opened.
+  const handleSearchMessages = React.useCallback(
+    (query: string) => searchMessages(sessionId, query),
+    [searchMessages, sessionId],
+  )
+  const handleRevealMessage = React.useCallback(
+    (messageId: string) => revealMessage(sessionId, messageId),
+    [revealMessage, sessionId],
+  )
+  // The turn rail ticks every question in the conversation, including the ones
+  // this panel has not loaded.
+  const handleLoadQuestions = React.useCallback(
+    () => loadQuestions(sessionId),
+    [loadQuestions, sessionId],
+  )
   const [messagesLoadError, setMessagesLoadError] = React.useState<string | null>(null)
   const [messagesRetrying, setMessagesRetrying] = React.useState(false)
   const autoForcedReloadSessionRef = React.useRef<string | null>(null)
@@ -289,12 +357,13 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     }
   }, [sessionId, activeWorkspaceId])
 
-  // Session connection change handler - can only change before first message
+  // Session connection change handler - explicit switch, allowed at any point in
+  // the session (the backend rebuilds its runtime for the new provider)
   const handleConnectionChange = React.useCallback(async (connectionSlug: string) => {
     try {
       await window.electronAPI.sessionCommand(sessionId, { type: 'setConnection', connectionSlug })
     } catch (error) {
-      // Connection change may fail if session already started or connection is invalid
+      // Connection change may fail if the connection is invalid or its credentials are gone
       console.error('Failed to change connection:', error)
     }
   }, [sessionId])
@@ -386,9 +455,11 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
 
   const handleOpenUrl = React.useCallback(
     (url: string) => {
-      onOpenUrl(url)
+      // The conversation is the context the click came from: it names the browser profile
+      // the page opens in, so a link in this chat lands in this chat's own window.
+      onOpenUrl(url, sessionId)
     },
-    [onOpenUrl]
+    [onOpenUrl, sessionId]
   )
 
   // Perf: Mark when data is ready
@@ -423,6 +494,28 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     : false
   // Use isAsyncOperationOngoing for shimmer effect (sharing, updating share, revoking, title regeneration)
   const isAsyncOperationOngoing = session?.isAsyncOperationOngoing || sessionMeta?.isAsyncOperationOngoing || false
+
+  /**
+   * Hand this conversation to Craft Bot.
+   *
+   * What travels is the title, the id and one excerpt of the last reply — enough for the
+   * assistant to know what this was and to go read it, and short enough that the sentence the
+   * person is about to write still fits on screen. Nothing is sent: the brief lands in the Bot's
+   * composer and waits.
+   */
+  const handleHandOffToBot = React.useCallback(() => {
+    const lastText = [...(session?.messages ?? [])]
+      .reverse()
+      .find(m => m.role === 'assistant' && !m.isThinking && typeof m.content === 'string' && m.content.trim())
+      ?.content
+    void onHandOffToBot?.(buildHandoffBrief({
+      kind: 'conversation',
+      title: displayTitle,
+      workspaceName: activeWorkspace?.name ?? '',
+      sessionId,
+      lastText,
+    }))
+  }, [activeWorkspace?.name, displayTitle, onHandOffToBot, session?.messages, sessionId])
 
   // Rename dialog state
   const [renameDialogOpen, setRenameDialogOpen] = React.useState(false)
@@ -503,110 +596,6 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   }, [sessionId])
 
   // Share action handlers
-  const handleShare = React.useCallback(async () => {
-    const result = await window.electronAPI.sessionCommand(sessionId, { type: 'shareToViewer' }) as { success: boolean; url?: string; error?: string } | undefined
-    if (result?.success && result.url) {
-      await navigator.clipboard.writeText(result.url)
-      toast.success(t('toast.linkCopied'), {
-        description: result.url,
-        action: { label: t('sendToWorkspace.open'), onClick: () => window.electronAPI.openUrl(result.url!) },
-      })
-    } else {
-      toast.error(t('toast.failedToShare'), { description: result?.error || t('toast.unknownError') })
-    }
-  }, [sessionId])
-
-  const handleOpenInBrowser = React.useCallback(() => {
-    if (sharedUrl) window.electronAPI.openUrl(sharedUrl)
-  }, [sharedUrl])
-
-  const handleCopyLink = React.useCallback(async () => {
-    if (sharedUrl) {
-      await navigator.clipboard.writeText(sharedUrl)
-      toast.success(t('toast.linkCopied'))
-    }
-  }, [sharedUrl])
-
-  const handleUpdateShare = React.useCallback(async () => {
-    const result = await window.electronAPI.sessionCommand(sessionId, { type: 'updateShare' }) as { success: boolean; error?: string } | undefined
-    if (result?.success) {
-      toast.success(t('chat.shareUpdated'))
-    } else {
-      toast.error(t('chat.failedToUpdateShare'), { description: result?.error })
-    }
-  }, [sessionId])
-
-  const handleRevokeShare = React.useCallback(async () => {
-    const result = await window.electronAPI.sessionCommand(sessionId, { type: 'revokeShare' }) as { success: boolean; error?: string } | undefined
-    if (result?.success) {
-      toast.success(t('chat.sharingStopped'))
-    } else {
-      toast.error(t('chat.failedToStopSharing'), { description: result?.error })
-    }
-  }, [sessionId])
-
-  // Share button with dropdown menu rendered in PanelHeader actions slot
-  const shareButton = React.useMemo(() => (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <PanelHeaderCenterButton
-          aria-label={sharedUrl ? 'Shared session options' : 'Share session'}
-          icon={sharedUrl
-            ? <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M11.2383 10.2871C11.6481 10.0391 12.1486 10.0082 12.5811 10.1943L12.7617 10.2871L13.0088 10.4414C14.2231 11.227 15.1393 12.2124 15.8701 13.502C16.1424 13.9824 15.9736 14.5929 15.4932 14.8652C15.0127 15.1375 14.4022 14.9688 14.1299 14.4883C13.8006 13.9073 13.4303 13.417 13 12.9883V21C13 21.5523 12.5523 22 12 22C11.4477 22 11 21.5523 11 21V12.9883C10.5697 13.417 10.1994 13.9073 9.87012 14.4883C9.59781 14.9688 8.98732 15.1375 8.50684 14.8652C8.02643 14.5929 7.8576 13.9824 8.12988 13.502C8.90947 12.1264 9.90002 11.0972 11.2383 10.2871ZM11.5 3C14.2848 3 16.6594 4.75164 17.585 7.21289C20.1294 7.90815 22 10.235 22 13C22 16.3137 19.3137 19 16 19H15V16.9961C15.5021 16.9966 16.0115 16.8707 16.4795 16.6055C17.9209 15.7885 18.4272 13.9571 17.6104 12.5156C16.6661 10.8495 15.4355 9.56805 13.7969 8.57617C12.692 7.90745 11.308 7.90743 10.2031 8.57617C8.56453 9.56806 7.3339 10.8495 6.38965 12.5156C5.57277 13.957 6.07915 15.7885 7.52051 16.6055C7.98851 16.8707 8.49794 16.9966 9 16.9961V19H7C4.23858 19 2 16.7614 2 14C2 11.9489 3.23498 10.1861 5.00195 9.41504C5.04745 5.86435 7.93852 3 11.5 3Z" />
-              </svg>
-            : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M8 8.53809C6.74209 8.60866 5.94798 8.80911 5.37868 9.37841C4.5 10.2571 4.5 11.6713 4.5 14.4997V15.4997C4.5 18.3282 4.5 19.7424 5.37868 20.6211C6.25736 21.4997 7.67157 21.4997 10.5 21.4997H13.5C16.3284 21.4997 17.7426 21.4997 18.6213 20.6211C19.5 19.7424 19.5 18.3282 19.5 15.4997V14.4997C19.5 11.6713 19.5 10.2571 18.6213 9.37841C18.052 8.80911 17.2579 8.60866 16 8.53809M12 14V3.5M9.5 5.5C9.99903 4.50411 10.6483 3.78875 11.5606 3.24093C11.7612 3.12053 11.8614 3.06033 12 3.06033C12.1386 3.06033 12.2388 3.12053 12.4394 3.24093C13.3517 3.78875 14.001 4.50411 14.5 5.5" />
-              </svg>
-          }
-          className={sharedUrl ? 'text-accent' : undefined}
-        />
-      </DropdownMenuTrigger>
-      <StyledDropdownMenuContent align="end" sideOffset={8}>
-        {sharedUrl ? (
-          <>
-            <StyledDropdownMenuItem onClick={handleOpenInBrowser}>
-              <Globe className="h-3.5 w-3.5" />
-              <span className="flex-1">{t('sessionMenu.openInBrowser')}</span>
-            </StyledDropdownMenuItem>
-            <StyledDropdownMenuItem onClick={handleCopyLink}>
-              <Copy className="h-3.5 w-3.5" />
-              <span className="flex-1">{t('sessionMenu.copyLink')}</span>
-            </StyledDropdownMenuItem>
-            <StyledDropdownMenuItem onClick={handleUpdateShare}>
-              <RefreshCw className="h-3.5 w-3.5" />
-              <span className="flex-1">{t('sessionMenu.updateShare')}</span>
-            </StyledDropdownMenuItem>
-            <StyledDropdownMenuSeparator />
-            <StyledDropdownMenuItem onClick={handleRevokeShare} variant="destructive">
-              <Link2Off className="h-3.5 w-3.5" />
-              <span className="flex-1">{t('sessionMenu.stopSharing')}</span>
-            </StyledDropdownMenuItem>
-            <StyledDropdownMenuSeparator />
-            <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl('https://thecraftagents.com/docs/go-further/sharing')}>
-              <Info className="h-3.5 w-3.5" />
-              <span className="flex-1">{t('chat.learnMore')}</span>
-            </StyledDropdownMenuItem>
-          </>
-        ) : (
-          <>
-            <StyledDropdownMenuItem onClick={handleShare}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                <path d="M8 8.53809C6.74209 8.60866 5.94798 8.80911 5.37868 9.37841C4.5 10.2571 4.5 11.6713 4.5 14.4997V15.4997C4.5 18.3282 4.5 19.7424 5.37868 20.6211C6.25736 21.4997 7.67157 21.4997 10.5 21.4997H13.5C16.3284 21.4997 17.7426 21.4997 18.6213 20.6211C19.5 19.7424 19.5 18.3282 19.5 15.4997V14.4997C19.5 11.6713 19.5 10.2571 18.6213 9.37841C18.052 8.80911 17.2579 8.60866 16 8.53809M12 14V3.5M9.5 5.5C9.99903 4.50411 10.6483 3.78875 11.5606 3.24093C11.7612 3.12053 11.8614 3.06033 12 3.06033C12.1386 3.06033 12.2388 3.12053 12.4394 3.24093C13.3517 3.78875 14.001 4.50411 14.5 5.5" />
-              </svg>
-              <span className="flex-1">{t('chat.shareOnline')}</span>
-            </StyledDropdownMenuItem>
-            <StyledDropdownMenuSeparator />
-            <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl('https://thecraftagents.com/docs/go-further/sharing')}>
-              <Info className="h-3.5 w-3.5" />
-              <span className="flex-1">{t('chat.learnMore')}</span>
-            </StyledDropdownMenuItem>
-          </>
-        )}
-      </StyledDropdownMenuContent>
-    </DropdownMenu>
-  ), [sharedUrl, handleShare, handleOpenInBrowser, handleCopyLink, handleUpdateShare, handleRevokeShare])
-
   const compactInfoButton = React.useMemo(() => {
     if (!isCompactMode || !sessionMeta) return undefined
 
@@ -638,13 +627,56 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     )
   }, [isTaskOrchestrator, handleEditTask, t])
 
-  const primaryHeaderAction = isCompactMode ? compactInfoButton : shareButton
-  const headerActions = editTaskButton ? (
+  // One button opens and closes the project panel. The conversation stays where it is; opening the
+  // panel is not a mode change, so there is no third state to cycle through. Only the focused pane
+  // owns the panel, so only it carries the control — an unfocused pane would be toggling a panel
+  // it does not render.
+  const canvasLayoutButton = sessionProjectId && isFocusedPanel !== false ? (
+    <PanelHeaderCenterButton
+      icon={
+        canvasLayoutMode === 'split'
+          ? <PanelRightClose className="h-4 w-4" />
+          : <PanelRight className="h-4 w-4" />
+      }
+      tooltip={
+        canvasLayoutMode === 'split'
+          ? t('chat.panelClose')
+          : t('chat.panelOpen')
+      }
+      aria-label={t('chat.layoutToggle')}
+      onClick={() => setCanvasLayoutMode(nextCanvasLayout(canvasLayoutMode))}
+    />
+  ) : undefined
+
+  // The share button used to sit here. Sharing a conversation is still reachable from the session
+  // menu; the header keeps its room for the things a person does while reading one.
+  const primaryHeaderAction = isCompactMode ? compactInfoButton : undefined
+  // An assistant brings its own cluster, and nothing of the session furniture rides along with it.
+  const headerActions = (
     <div className="flex items-center gap-1.5">
-      {editTaskButton}
-      {primaryHeaderAction}
+      {assistantHeader ? assistantHeader.actions : (
+        <>
+          {editTaskButton}
+          {canvasLayoutButton}
+          {primaryHeaderAction}
+        </>
+      )}
     </div>
-  ) : primaryHeaderAction
+  )
+
+
+  // Projects for the title menu's Projects submenu. Read from the atom AppShell already
+  // fills via `useProjects` rather than calling the hook here: a second call would mean a
+  // second fetch and a second `projects:changed` subscription for the same list.
+  const projects = useAtomValue(projectsAtom)
+  const projectMenuOptions = React.useMemo(
+    () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name })),
+    [projects],
+  )
+  const handleSetProjectId = React.useCallback(async (projectId: string | null) => {
+    if (!session) return
+    await window.electronAPI.sessionCommand(session.id, { type: 'setProjectId', projectId })
+  }, [session])
 
   // Build title menu content for chat sessions using shared SessionMenu.
   // Desktop uses Radix DropdownMenu via PanelHeader; compact mode uses a
@@ -656,6 +688,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       sessionStatuses={sessionStatuses ?? []}
       labels={labels ?? []}
       onLabelsChange={handleLabelsChange}
+      projects={projectMenuOptions}
+      onSetProjectId={handleSetProjectId}
       onRename={handleRename}
       onFlag={handleFlag}
       onUnflag={handleUnflag}
@@ -664,14 +698,18 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       onMarkUnread={handleMarkUnread}
       onSessionStatusChange={handleSessionStatusChange}
       onOpenInNewWindow={handleOpenInNewWindow}
+      onHandOffToBot={onHandOffToBot && session?.role !== 'bot' ? handleHandOffToBot : undefined}
       onDelete={handleDelete}
     />
   ) : null, [
     sessionMeta,
+    session?.role,
     isCompactMode,
     sessionStatuses,
     labels,
     handleLabelsChange,
+    projectMenuOptions,
+    handleSetProjectId,
     handleRename,
     handleFlag,
     handleUnflag,
@@ -680,6 +718,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     handleMarkUnread,
     handleSessionStatusChange,
     handleOpenInNewWindow,
+    handleHandOffToBot,
+    onHandOffToBot,
     handleDelete,
   ])
 
@@ -691,6 +731,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       sessionStatuses={sessionStatuses ?? []}
       labels={labels ?? []}
       onLabelsChange={handleLabelsChange}
+      projects={projectMenuOptions}
+      onSetProjectId={handleSetProjectId}
       onRename={handleRename}
       onFlag={handleFlag}
       onUnflag={handleUnflag}
@@ -709,6 +751,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     sessionStatuses,
     labels,
     handleLabelsChange,
+    projectMenuOptions,
+    handleSetProjectId,
     handleRename,
     handleFlag,
     handleUnflag,
@@ -719,6 +763,11 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     handleOpenInNewWindow,
     handleDelete,
   ])
+
+  // The title is a menu trigger only when there is a menu — and for the assistant that menu holds
+  // its own verbs rather than a conversation's.
+  const headerTitle = assistantHeader ? assistantHeader.menu : titleMenu
+  const headerCompactTitle = assistantHeader ? undefined : compactTitleMenu
 
   // Handle missing session - loading or deleted
   if (!session) {
@@ -741,11 +790,15 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       return (
         <>
           <div className="h-full flex flex-col">
-            <PanelHeader  title={displayTitle} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+            <PanelHeader  title={displayTitle} badge={assistantHeader?.badge} titleMenu={headerTitle} compactTitleMenu={headerCompactTitle} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
             <div className="flex-1 flex flex-col min-h-0">
               <ChatDisplay
                 ref={chatDisplayRef}
                 session={skeletonSession}
+                onLoadOlderMessages={handleLoadOlderMessages}
+                onLoadQuestions={handleLoadQuestions}
+                onSearchMessages={handleSearchMessages}
+                onRevealMessage={handleRevealMessage}
                 onSendMessage={() => {}}
                 onOpenFile={handleOpenFile}
                 onOpenUrl={handleOpenUrl}
@@ -815,11 +868,15 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   return (
     <>
       <div className="h-full flex flex-col">
-        <PanelHeader  title={displayTitle} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+        <PanelHeader  title={displayTitle} badge={assistantHeader?.badge} titleMenu={headerTitle} compactTitleMenu={headerCompactTitle} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
         <div className="flex-1 flex flex-col min-h-0">
           <ChatDisplay
             ref={chatDisplayRef}
             session={session}
+            onLoadOlderMessages={handleLoadOlderMessages}
+            onLoadQuestions={handleLoadQuestions}
+            onSearchMessages={handleSearchMessages}
+            onRevealMessage={handleRevealMessage}
             onSendMessage={(message, attachments, skillSlugs) => {
               if (session) {
                 onSendMessage(session.id, message, attachments, skillSlugs)
@@ -846,14 +903,17 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             onAttachmentsChange={handleAttachmentsChange}
             sources={enabledSources}
             skills={skills}
-            labels={labels}
-            onLabelsChange={(newLabels) => onSessionLabelsChange?.(sessionId, newLabels)}
-            sessionStatuses={sessionStatuses}
-            onSessionStatusChange={handleSessionStatusChange}
+            labels={isAssistant ? undefined : labels}
+            onLabelsChange={isAssistant ? undefined : (newLabels) => onSessionLabelsChange?.(sessionId, newLabels)}
+            sessionStatuses={isAssistant ? undefined : sessionStatuses}
+            onSessionStatusChange={isAssistant ? undefined : handleSessionStatusChange}
             workspaceId={activeWorkspaceId || undefined}
             onSourcesChange={(slugs) => onSessionSourcesChange?.(sessionId, slugs)}
             workingDirectory={workingDirectory}
-            onWorkingDirectoryChange={handleWorkingDirectoryChange}
+            onWorkingDirectoryChange={isAssistant ? undefined : handleWorkingDirectoryChange}
+            // The one line of text that keeps saying what this thing is for: it dispatches work,
+            // it does not only chat. The session composer's rotating hints are about the composer.
+            {...(isAssistant ? { placeholder: [t('bot.composerPlaceholder', { defaultValue: 'Ask it to do something in this workspace…' })] } : {})}
             sessionFolderPath={session?.sessionFolderPath}
             messagesLoading={messageLoadState.messagesLoading || (messagesRetrying && !messageLoadState.messagesReady)}
             messagesLoadError={messageLoadState.error}

@@ -78,7 +78,9 @@ export type EditContextKey =
   | 'add-source'
   | 'add-source-api'   // Filter-specific: user is viewing APIs
   | 'add-source-mcp'   // Filter-specific: user is viewing MCPs
+  | 'add-source-email' // Filter-specific: user is viewing mailboxes
   | 'add-source-local' // Filter-specific: user is viewing Local Folders
+  | 'add-source-web'   // Filter-specific: user is viewing Web Pages
   | 'add-skill'
   | 'edit-statuses'
   | 'edit-labels'
@@ -306,8 +308,10 @@ const EDIT_CONFIGS: Record<EditContextKey, (location: string) => EditConfig> = {
       filePath: `${location}/sources/`, // location is the workspace root path
       context:
         'The user wants to add a new source to their workspace. ' +
-        'Sources can be MCP servers (HTTP/SSE or stdio), REST APIs, or local filesystems. ' +
-        'Ask clarifying questions if needed: What service? MCP or API? Auth type? ' +
+        'Sources can be MCP servers (HTTP/SSE or stdio), REST APIs, mailboxes (IMAP/SMTP), or local filesystems. ' +
+        'Ask clarifying questions if needed: What service? MCP, API, or mailbox? Auth type? ' +
+        'For a mailbox, ask for the address and the authorization code (not the account password), ' +
+        'then use source_credential_prompt with mode "basic". ' +
         'Create the source folder and config.json in the workspace sources directory. ' +
         'Follow the patterns in ~/.craft-agent/docs/sources.md. ' +
         'After creating the source, call source_test with the source slug to verify the configuration.',
@@ -379,6 +383,49 @@ const EDIT_CONFIGS: Record<EditContextKey, (location: string) => EditConfig> = {
     displayLabelKey: 'editPopover.label.addLocalFolder',
     exampleKey: 'editPopover.example.addSourceLocal',
     overridePlaceholderKey: 'editPopover.placeholder.addSourceLocal',
+  }),
+
+  'add-source-web': (location) => ({
+    context: {
+      label: 'Add Web Page',
+      filePath: `${location}/sources/`,
+      context:
+        'The user is viewing web sources and wants to keep a page. ' +
+        'A web source is a bookmark: type "web" with a web.url field. Nothing is captured or stored — ' +
+        'the browser reads the page when it is needed. ' +
+        'Create the source folder and config.json in the workspace sources directory. ' +
+        'Write a guide.md saying what the page is, why it matters, and how to work with it in the ' +
+        'browser: its entry points, key sections or controls, and what changes. ' +
+        'There is no server, so do not call source_test. ' +
+        'Follow the patterns in ~/.craft-agent/docs/sources.md.',
+    },
+    example: 'Save this docs page',
+    overridePlaceholder: 'What page would you like to save?',
+    displayLabelKey: 'editPopover.label.addSourceWeb',
+    exampleKey: 'editPopover.example.addSourceWeb',
+    overridePlaceholderKey: 'editPopover.placeholder.addSourceWeb',
+  }),
+
+  'add-source-email': (location) => ({
+    context: {
+      label: 'Add Mailbox',
+      filePath: `${location}/sources/`,
+      context:
+        'The user is viewing mailboxes and wants to connect one. ' +
+        'Create a source with type "email" and an email block: address (required), provider ' +
+        '(qq, 163, netease-enterprise, gmail, outlook, exmail, aliyun, sina, sohu — omit to infer ' +
+        'from the domain), and optional imap/smtp host overrides for a custom server. ' +
+        'Ask for the address, and for the authorization code rather than the account password. ' +
+        'Then call source_credential_prompt with mode "basic" and labels ' +
+        '{ "username": "Email address", "password": "Authorization code" }. ' +
+        'Follow the patterns in ~/.craft-agent/docs/sources.md, then run source_test — it logs in ' +
+        'to IMAP and verifies SMTP.',
+    },
+    example: 'Connect my 163 mailbox',
+    overridePlaceholder: 'Which mailbox would you like to connect?',
+    displayLabelKey: 'editPopover.label.addSourceEmail',
+    exampleKey: 'editPopover.example.addSourceEmail',
+    overridePlaceholderKey: 'editPopover.placeholder.addSourceEmail',
   }),
 
   'add-skill': (location) => ({

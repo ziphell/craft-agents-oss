@@ -148,12 +148,22 @@ import { AbortReason, type RecoveryMessage } from './core/index.ts';
 import type { PermissionRemember } from './core/permission-remember.ts';
 export { AbortReason, type RecoveryMessage };
 
-/** File extensions that can be converted to readable text by CLI tools. */
+/**
+ * What this app has for the files `Read` cannot read: **one tool**, named per extension.
+ *
+ * Every entry takes the file as its first argument, because the tip below appends the quoted path.
+ * The `*-tool` scripts this map used to name — `pdf-tool`, `xlsx-tool`, `pptx-tool`, `markitdown` —
+ * have no entry point in `resources/bin` and no place in the tool list; naming them sent an agent
+ * after a command that does not exist, which reads as "this app cannot do it" rather than as a
+ * stale hint. Each format has its own door now (`docx_tool`, `xlsx_tool`, `pptx_tool`, `pdf_tool`).
+ *
+ * An extension that is not here gets no tip at all, which is the honest answer when nothing reads it.
+ */
 const CONVERTIBLE_FILE_HINTS: Record<string, string> = {
-  pdf: 'markitdown or pdf-tool extract',
-  docx: 'markitdown', xlsx: 'markitdown or xlsx-tool read', pptx: 'markitdown or pptx-tool extract',
-  doc: 'markitdown', xls: 'markitdown', ppt: 'markitdown',
-  msg: 'markitdown', eml: 'markitdown', rtf: 'markitdown',
+  pdf: 'pdf_tool pdf',
+  docx: 'docx_tool read', doc: 'docx_tool read', odt: 'docx_tool read',
+  xlsx: 'xlsx_tool read', xls: 'xlsx_tool read', ods: 'xlsx_tool read',
+  pptx: 'pptx_tool read', ppt: 'pptx_tool read', odp: 'pptx_tool read',
   ics: 'ical-tool read',
 };
 
@@ -781,35 +791,39 @@ export class ClaudeAgent extends BaseAgent {
   }
 
   /**
-   * Look up the bound project (if any) and return a snapshot for system-prompt injection.
-   * Resolution silently no-ops when the session is unbound or the project no longer exists,
-   * so this never blocks a chat() call.
+   * Look up the session's bound project once. The project block and the spec block
+   * both build from this single load, so the two can never disagree about where the
+   * session's project lives. Resolution silently no-ops when the session is unbound
+   * or the project no longer exists, so this never blocks a chat() call.
    */
-  private resolveProjectContext(): import('../projects/types.ts').ProjectPromptContext | null {
+  private loadBoundProject(): import('../projects/types.ts').LoadedProject | null {
     const projectId = this.config.session?.projectId;
     if (!projectId) return null;
 
     try {
-      const project = loadProjectById(this.workspaceRootPath, projectId);
-      if (!project) return null;
-      const slug = project.config.slug;
-      return {
-        name: project.config.name,
-        description: project.config.description,
-        details: project.config.details,
-        assetsPath: getProjectAssetsPath(this.workspaceRootPath, slug),
-        assets: listProjectAssets(this.workspaceRootPath, slug).map((a) => ({
-          filename: a.filename,
-          mimeType: a.mimeType,
-          sizeBytes: a.sizeBytes,
-        })),
-        memoryPath: getProjectMemoryPath(this.workspaceRootPath, slug),
-        memoryContent: loadProjectMemory(this.workspaceRootPath, slug) ?? undefined,
-      };
+      return loadProjectById(this.workspaceRootPath, projectId);
     } catch (error) {
       debug(`[resolveProjectContext] Failed to load project ${projectId}:`, error);
       return null;
     }
+  }
+
+  /** Snapshot a loaded project for system-prompt injection. */
+  private buildProjectPromptContext(project: import('../projects/types.ts').LoadedProject): import('../projects/types.ts').ProjectPromptContext {
+    const slug = project.config.slug;
+    return {
+      name: project.config.name,
+      description: project.config.description,
+      details: project.config.details,
+      assetsPath: getProjectAssetsPath(this.workspaceRootPath, slug),
+      assets: listProjectAssets(this.workspaceRootPath, slug).map((a) => ({
+        filename: a.filename,
+        mimeType: a.mimeType,
+        sizeBytes: a.sizeBytes,
+      })),
+      memoryPath: getProjectMemoryPath(this.workspaceRootPath, slug),
+      memoryContent: loadProjectMemory(this.workspaceRootPath, slug) ?? undefined,
+    };
   }
 
   // Callback for permission requests - set by application to receive permission prompts
@@ -1068,7 +1082,8 @@ export class ClaudeAgent extends BaseAgent {
         // First chat in this session - pin current values
         this.pinnedPreferencesPrompt = currentPreferencesPrompt;
         this.pinnedIncludeCoAuthoredBy = currentCoAuthorPref;
-        this.pinnedProjectContext = this.resolveProjectContext();
+        const boundProject = this.loadBoundProject();
+        this.pinnedProjectContext = boundProject ? this.buildProjectPromptContext(boundProject) : null;
         debug('[chat] Pinned system prompt components for session consistency');
       } else {
         // Detect drift: warn user if context has changed since session started
@@ -1135,7 +1150,13 @@ export class ClaudeAgent extends BaseAgent {
       // Build full MCP servers set first, then filter for mini agents
       const fullMcpServers: Options['mcpServers'] = {
         // Session-scoped tools (SubmitPlan, source_test, update_user_preferences, transform_data, etc.)
-        session: getSessionScopedTools(sessionId, this.workspaceRootPath),
+        // A conversation without a project is not offered media/library/cut tools at all.
+        session: getSessionScopedTools(
+          sessionId,
+          this.workspaceRootPath,
+          undefined,
+          Boolean(this.config.session?.projectId),
+        ),
         // Per-source proxy servers from centralized MCP pool (MCP + API sources)
         // Each source gets its own SDK server keyed by slug (e.g., 'linear', 'github', 'gmail')
         // so the SDK produces correct tool names: mcp__{slug}__{toolName}
@@ -1397,6 +1418,10 @@ export class ClaudeAgent extends BaseAgent {
                 workspaceId: extractWorkspaceSlug(this.workspaceRootPath, this.config.workspace.id),
                 plansFolderPath: sessionId ? getSessionPlansPath(this.workspaceRootPath, sessionId) : undefined,
                 dataFolderPath: sessionId ? getSessionDataPath(this.workspaceRootPath, sessionId) : undefined,
+                // The session's project folder — where its specs are written, and therefore one of
+                // the folders Explore mode allows writes to. Resolved through the same loader the
+                // project and spec prompt blocks read; absent when the session is in no project.
+                projectFolderPath: this.loadBoundProject()?.folderPath,
                 workingDirectory: this.config.session?.workingDirectory,
                 activeSourceSlugs: Array.from(this.sourceManager.getActiveSlugs()),
                 allSourceSlugs: this.sourceManager.getAllSources().map(s => s.config.slug),
@@ -2505,7 +2530,10 @@ This is a branched conversation. All prior messages in this conversation are par
       `modeVersion=${textPromptDiagnostics.modeVersion} changedBy=${textPromptDiagnostics.lastChangedBy} changedAt=${textPromptDiagnostics.lastChangedAt}`
     )
     const contextParts = this.promptBuilder.buildContextParts(
-      { plansFolderPath: getSessionPlansPath(this.workspaceRootPath, this.modeSessionId) },
+      {
+        plansFolderPath: getSessionPlansPath(this.workspaceRootPath, this.modeSessionId),
+        projectFolderPath: this.loadBoundProject()?.folderPath,
+      },
       this.sourceManager.formatSourceState()
     );
 
@@ -2551,7 +2579,10 @@ This is a branched conversation. All prior messages in this conversation are par
       `modeVersion=${sdkPromptDiagnostics.modeVersion} changedBy=${sdkPromptDiagnostics.lastChangedBy} changedAt=${sdkPromptDiagnostics.lastChangedAt}`
     )
     const contextParts = this.promptBuilder.buildContextParts(
-      { plansFolderPath: getSessionPlansPath(this.workspaceRootPath, this.modeSessionId) },
+      {
+        plansFolderPath: getSessionPlansPath(this.workspaceRootPath, this.modeSessionId),
+        projectFolderPath: this.loadBoundProject()?.folderPath,
+      },
       this.sourceManager.formatSourceState()
     );
 
@@ -3327,8 +3358,47 @@ This is a branched conversation. All prior messages in this conversation are par
       } : {}),
     };
 
+    const images = request.images ?? [];
+    if (images.length === 0) {
+      return consumeLlmQueryMessages(
+        query({ prompt: request.prompt, options }),
+        (msg) => this.debug(msg),
+      );
+    }
+
+    // A recording arrives as frames, and a model reads them in order: each frame is placed where
+    // its moment belongs in the text, so "the total moves at 0:12" has something to point at.
+    // The prompt is the last block, because it is what all of the frames are about.
+    const content: ContentBlockParam[] = [];
+    for (const image of images) {
+      const mediaType = this.mapImageMediaType(image.mimeType);
+      if (!mediaType) {
+        throw new Error(
+          `Unsupported image type "${image.mimeType}" — this path takes jpeg, png, gif or webp.`,
+        );
+      }
+      if (image.timestampMs !== undefined) {
+        content.push({ type: 'text', text: `[+${image.timestampMs}ms]` });
+      }
+      content.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data: image.data } });
+    }
+    content.push({ type: 'text', text: request.prompt });
+
+    const message = {
+      type: 'user',
+      message: { role: 'user', content },
+      parent_tool_use_id: null,
+      // Same as `buildSDKUserMessage`: resumption is `options.resume`'s job, and setting a
+      // session id here is what used to make the SDK answer with nothing.
+      session_id: '',
+    } as SDKUserMessage;
+
+    async function* singleMessage(): AsyncIterable<SDKUserMessage> {
+      yield message;
+    }
+
     return consumeLlmQueryMessages(
-      query({ prompt: request.prompt, options }),
+      query({ prompt: singleMessage(), options }),
       (msg) => this.debug(msg),
     );
   }

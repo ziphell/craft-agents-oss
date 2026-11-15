@@ -33,6 +33,8 @@ export interface SourceMenuProps {
   /** Callbacks */
   onOpenInNewWindow: () => void
   onShowInFinder: () => void
+  /** Whether the source folder can be revealed here (false in a remote window). */
+  canShowInFinder?: boolean
   onDelete: () => void
   /** Send to another workspace (omit to hide the option) */
   onSendToWorkspace?: () => void
@@ -47,6 +49,7 @@ export function SourceMenu({
   sourceName,
   onOpenInNewWindow,
   onShowInFinder,
+  canShowInFinder = true,
   onDelete,
   onSendToWorkspace,
 }: SourceMenuProps) {
@@ -64,10 +67,12 @@ export function SourceMenu({
       </MenuItem>
 
       {/* Show in file manager */}
-      <MenuItem onClick={onShowInFinder}>
-        <FolderOpen className="h-3.5 w-3.5" />
-        <span className="flex-1">{t("sessionMenu.showInFileManager", { fileManager: getFileManagerName() })}</span>
-      </MenuItem>
+      {canShowInFinder && (
+        <MenuItem onClick={onShowInFinder}>
+          <FolderOpen className="h-3.5 w-3.5" />
+          <span className="flex-1">{t("sessionMenu.showInFileManager", { fileManager: getFileManagerName() })}</span>
+        </MenuItem>
+      )}
 
       {/* Send to another workspace */}
       {onSendToWorkspace && (

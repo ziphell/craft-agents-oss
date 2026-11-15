@@ -12,9 +12,10 @@
  * 1. Permission mode check: Block tools disallowed by current mode
  * 2. Source blocking: Block tools from inactive MCP sources
  * 3. Prerequisite check: Block source tools until guide.md is read
- * 4. call_llm detection: Intercept mcp__session__call_llm
- * 5. Input transforms: Path expansion, config validation, skill qualification, metadata stripping
- * 6. Ask-mode prompt decision: Determine if user approval is needed
+ * 4. Open-document check: Block a write to a file an editor is showing right now
+ * 5. call_llm detection: Intercept mcp__session__call_llm
+ * 6. Input transforms: Path expansion, config validation, skill qualification, metadata stripping
+ * 7. Ask-mode prompt decision: Determine if user approval is needed
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -35,6 +36,7 @@ import {
   type CliDomainNamespace,
 } from '../../config/cli-domains.ts';
 import { FEATURE_FLAGS } from '../../feature-flags.ts';
+import { isDocumentDirty } from '../../office/open-documents.ts';
 import { AGENTS_PLUGIN_NAME } from '../../skills/types.ts';
 import { GLOBAL_AGENT_SKILLS_DIR, PROJECT_AGENT_SKILLS_DIR } from '../../skills/storage.ts';
 import {
@@ -626,6 +628,8 @@ export interface PreToolUseInput {
   plansFolderPath?: string;
   /** Data folder path (writes allowed in explore mode for transform_data output) */
   dataFolderPath?: string;
+  /** The session's project folder (writes allowed in explore mode: the project's specs live there) */
+  projectFolderPath?: string;
   /** Working directory override (for skill resolution) */
   workingDirectory?: string;
   /** Currently active source slugs */
@@ -670,7 +674,11 @@ export interface PrerequisiteManagerLike {
 const BUILT_IN_MCP_SERVERS = new Set(['session']);
 
 /** File write tools that require permission in ask mode */
-const FILE_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+/**
+ * The tools that carry a document they composed **earlier** — which is why nothing may save an
+ * editor's newer work on their way in. See `flushOpenDocuments` in `pi-agent.ts`.
+ */
+export const FILE_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 
 /**
  * Centralized PreToolUse pipeline.
@@ -711,6 +719,7 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
     workspaceId,
     plansFolderPath,
     dataFolderPath,
+    projectFolderPath,
     workingDirectory,
     activeSourceSlugs,
     allSourceSlugs,
@@ -747,7 +756,7 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
     toolName,
     input,
     effectivePermissionMode,
-    { plansFolderPath, dataFolderPath, permissionsContext }
+    { plansFolderPath, dataFolderPath, projectFolderPath, permissionsContext }
   );
 
   if (!modeResult.allowed) {
@@ -787,6 +796,42 @@ export function runPreToolUseChecks(ctx: PreToolUseInput): PreToolUseCheckResult
       const prereqResult = prerequisiteManager.checkPrerequisites(toolName);
       if (!prereqResult.allowed) {
         return { type: 'block', reason: prereqResult.blockReason!, source: 'prerequisite' };
+      }
+    }
+  }
+
+  // ============================================================
+  // 4. UNSAVED-WORK CHECK (do not write over edits somebody has not saved)
+  // ============================================================
+  //
+  // Not "is this file open": an editor showing a document nobody has typed in holds exactly what
+  // the disk holds, and writing there is ordinary — the editor notices, says so, and one press
+  // reloads it. What must not happen is a write over **unsaved work**, because the reload that
+  // follows is the only way to see the new version, and it takes that work with it.
+  //
+  // `office_tool` asks the same question for itself (see `office-commands.ts`); the text formats —
+  // markdown, html, drawio — are written by these built-in tools, which never pass through it.
+  //
+  // **A markdown file has a way out, and the message says so.** `markdown_tool edit` asks the editor
+  // that has the document open to make the change instead of the disk, which is one step of that
+  // editor's own history: the person's unsaved work survives it, and their caret is mapped through
+  // it. Refusing without mentioning that is what makes an agent retry the same write or, worse, ask
+  // a person to close what they are working on.
+  if (FILE_WRITE_TOOLS.has(toolName)) {
+    const raw = (input.file_path ?? input.path ?? input.notebook_path) as string | undefined;
+    if (typeof raw === 'string' && raw.trim()) {
+      const target = resolve(expandPath(raw, workingDirectory || workspaceRootPath));
+      if (isDocumentDirty(target)) {
+        const wayOut = /\.(md|mdx)$/i.test(target)
+          ? ' To change it in place, call `markdown_tool edit <file> --expect "<what is there now>" ' +
+            '--text "<what it becomes>"` — that lands in the open editor as one step the person can undo.'
+          : '';
+        return {
+          type: 'block',
+          reason:
+            `${raw} has unsaved changes in an editor right now. Ask the person to save or close it ` +
+            `first — writing here would replace what they are working on.${wayOut}`,
+        };
       }
     }
   }

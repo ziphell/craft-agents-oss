@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="craft_background">#F6F6F9</color>
+  <color name="craft_surface">#FFFFFF</color>
+  <color name="craft_text">#17171F</color>
+  <color name="craft_muted">#6E6E7A</color>
+  <color name="craft_outline">#E2E2E9</color>
+  <color name="craft_accent">#6D5DFC</color>
+  <color name="craft_on_accent">#FFFFFF</color>
+</resources>

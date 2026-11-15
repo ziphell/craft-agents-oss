@@ -25,7 +25,7 @@ import {
 } from './types.ts';
 import { buildAuthorizationHeader } from './api-tools.ts';
 import type { ApiCredential } from '@craft-agent/session-tools-core/api-auth';
-import { isMultiHeaderCredential, parseStoredApiCredential } from '@craft-agent/session-tools-core/api-auth';
+import { isBasicAuthCredential, isMultiHeaderCredential, parseStoredApiCredential } from '@craft-agent/session-tools-core/api-auth';
 import type { CredentialId, StoredCredential } from '../credentials/types.ts';
 import { getCredentialManager } from '../credentials/index.ts';
 import { CraftOAuth, getMcpBaseUrl, prepareMcpOAuth, exchangeMcpOAuth, type OAuthCallbacks, type OAuthTokens } from '../auth/oauth.ts';
@@ -262,6 +262,29 @@ export class SourceCredentialManager {
     return credential;
   }
 
+  /**
+   * Get the mail login for an email source.
+   *
+   * Stored as a basic credential (user + authorization code) so the existing
+   * credential-prompt flow works unchanged: the prompt writes
+   * `{username,password}` JSON and nothing here has to know about mail.
+   */
+  async getEmailCredential(source: LoadedSource): Promise<{ user: string; pass: string } | null> {
+    if (source.config.type !== 'email' || !source.config.email) return null;
+
+    const cred = await this.load(source);
+    if (!cred?.value) return null;
+
+    const parsed = parseStoredApiCredential(cred.value, { authType: 'basic' });
+    if (!isBasicAuthCredential(parsed)) return null;
+
+    // The address in config wins: it is what the user sees and what the mailbox expects.
+    return {
+      user: parsed.username || source.config.email.address,
+      pass: parsed.password,
+    };
+  }
+
   // ============================================================
   // Credential ID Resolution
   // ============================================================
@@ -296,6 +319,8 @@ export class SourceCredentialManager {
         // header, query, or other → stored as apikey
         type = 'source_apikey';
       }
+    } else if (source.config.type === 'email') {
+      type = 'source_basic';
     } else {
       type = 'source_oauth';
     }

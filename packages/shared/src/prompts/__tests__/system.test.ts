@@ -176,6 +176,21 @@ describe('includeCoAuthoredBy handling', () => {
   })
 })
 
+describe('session mode stays out of the system prompt', () => {
+  // The session's work mode (`goal`/`spec`/`plan`) rides user messages, not the system prompt:
+  // the system prompt is the cached prefix, so anything that changes with the mode would
+  // re-stamp it on every switch. getSystemPrompt has no mode input at all, so its output must be
+  // byte-identical regardless of the session's mode.
+  it('is byte-identical and carries no <work> block', () => {
+    const args = [undefined, undefined, '/tmp/workspace', '/tmp/workspace'] as const
+    const first = getSystemPrompt(...args)
+    const second = getSystemPrompt(...args)
+
+    expect(second).toBe(first)
+    expect(first).not.toContain('<work ')
+  })
+})
+
 describe('formatProjectContextForPrompt', () => {
   const baseCtx = (overrides: Partial<ProjectPromptContext> = {}): ProjectPromptContext => ({
     name: 'Acme',

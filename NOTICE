@@ -13,3 +13,16 @@ Commercial Terms of Service: https://www.anthropic.com/legal/commercial-terms
 
 Third-party dependencies are listed in package.json files and are subject
 to their respective licenses.
+
+---
+
+The bundled command-line tools include an Emscripten build of libheif and
+libde265 (via the `libheif-js` package) to read HEIC/HEIF photographs. Those
+libraries are licensed under LGPL-3.0; their unmodified sources are available at:
+
+- https://github.com/strukturag/libheif
+- https://github.com/strukturag/libde265
+
+The wasm module is packaged as part of `resources/cli-tools/dist/img-tool.mjs`
+and can be replaced by rebuilding that bundle from the sources above.
+

@@ -1,9 +1,19 @@
 import { describe, it, expect } from 'bun:test'
+import { PATH_SEP } from '@/lib/platform'
 import {
   WORKING_DIR_FILTER_THRESHOLD,
   deriveSelectionFlags,
   deriveSortedRecent,
 } from '../use-working-directory-state'
+
+/**
+ * A path in the spelling of the machine running the test.
+ *
+ * The rule under test is "the last segment", and which character separates segments is the
+ * platform's business (`PATH_SEP`) — a literal `/a/b` is one segment on Windows, so naming
+ * these cases with `/` would test the separator rather than the rule.
+ */
+const dir = (...parts: string[]): string => parts.join(PATH_SEP)
 
 describe('deriveSortedRecent', () => {
   it('returns [] when recents is empty', () => {
@@ -54,13 +64,13 @@ describe('deriveSortedRecent', () => {
 
   it('sorts by basename even when paths share a basename in different parents', () => {
     const result = deriveSortedRecent(
-      ['/a/foo', '/b/bar', '/c/foo'],
+      [dir('a', 'foo'), dir('b', 'bar'), dir('c', 'foo')],
       undefined,
     )
     // Stable enough: bar < foo < foo. Both foos remain together; order
     // between them is locale-driven but they must come after bar.
-    expect(result[0]).toBe('/b/bar')
-    expect(result.slice(1).sort()).toEqual(['/a/foo', '/c/foo'])
+    expect(result[0]).toBe(dir('b', 'bar'))
+    expect(result.slice(1).sort()).toEqual([dir('a', 'foo'), dir('c', 'foo')])
   })
 })
 
@@ -87,15 +97,15 @@ describe('deriveSelectionFlags', () => {
   })
 
   it('returns hasFolder + folderName when a custom folder is selected', () => {
-    const flags = deriveSelectionFlags('/Users/alice/code/project', undefined)
+    const flags = deriveSelectionFlags(dir('Users', 'alice', 'code', 'project'), undefined)
     expect(flags.hasFolder).toBe(true)
     expect(flags.folderName).toBe('project')
   })
 
   it('showReset is true when a custom folder differs from session root', () => {
     const flags = deriveSelectionFlags(
-      '/Users/alice/code/project',
-      '/Users/alice/session',
+      dir('Users', 'alice', 'code', 'project'),
+      dir('Users', 'alice', 'session'),
     )
     expect(flags.hasFolder).toBe(true)
     expect(flags.folderName).toBe('project')
@@ -109,9 +119,9 @@ describe('deriveSelectionFlags', () => {
   })
 
   it('folderName falls back to undefined when basename resolves to empty', () => {
-    // Path of just '/' — basename is '' — should normalise to undefined,
-    // not be passed through as an empty string.
-    const flags = deriveSelectionFlags('/', undefined)
+    // The separator on its own — the machine's root — has no last segment, so it should
+    // normalise to undefined rather than be passed through as an empty string.
+    const flags = deriveSelectionFlags(PATH_SEP, undefined)
     expect(flags.hasFolder).toBe(true)
     expect(flags.folderName).toBeUndefined()
   })

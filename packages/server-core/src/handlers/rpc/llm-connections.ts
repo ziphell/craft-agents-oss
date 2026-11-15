@@ -1,18 +1,24 @@
 import { RPC_CHANNELS, type LlmConnectionSetup } from '@craft-agent/shared/protocol'
-import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionWithStatus, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
+import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionUpdate, type LlmConnectionWithStatus, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
-import { setSetupDeferred } from '@craft-agent/shared/config/storage'
+import { setSetupDeferred, applyLlmConnectionUpdate } from '@craft-agent/shared/config/storage'
 import {
   resolveSetupTestConnectionHint,
   testBackendConnection,
   validateStoredBackendConnection,
 } from '@craft-agent/shared/agent/backend'
 import { getModelRefreshService } from '@craft-agent/server-core/model-fetchers'
+import { askOmniModel, askWorkspaceModel, OMNI_SINGLE_MEDIA_MESSAGE } from '@craft-agent/shared/media/workspace-model'
+import { mimeOfFile } from '@craft-agent/shared/media'
+import { kindOfPath } from '@craft-agent/shared/library'
 import { parseTestConnectionError, createBuiltInConnection, validateModelList, piAuthProviderDisplayName, validateSetupTestInput, setupTestRequiresApiKey, resolveCustomEndpointSetup, resolveSetupTestApiKey, maskApiKey, isMaskedApiKey } from '@craft-agent/server-core/domain'
-import { getWorkspaceOrThrow, buildBackendHostRuntimeContext } from '@craft-agent/server-core/handlers'
+import { getWorkspaceOrThrow, buildBackendHostRuntimeContext, validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, rm } from 'node:fs/promises'
+import { basename, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { CLIENT_OPEN_EXTERNAL } from '@craft-agent/server-core/transport'
 
 // Local OAuth state
@@ -29,6 +35,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.llmConnections.SET_DEFAULT,
   RPC_CHANNELS.llmConnections.SET_WORKSPACE_DEFAULT,
   RPC_CHANNELS.llmConnections.REFRESH_MODELS,
+  RPC_CHANNELS.llm.COMPLETE,
   RPC_CHANNELS.chatgpt.START_OAUTH,
   RPC_CHANNELS.chatgpt.COMPLETE_OAUTH,
   RPC_CHANNELS.chatgpt.CANCEL_OAUTH,
@@ -84,10 +91,11 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
         isNewConnection = true
       }
 
-      const updates: Partial<LlmConnection> = {}
-      const hasConfiguredBaseUrl = !!setup.baseUrl?.trim()
+      const updates: LlmConnectionUpdate = {};
+      const hasConfiguredBaseUrl = !!setup.baseUrl?.trim();
       if (setup.baseUrl !== undefined) {
-        updates.baseUrl = setup.baseUrl?.trim() || undefined
+        // Explicit null = clear the stored baseUrl (merge semantics).
+        updates.baseUrl = setup.baseUrl?.trim() || null;
 
         // Only mutate providerType for API key connections (not OAuth connections)
         if (isAnthropicProvider(connection.providerType) && connection.authType !== 'oauth') {
@@ -109,10 +117,24 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       }
 
       if (setup.defaultModel !== undefined) {
-        updates.defaultModel = setup.defaultModel ?? undefined
+        updates.defaultModel = setup.defaultModel ?? null
+      }
+      if (setup.fastModel !== undefined) {
+        // Merge semantics: `null` deletes the key (back to the name-based
+        // guess), `''` is stored as-is and means "follow the default model".
+        updates.fastModel = setup.fastModel ?? null
+      }
+      if (setup.visionModel !== undefined) {
+        // Merge semantics: `null` deletes the key (back to the chain's next
+        // candidate), `''` is stored as-is.
+        updates.visionModel = setup.visionModel ?? null
+      }
+      if (setup.omniModel !== undefined) {
+        // Same tri-state: `null` clears the role, an id stores it.
+        updates.omniModel = setup.omniModel ?? null
       }
       if (setup.models !== undefined) {
-        updates.models = setup.models ?? undefined
+        updates.models = setup.models ?? null
       }
       if (setup.modelSelectionMode !== undefined) {
         updates.modelSelectionMode = setup.modelSelectionMode
@@ -139,9 +161,10 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       } else if (setup.baseUrl !== undefined) {
         // Base URL was explicitly updated without custom protocol config.
         // Treat this as non-custom mode and clear stale custom endpoint metadata.
+        // Explicit null (not undefined) is what clear means under merge semantics.
         // Only downgrade existing connections — new ones already have the correct
         // providerType from createBuiltInConnection().
-        updates.customEndpoint = undefined
+        updates.customEndpoint = null
         if (connection.providerType === 'pi_compat' && connection.authType !== 'oauth' && !isNewConnection) {
           updates.providerType = 'pi'
           updates.authType = 'api_key'
@@ -200,18 +223,23 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
           const normalized = isBedrockPi ? toBedrockNativeId(bare, regionPrefix) : bare
           return `pi/${normalized}`
         }
-        if (updates.models) {
+        if (Array.isArray(updates.models)) {
           updates.models = updates.models.map(m => typeof m === 'string' ? toPiModelId(m) : { ...m, id: toPiModelId(m.id) })
         }
-        if (updates.defaultModel) {
+        if (typeof updates.defaultModel === 'string') {
           updates.defaultModel = toPiModelId(updates.defaultModel)
+        }
+        // Same convention as defaultModel: on a Pi connection every model id in
+        // config.json carries the `pi/` prefix. `''` ("follow the default") is
+        // left alone rather than turned into a bare `pi/`.
+        if (typeof updates.fastModel === 'string' && updates.fastModel) {
+          updates.fastModel = toPiModelId(updates.fastModel)
         }
       }
 
-      const pendingConnection: LlmConnection = {
-        ...connection,
-        ...updates,
-      }
+      // Same merge the storage layer will apply on save — a plain spread would
+      // keep `null` markers in the pending shape (schema rejects null).
+      const pendingConnection: LlmConnection = applyLlmConnectionUpdate(connection, updates)
 
       if (pendingConnection.providerType === 'pi') {
         const modelIds = (pendingConnection.models ?? []).map(m => typeof m === 'string' ? m : m.id)
@@ -626,6 +654,127 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
     }
   })
 
+  // One prompt in, one answer out. Not streamed: the caller writes the whole answer as a file.
+  // Files named by the caller are read here, so a 4K picture never travels over the wire:
+  // - no files → a plain completion;
+  // - pictures → the named Vision/Omni model, via the workspace wire;
+  // - sound or video → the named Omni model, with any pictures alongside. One media file per
+  //   request (our own rule: a video already carries its soundtrack, and one file fits every
+  //   provider we target).
+  // The model and its connection are always named — no fallback to "the default one".
+  server.handle(
+    RPC_CHANNELS.llm.COMPLETE,
+    async (
+      ctx,
+      request: {
+        prompt: string
+        /** Files to read; images, audio, video and text (text is context). */
+        paths?: string[]
+        connectionSlug?: string
+        model?: string
+        systemPrompt?: string
+        maxTokens?: number
+      },
+    ) => {
+      const model = request.model?.trim()
+      const connectionSlug = request.connectionSlug?.trim()
+      const prompt = request.prompt?.trim()
+      if (!prompt) return { ok: false, message: '需要一句 prompt：想让它回答什么？' }
+      if (!model || !connectionSlug) {
+        return { ok: false, message: '需要显式选择连接和模型' }
+      }
+      try {
+        const paths = Array.isArray(request.paths)
+          ? request.paths.filter((path) => typeof path === 'string' && path.trim().length > 0)
+          : []
+
+        if (paths.length === 0) {
+          const answer = await askWorkspaceModel({
+            instruction: prompt,
+            connectionSlug,
+            model,
+            systemPrompt: request.systemPrompt,
+            maxTokens: request.maxTokens,
+          })
+          return answer.ok && answer.text
+            ? { ok: true, text: answer.text, model: answer.model, connection: answer.connection }
+            : { ok: false, message: answer.message ?? 'No model available to write text' }
+        }
+
+        const workspaceId =
+          ctx.workspaceId ?? deps.windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
+        const images: string[] = []
+        const audios: string[] = []
+        const videos: string[] = []
+        const texts: string[] = []
+        for (const target of paths) {
+          const safePath = await validateFilePath(
+            target,
+            getWorkspaceAllowedDirs(workspaceId, { sessionManager }),
+          )
+          if (!safePath) return { ok: false, message: `找不到文件：${target}` }
+          const kind = mediaKindOfPath(safePath)
+          if (kind === 'image') images.push(safePath)
+          else if (kind === 'audio') audios.push(safePath)
+          else if (kind === 'video') videos.push(safePath)
+          else if (kind === 'text') texts.push(safePath)
+          else return { ok: false, message: `${basename(safePath)} 不是图片、录音、录像或文本。` }
+        }
+
+        // Text references are context, in the order they were attached, ahead of the prompt.
+        const context = await textContextOf(texts)
+        const instruction = context ? `${context}\n\n${prompt}` : prompt
+
+        if (audios.length > 0 || videos.length > 0) {
+          if (audios.length > 1) return { ok: false, message: '一次只能带一段音频。' }
+          if (videos.length > 1) return { ok: false, message: '一次只能带一段视频。' }
+          // One media file per request; checked before reading or converting either file, so a
+          // redundant combination costs nothing.
+          if (audios.length > 0 && videos.length > 0) {
+            return { ok: false, message: OMNI_SINGLE_MEDIA_MESSAGE }
+          }
+          const answer = await askOmniModel({
+            instruction,
+            ...(images.length ? { images: await Promise.all(images.map(imageDataUrlOf)) } : {}),
+            ...(audios[0]
+              ? {
+                  audio: {
+                    data: await audioBytesOf(audios[0], deps),
+                    format: audioFormatOf(audios[0]),
+                  },
+                }
+              : {}),
+            ...(videos[0]
+              ? {
+                  video: {
+                    data: new Uint8Array(await readFile(videos[0])),
+                    format: extensionOf(videos[0]),
+                  },
+                }
+              : {}),
+            model,
+            connectionSlug,
+          })
+          return answer.ok && answer.text
+            ? { ok: true, text: answer.text, model: answer.model, connection: connectionSlug, via: 'omni' }
+            : { ok: false, message: answer.message ?? 'Omni 模型没有给出答案。' }
+        }
+
+        const answer = await askWorkspaceModel({
+          images: await Promise.all(images.map(imageDataUrlOf)),
+          instruction,
+          model,
+          connectionSlug,
+        })
+        return answer.ok && answer.text
+          ? { ok: true, text: answer.text, model: answer.model, connection: answer.connection, via: 'workspace-model' }
+          : { ok: false, message: answer.message ?? '没有可用的模型来生成文本' }
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : String(error) }
+      }
+    },
+  )
+
   // ============================================================
   // ChatGPT OAuth (for Codex chatgptAuthTokens mode)
   // Server-owned: prepare + exchange happen here, browser + callback on client.
@@ -877,4 +1026,73 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       return { success: false }
     }
   })
+}
+
+/** The sound formats the omni wire names; anything else is decoded here first. */
+const OMNI_AUDIO_FORMATS: Record<string, 'mp3' | 'wav' | 'm4a' | 'aac'> = {
+  mp3: 'mp3',
+  wav: 'wav',
+  m4a: 'm4a',
+  aac: 'aac',
+}
+
+function extensionOf(path: string): string {
+  return path.split('.').pop()?.toLowerCase() ?? ''
+}
+
+/** What a file is, by the same extension rule the library uses. */
+function mediaKindOfPath(path: string): 'image' | 'audio' | 'video' | 'text' | null {
+  const kind = kindOfPath(path)
+  return kind === 'other' ? null : kind
+}
+
+/** Text references as context blocks, in the order given; capped so a node cannot carry a book. */
+const MAX_TEXT_CONTEXT_BYTES = 2_000_000
+
+async function textContextOf(files: string[]): Promise<string> {
+  if (files.length === 0) return ''
+  const blocks: string[] = []
+  let total = 0
+  for (const file of files) {
+    const content = await readFile(file, 'utf8')
+    total += Buffer.byteLength(content)
+    if (total > MAX_TEXT_CONTEXT_BYTES) {
+      throw new Error('文本上下文超过 2MB：先精简，或分开生成。')
+    }
+    blocks.push(`<file path="${basename(file)}">\n${content.trim()}\n</file>`)
+  }
+  return blocks.join('\n\n')
+}
+
+async function imageDataUrlOf(path: string): Promise<string> {
+  const mimeType = mimeOfFile(path)
+  if (!mimeType.startsWith('image/')) {
+    throw new Error('这张图片的格式还不能直接读：先转成 png、jpg 或 webp。')
+  }
+  const bytes = await readFile(path)
+  return `data:${mimeType};base64,${bytes.toString('base64')}`
+}
+
+function audioFormatOf(path: string): 'mp3' | 'wav' | 'm4a' | 'aac' {
+  // flac / ogg / opus are not names on the omni wire, so the bytes below are decoded to wav.
+  return OMNI_AUDIO_FORMATS[extensionOf(path)] ?? 'wav'
+}
+
+async function audioBytesOf(path: string, deps: HandlerDeps): Promise<Uint8Array> {
+  if (OMNI_AUDIO_FORMATS[extensionOf(path)]) {
+    return new Uint8Array(await readFile(path))
+  }
+  // The machine already has a decoder (`recording_tool audio` uses the same one): a format the
+  // wire does not name becomes the 16 kHz mono wav it does.
+  const manager = deps.browserPaneManager
+  if (!manager) throw new Error('这段音频需要先转成 wav，而这台机器没有可用的解码器。')
+  const dir = join(tmpdir(), 'craft-listen')
+  await mkdir(dir, { recursive: true })
+  const out = join(dir, `${randomUUID()}.wav`)
+  try {
+    await manager.extractAudio(path, out)
+    return new Uint8Array(await readFile(out))
+  } finally {
+    await rm(out, { force: true })
+  }
 }

@@ -77,9 +77,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Configuration
-BUN_VERSION="bun-v1.3.9"  # Pinned version for reproducible builds
-
 echo "=== Building Craft Agents DMG (${ARCH}) using electron-builder ==="
 if [ "$UPLOAD" = true ]; then
     echo "Will upload to S3 after build"
@@ -97,29 +94,22 @@ echo "Installing dependencies..."
 cd "$ROOT_DIR"
 bun install
 
-# 3. Download Bun binary with checksum verification
-echo "Downloading Bun ${BUN_VERSION} for darwin-${ARCH}..."
-mkdir -p "$ELECTRON_DIR/vendor/bun"
-BUN_DOWNLOAD="bun-darwin-$([ "$ARCH" = "arm64" ] && echo "aarch64" || echo "x64")"
+# 3. Stage the bundled Bun runtime into vendor/bun.
+#    Shared step (scripts/fetch-bun.ts -> scripts/build/common.ts downloadBun):
+#    pinned version + SHA256 verification live in ONE place, so this release
+#    script and the npm `electron:dist:mac` path cannot drift apart.
+echo "Staging bundled Bun for darwin-${ARCH}..."
+cd "$ROOT_DIR"
+bun run scripts/fetch-bun.ts darwin "$ARCH"
 
-# Create temp directory to avoid race conditions
-TEMP_DIR=$(mktemp -d)
-trap "rm -rf $TEMP_DIR" EXIT
-
-# Download binary and checksums
-curl -fSL "https://github.com/oven-sh/bun/releases/download/${BUN_VERSION}/${BUN_DOWNLOAD}.zip" -o "$TEMP_DIR/${BUN_DOWNLOAD}.zip"
-curl -fSL "https://github.com/oven-sh/bun/releases/download/${BUN_VERSION}/SHASUMS256.txt" -o "$TEMP_DIR/SHASUMS256.txt"
-
-# Verify checksum
-echo "Verifying checksum..."
-cd "$TEMP_DIR"
-grep "${BUN_DOWNLOAD}.zip" SHASUMS256.txt | shasum -a 256 -c -
-cd - > /dev/null
-
-# Extract and install
-unzip -o "$TEMP_DIR/${BUN_DOWNLOAD}.zip" -d "$TEMP_DIR"
-cp "$TEMP_DIR/${BUN_DOWNLOAD}/bun" "$ELECTRON_DIR/vendor/bun/"
-chmod +x "$ELECTRON_DIR/vendor/bun/bun"
+# 3b. Fetch the vendored drawio webapp.
+#     It is gitignored and produced only by this script, so it has to exist on
+#     disk before `electron:build` copies resources/ -> dist/resources/: without
+#     it the packaged app ships with no diagram editor. A failed fetch exits
+#     non-zero, which `set -e` turns into a failed build rather than a silent
+#     bundle that is missing it.
+echo "Fetching drawio assets..."
+bun run apps/electron/scripts/fetch-drawio-assets.ts
 
 # 4. Copy SDK from root node_modules (monorepo hoisting)
 # Note: The SDK is hoisted to root node_modules by the package manager.
@@ -209,6 +199,15 @@ done
 echo "Building Electron app..."
 cd "$ROOT_DIR"
 bun run electron:build
+
+# 6b. The office editors are vendored artifacts (gitignored, built from a GenOffice checkout), so a
+# machine that never ran `scripts/build-office-assets.ts` produces an app that silently cannot open
+# a .docx. A release must not ship without them: `--strict` turns the optional blocks into failures.
+echo "Validating assets (a release requires the office editors)..."
+( cd "$ELECTRON_DIR" && bun scripts/validate-assets.ts --strict ) || {
+    echo "❌ Asset validation failed — see the missing blocks above" >&2
+    exit 1
+}
 
 # 7. Package with electron-builder
 echo "Packaging app with electron-builder..."

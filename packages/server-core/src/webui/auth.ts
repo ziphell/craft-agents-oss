@@ -8,12 +8,26 @@
  */
 
 import { SignJWT, jwtVerify } from 'jose'
+import { createHmac } from 'node:crypto'
 
 // ---------------------------------------------------------------------------
 // JWT helpers (via jose library)
 // ---------------------------------------------------------------------------
 
 const JWT_EXPIRY_SECONDS = 86_400 // 24 hours
+
+/**
+ * The key that signs session cookies: HMAC(server token, "webui-session\0" + Web UI password).
+ *
+ * Both credentials take part, so changing either one ends every browser session — from a
+ * browser's point of view, rotating the token and resetting the password are the same act. The
+ * server token is the HMAC key, so a weak password cannot weaken cookie integrity.
+ */
+export function deriveWebuiSessionKey(serverToken: string, webuiPassword: string): string {
+  return createHmac('sha256', serverToken)
+    .update(`webui-session\0${webuiPassword}`, 'utf8')
+    .digest('hex')
+}
 
 export interface JwtPayload {
   sub: string
@@ -54,10 +68,21 @@ export async function createSessionToken(secret: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 const SESSION_COOKIE_NAME = 'craft_session'
+const SESSION_COOKIE_PATTERN = /^craft_session(_\d+)?$/
 
-export function buildSessionCookie(jwt: string, secure: boolean): string {
+/**
+ * Cookie 不区分端口：同一域名的多个实例（例如 example.com:9100 与 :9101）
+ * 都写 craft_session 时会互相覆盖，表现为登录态被对方清空。
+ * 把端口写进 cookie 名，让同一 cookie jar 里的多个实例各用各的。
+ */
+export function sessionCookieName(hostHeader: string | null): string {
+  const port = hostHeader?.match(/:(\d+)$/)?.[1]
+  return port ? `${SESSION_COOKIE_NAME}_${port}` : SESSION_COOKIE_NAME
+}
+
+export function buildSessionCookie(jwt: string, secure: boolean, name = SESSION_COOKIE_NAME): string {
   const parts = [
-    `${SESSION_COOKIE_NAME}=${jwt}`,
+    `${name}=${jwt}`,
     'HttpOnly',
     'SameSite=Strict',
     'Path=/',
@@ -67,9 +92,9 @@ export function buildSessionCookie(jwt: string, secure: boolean): string {
   return parts.join('; ')
 }
 
-export function buildLogoutCookie(secure = false): string {
+export function buildLogoutCookie(secure = false, name = SESSION_COOKIE_NAME): string {
   const parts = [
-    `${SESSION_COOKIE_NAME}=`,
+    `${name}=`,
     'HttpOnly',
     'SameSite=Strict',
     'Path=/',
@@ -79,36 +104,19 @@ export function buildLogoutCookie(secure = false): string {
   return parts.join('; ')
 }
 
-export function extractSessionCookie(cookieHeader: string | null): string | null {
-  if (!cookieHeader) return null
+/** 同时兼容旧的无端口 cookie 名，以及按端口隔离后的名字。 */
+function sessionCookieValues(cookieHeader: string | null): string[] {
+  if (!cookieHeader) return []
+  const values: string[] = []
   for (const pair of cookieHeader.split(';')) {
     const [name, ...rest] = pair.trim().split('=')
-    if (name === SESSION_COOKIE_NAME) return rest.join('=')
+    if (SESSION_COOKIE_PATTERN.test(name)) values.push(rest.join('='))
   }
-  return null
+  return values
 }
 
-// ---------------------------------------------------------------------------
-// Password verification (argon2id via Bun.password)
-// ---------------------------------------------------------------------------
-
-let hashedPassword: string | null = null
-
-/**
- * Hash the login password at startup. Must be called before any auth requests.
- * The hash is stored in memory — the raw password is not retained.
- */
-export async function initPasswordHash(plaintext: string): Promise<void> {
-  hashedPassword = await Bun.password.hash(plaintext, { algorithm: 'argon2id' })
-}
-
-/**
- * Verify a user-supplied password against the pre-hashed password.
- * Uses Bun's built-in argon2id verification (constant-time).
- */
-export async function verifyPassword(input: string): Promise<boolean> {
-  if (!hashedPassword) return false
-  return Bun.password.verify(input, hashedPassword)
+export function extractSessionCookie(cookieHeader: string | null): string | null {
+  return sessionCookieValues(cookieHeader)[0] ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +189,11 @@ export async function validateSession(
   cookieHeader: string | null,
   secret: string,
 ): Promise<JwtPayload | null> {
-  const token = extractSessionCookie(cookieHeader)
-  if (!token) return null
-  return verifyJwt(token, secret)
+  // 同一域名可能同时存在多个端口的 cookie；逐个校验，取能通过签名的那一个。
+  for (const token of sessionCookieValues(cookieHeader)) {
+    if (!token) continue
+    const payload = await verifyJwt(token, secret)
+    if (payload) return payload
+  }
+  return null
 }

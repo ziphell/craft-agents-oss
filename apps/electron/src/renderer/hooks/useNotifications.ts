@@ -186,7 +186,7 @@ export function useNotifications({
     const cleanup = window.electronAPI.onBadgeDraw(async (data) => {
       try {
         const badgedIconDataUrl = await drawBadgeOnIcon(data.iconDataUrl, data.count)
-        await window.electronAPI.setDockIconWithBadge(badgedIconDataUrl)
+        await window.electronAPI.setDockIconWithBadge(badgedIconDataUrl, data.count)
       } catch (error) {
         console.error('[Notifications] Failed to draw badge:', error)
       }
@@ -205,7 +205,7 @@ export function useNotifications({
     const cleanup = window.electronAPI.onBadgeDrawWindows(async (data) => {
       try {
         const overlayDataUrl = drawWindowsBadgeOverlay(data.count)
-        await window.electronAPI.setDockIconWithBadge(overlayDataUrl)
+        await window.electronAPI.setDockIconWithBadge(overlayDataUrl, data.count)
       } catch (error) {
         console.error('[Notifications] Failed to draw Windows badge overlay:', error)
       }
@@ -222,6 +222,10 @@ export function useNotifications({
     if (isWindowFocused) return
     // Don't show if no workspace
     if (!workspaceId) return
+    // A notification belongs to the workspace this window is showing. A client that is only a
+    // device link has no remote-window permission, so a session from another workspace must never
+    // surface here as a completion notification.
+    if (session.workspaceId !== workspaceId) return
     // Don't show if server doesn't have GUI notification handlers
     if (!hasGuiChannels) return
 

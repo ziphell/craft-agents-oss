@@ -71,7 +71,9 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   isProjectsNavigation,
-  isPagesNavigation,
+  isTweaksNavigation,
+  isCreationsNavigation,
+  isBotNavigation,
   DEFAULT_NAVIGATION_STATE,
 } from '../../shared/types'
 import { sessionMetaMapAtom, updateSessionMetaAtom, type SessionMeta } from '@/atoms/sessions'
@@ -95,7 +97,7 @@ export type { Route }
 
 // Re-export navigation state types for consumers
 export type { NavigationState, SessionFilter }
-export { isSessionsNavigation, isSourcesNavigation, isSettingsNavigation, isSkillsNavigation, isAutomationsNavigation, isProjectsNavigation, isPagesNavigation }
+export { isSessionsNavigation, isSourcesNavigation, isSettingsNavigation, isSkillsNavigation, isAutomationsNavigation, isProjectsNavigation, isTweaksNavigation, isCreationsNavigation, isBotNavigation }
 
 // =============================================================================
 // Context
@@ -148,8 +150,6 @@ interface NavigationProviderProps {
   isReady?: boolean
   /** Whether session metadata has been initialized (required for deterministic route restoration) */
   isSessionsReady?: boolean
-  /** Remote workspace ID — when set, sessions with this ID are also considered part of the workspace */
-  remoteWorkspaceId?: string | null
 }
 
 export function NavigationProvider({
@@ -163,7 +163,6 @@ export function NavigationProvider({
   onAutoDeleteEmptySession,
   isReady = true,
   isSessionsReady = true,
-  remoteWorkspaceId,
 }: NavigationProviderProps) {
   const { t } = useTranslation()
   const [, setSession] = useSession()
@@ -628,9 +627,7 @@ export function NavigationProvider({
       if (isSessionsNavigation(nextState) && nextState.details) {
         const freshMetaMap = store.get(sessionMetaMapAtom)
         const meta = freshMetaMap.get(nextState.details.sessionId)
-        const matchesWorkspace = !workspaceId
-          || meta?.workspaceId === workspaceId
-          || (remoteWorkspaceId && meta?.workspaceId === remoteWorkspaceId)
+        const matchesWorkspace = !workspaceId || meta?.workspaceId === workspaceId
         if (!meta || !matchesWorkspace) {
           nextState = { ...nextState, details: null }
         }
@@ -673,7 +670,7 @@ export function NavigationProvider({
 
       return nextState
     },
-    [store, workspaceId, remoteWorkspaceId, getLastSelectedSessionId, getFirstSessionId, getFirstSourceSlug, getFirstSkillSlug]
+    [store, workspaceId, getLastSelectedSessionId, getFirstSessionId, getFirstSourceSlug, getFirstSkillSlug]
   )
 
   // Ref keeps resolveAutoSelection fresh for reconcileFromUrlParams (defined earlier in the file)
@@ -903,7 +900,7 @@ export function NavigationProvider({
       }
 
       // Parse route to NavigationState. Bare `settings` produces `subpage: null` —
-      // navigator-only view in compact mode, App-page fallback on desktop. We
+      // navigator-only view in compact mode, App-design fallback on desktop. We
       // intentionally do NOT auto-redirect to the last-visited subpage; doing so
       // would defeat the compact-mode drill-in UX.
       const newNavState = parseRouteToNavigationState(route)
@@ -1013,7 +1010,27 @@ export function NavigationProvider({
       reconcileFromUrlParamsRef.current(new URLSearchParams(window.location.search))
       lastSemanticHistoryKeyRef.current = getSemanticHistoryKey()
     } else {
-      // UI-triggered: load stored URL for the new workspace, push history entry
+      // UI-triggered: load stored URL for the new workspace, push history entry.
+      //
+      // Unless the URL already names this workspace **and** a route: that is a deep link —
+      // somebody saying where to go — and it outranks wherever they happened to be last time in
+      // this workspace. Without this, reloading ?route=projects lands in whatever session was
+      // stored, and the project page looks unreachable.
+      const currentParams = new URLSearchParams(window.location.search)
+      const isDeepLink =
+        currentParams.get('ws') === workspaceSlug &&
+        Boolean(currentParams.get('route') || currentParams.get('panels'))
+      if (isDeepLink) {
+        reconcileFromUrlParamsRef.current(currentParams)
+        lastSemanticHistoryKeyRef.current = getSemanticHistoryKey()
+        initialRouteRestoredRef.current = true
+        requestAnimationFrame(() => {
+          suppressPushRef.current = false
+          lastSemanticHistoryKeyRef.current = getSemanticHistoryKey()
+        })
+        return
+      }
+
       const savedSearch = storage.get<string>(storage.KEYS.workspaceUrl, '', workspaceSlug)
 
       const url = new URL(window.location.href)
@@ -1202,6 +1219,9 @@ export function NavigationProvider({
           return
         case 'local':
           navigate(routes.view.sourcesLocal(sourceSlug))
+          return
+        case 'web':
+          navigate(routes.view.sourcesWeb(sourceSlug))
           return
       }
     }

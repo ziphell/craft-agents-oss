@@ -5,7 +5,7 @@
  * All agent events flow through a single pure function for consistent state transitions.
  */
 
-import type { Session, SessionEvent, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, SessionStatus, AuthRequest, ToolDisplayMeta } from '../../shared/types'
+import type { Session, SessionEvent, Message, PermissionRequest, CredentialRequest, TypedError, PermissionMode, SessionStatus, SessionMode, AuthRequest, ToolDisplayMeta } from '../../shared/types'
 
 /** Explicit SDK retry boundaries; keep their transport shape authoritative. */
 export type TextDiscardEvent = Extract<SessionEvent, { type: 'text_discard' }>
@@ -47,6 +47,22 @@ export interface TextCompleteEvent {
   text: string
   turnId?: string
   isIntermediate?: boolean
+  parentToolUseId?: string
+  /** Timestamp from main process for consistent ordering with session.jsonl */
+  timestamp?: number
+  /** Authoritative message ID from main process for persistence/branching parity */
+  messageId?: string
+}
+
+/**
+ * Thinking complete event - a finished model reasoning block. Persisted as an
+ * intermediate assistant message flagged with isThinking.
+ */
+export interface ThinkingCompleteEvent {
+  type: 'thinking_complete'
+  sessionId: string
+  text: string
+  turnId?: string
   parentToolUseId?: string
   /** Timestamp from main process for consistent ordering with session.jsonl */
   timestamp?: number
@@ -160,6 +176,16 @@ export interface ProjectIdChangedEvent {
   projectId: string | null
 }
 
+
+/**
+ * Mode changed event (the layer this session is working in changed)
+ */
+export interface ModeChangedEvent {
+  type: 'mode_changed'
+  sessionId: string
+  mode: SessionMode | null
+}
+
 /**
  * Todo state changed event (external metadata change or agent tool)
  */
@@ -176,7 +202,7 @@ export interface SessionStatusChangedEvent {
 export interface SessionMetadataChangedEvent {
   type: 'session_metadata_changed'
   sessionId: string
-  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId'>>
+  changes: Partial<Pick<Session, 'taskNodeCount' | 'taskAwaitingApproval' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'mode'>>
 }
 
 /**
@@ -353,6 +379,15 @@ export interface LLMConnectionChangedEvent {
 }
 
 /**
+ * Browser profile changed event - the account this conversation's browser work uses
+ */
+export interface BrowserProfileChangedEvent {
+  type: 'browser_profile_changed'
+  sessionId: string
+  profileId: string | null
+}
+
+/**
  * Credential request event - prompts user for credentials
  */
 export interface CredentialRequestEvent {
@@ -441,6 +476,29 @@ export interface UserMessageEvent {
 }
 
 /**
+ * Queued message cancelled event - a message that was waiting for replay was
+ * removed from the transcript (so it can be edited and re-sent).
+ */
+export interface QueuedMessageCancelledEvent {
+  type: 'queued_message_cancelled'
+  sessionId: string
+  messageId: string
+  /** Frontend's optimistic message ID for reliable matching */
+  optimisticMessageId?: string
+}
+
+/**
+ * Queued messages state event - the authoritative queue after any change
+ * (enqueue, dequeue, cancel, reorder).
+ */
+export interface QueuedMessagesStateEvent {
+  type: 'queued_messages_state'
+  sessionId: string
+  /** Queue order, first to send first. */
+  order: Array<{ messageId: string; optimisticMessageId?: string }>
+}
+
+/**
  * Message annotation update event
  */
 export interface MessageAnnotationsUpdatedEvent {
@@ -520,6 +578,7 @@ export type AgentEvent =
   | RetryEvent
   | TextDeltaEvent
   | TextCompleteEvent
+  | ThinkingCompleteEvent
   | ToolStartEvent
   | ToolResultEvent
   | CompleteEvent
@@ -530,6 +589,7 @@ export type AgentEvent =
   | SourcesChangedEvent
   | LabelsChangedEvent
   | ProjectIdChangedEvent
+  | ModeChangedEvent
   | SessionStatusChangedEvent
   | SessionMetadataChangedEvent
   | SessionFlaggedEvent
@@ -549,12 +609,15 @@ export type AgentEvent =
   | PermissionModeChangedEvent
   | SessionModelChangedEvent
   | LLMConnectionChangedEvent
+  | BrowserProfileChangedEvent
   | TaskBackgroundedEvent
   | ShellBackgroundedEvent
   | TaskProgressEvent
   | TaskCompletedEvent
   | WorkflowAgentCompletedEvent
   | UserMessageEvent
+  | QueuedMessageCancelledEvent
+  | QueuedMessagesStateEvent
   | MessageAnnotationsUpdatedEvent
   | SessionSharedEvent
   | SessionUnsharedEvent
@@ -573,6 +636,8 @@ export type Effect =
   | { type: 'permission_mode_changed'; sessionId: string; permissionMode: PermissionMode; previousPermissionMode?: PermissionMode; transitionDisplay?: string; modeVersion?: number; changedAt?: string; changedBy?: 'user' | 'system' | 'restore' | 'automation' | 'unknown' }
   | { type: 'restore_input'; text: string }
   | { type: 'toast_error'; message: string }
+  /** A Conductor run parked at a gate node (`kind: approval`) — work stopped until a person answers. */
+  | { type: 'task_awaiting_approval' }
 
 /**
  * Result of processing an event

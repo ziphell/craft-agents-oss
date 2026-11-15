@@ -132,7 +132,6 @@ mock.module('@craft-agent/shared/agent', () => ({
   registerSessionScopedToolCallbacks: () => {},
   cleanupSessionScopedTools: () => {},
   getSessionScopedTools: () => [],
-  normalizeCanonicalBrowserToolName: (name: string) => name,
 }))
 
 mock.module('@craft-agent/shared/agent/backend', () => ({

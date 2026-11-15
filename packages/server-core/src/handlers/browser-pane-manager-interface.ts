@@ -1,14 +1,23 @@
 /**
  * IBrowserPaneManager — interface for browser pane operations used by SessionManager.
  *
- * Covers all 40 methods SessionManager calls on BrowserPaneManager.
+ * Covers all 46 methods SessionManager calls on BrowserPaneManager.
  * The concrete BrowserPaneManager in apps/electron implements this.
  *
- * Structurally compatible with BrowserOwnershipReleaser (domain layer)
- * so releaseBrowserOwnershipOnForcedStop() accepts IBrowserPaneManager.
+ * Structurally compatible with BrowserReleaser (domain layer)
+ * so releaseBrowserOnForcedStop() accepts IBrowserPaneManager.
  */
 
-import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
+import type { BrowserInstanceInfo, BrowserTabSummary, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
+import type {
+  BrowserFetchedResource,
+  BrowserFinishedRecording,
+  BrowserStartRecordingArgs,
+  BrowserStartRecordingResult,
+  BrowserStopRecordingResult,
+  DrawioFormat,
+  DrawioTheme,
+} from '@craft-agent/shared/agent/browser-pane'
 
 // ---------------------------------------------------------------------------
 // Supporting types — minimal subsets of BPM's internal types
@@ -16,11 +25,56 @@ import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
 
 /** Subset of BrowserInstance fields accessed by SessionManager */
 export interface BrowserInstanceSnapshot {
-  ownerType: 'session' | 'manual'
-  ownerSessionId: string | null
   isVisible: boolean
   title: string
   currentUrl: string
+}
+
+/**
+ * One tab of a window: what it is (observation) and what its opener said about it
+ * (declaration). Defined with the rest of the wire shapes so the toolbar, the panel
+ * and the agent all read the same one.
+ */
+export type { BrowserTabSummary }
+
+export interface BrowserTabCreateOptions {
+  /** Where the tab starts. Omitted → `about:blank`, for a caller that navigates. */
+  url?: string
+  /** Whether the new tab comes to the front. Default true. */
+  activate?: boolean
+  /**
+   * The work this tab is opened *for*, when a conversation opened it — omitted means a
+   * person did.
+   *
+   * The default has to be the one that is never wrong to assume: the whole point of the
+   * field is knowing which tabs are not ours to close, and calling somebody else's tab
+   * ours is the mistake that loses work.
+   *
+   * The **work**, not the session: a tab outlives the session that opened it, so
+   * a DAG node's tab says which task and node it is for, and the node's re-run inherits it
+   * instead of orphaning it. `belongsTo.sessionId` is who opened it — the conversation whose
+   * cursor the new tab also starts with.
+   */
+  belongsTo?: TabBelongsTo | null
+  /**
+   * Where it goes in the strip: right after this tab instead of at the end.
+   *
+   * Used by the browser's own window-open channel, where the tab that asked for it is
+   * the one it belongs beside.
+   */
+  afterTabId?: string
+  /** How the browser asked for it, when it was the browser — see `BrowserTabSummary.disposition`. */
+  disposition?: 'link' | 'popup' | null
+  /**
+   * The caller wants *a* tab to use rather than one more tab.
+   *
+   * A window that has never been used already holds the blank tab such a caller is
+   * asking for, so its own tab is the answer. Only the caller can say
+   * which of the two it means: "New page" from the app opens the window if it is not
+   * up, while the rail's `+` is a person asking for one *more* tab in a window they
+   * are looking at.
+   */
+  reuseUntouchedWindow?: boolean
 }
 
 export interface BrowserScreenshotOptions {
@@ -36,7 +90,21 @@ export interface BrowserScreenshotOptions {
 export interface BrowserScreenshotResult {
   imageBuffer: Buffer
   imageFormat: 'png' | 'jpeg'
+  /** Pixel size of the image, in CSS pixels (1:1 with `click-at` coordinates). */
+  imageWidth?: number
+  imageHeight?: number
   metadata?: Record<string, unknown>
+}
+
+/** Print options: the two knobs worth having; paper and margins come from the page's `@page`. */
+export interface BrowserPrintOptions {
+  landscape?: boolean
+  pageRanges?: string
+}
+
+export interface BrowserPrintResult {
+  pdf: Buffer
+  bytes: number
 }
 
 export interface BrowserScreenshotRegionTarget {
@@ -137,29 +205,118 @@ export interface AccessibilitySnapshot {
 // Interface
 // ---------------------------------------------------------------------------
 
+/** How a video is sampled. */
+export interface VideoFrameOptions {
+  /** `timeline` samples on an interval; `changes` keeps only what moved. */
+  mode: 'timeline' | 'changes'
+  /** Sampling interval, ms. */
+  everyMs: number
+  /** Ceiling on frames — a long recording must not become a thousand pictures. */
+  maxFrames: number
+  /**
+   * How much has to change for `changes` mode to keep a frame — `(0, 1]`, smaller keeps more.
+   *
+   * Omitted means the sampler's own default, so a caller that does not care gets exactly what
+   * this mode always did.
+   */
+  changeThreshold?: number
+  /** Where to start, ms. Omitted, from the beginning. */
+  fromMs?: number
+  /** Where to stop, ms. **Omitted means to the end** — nobody can name a duration they don't know. */
+  toMs?: number
+  /** The first frame of the recording, and/or the last, **and nothing else**. Replaces the scan. */
+  first?: boolean
+  last?: boolean
+  /** Longest edge of the output, in pixels. Scales down only, aspect preserved. */
+  maxEdge?: number
+}
+
+export interface ExtractedVideoFrame {
+  /** Position in the recording, ms — the coordinate that makes a sampled frame citable. */
+  offsetMs: number
+  bytes: Uint8Array
+}
+
+export interface VideoFrameExtractionResult {
+  durationMs: number
+  /** The video's size in device pixels, when the decoder reported one. */
+  viewport: { width: number; height: number } | null
+  /** True when the ceiling was reached: what came back is a sample of the recording. */
+  truncated: boolean
+  frames: ExtractedVideoFrame[]
+}
+
+/** The sound taken out of a recording: a 16 kHz mono WAV at the path the caller chose. */
+export interface AudioExtractionResult {
+  path: string
+  durationMs: number
+  sampleRate: number
+  /** Size of the PCM inside the WAV, in bytes. */
+  byteLength: number
+}
+
+/**
+ * What a drawio document can be turned into — see `renderDrawio`.
+ *
+ * The capability surface's own list rather than a second copy of it: a format added there has to reach
+ * this side of the wire or the two disagree at the call that crosses (which is how `xml` was caught).
+ */
+export type DrawioRenderFormat = DrawioFormat
+
+export interface DrawioRenderOptions {
+  /** The document itself: what a `.drawio` file holds. */
+  xml: string
+  format: DrawioRenderFormat
+  /** Draw this page, by the name the document gives it. Omitted, its first page. */
+  page?: string
+  /** Pixels per unit in the output. Omitted, drawio's own 1. */
+  scale?: number
+  /** What the drawing is made for — an SVG states it, a PNG is drawn by it. */
+  theme?: DrawioTheme
+}
+
+export interface RenderedDrawioFile {
+  bytes: Uint8Array
+  mimeType: string
+  /** The suffix the format is written under, `.svg` and friends. */
+  extension: string
+}
+
 export interface IBrowserPaneManager {
   // -- Session lifecycle ---------------------------------------------------
 
-  /** Register a callback that resolves session IDs to file paths */
-  setSessionPathResolver(fn: (sessionId: string) => string | null): void
-
-  /** Destroy all browser instances bound to a session */
+  /**
+   * Let go of a session's marks, holds **and cursors**; nothing is destroyed (the window is
+   * its workspace's, not the session's). Called when the session itself is gone, which is the
+   * only moment its cursor may be dropped: the tab it worked from goes back to being nobody's,
+   * so the next conversation can take it over.
+   */
   destroyForSession(sessionId: string): void
 
   /** Clear agent control overlay and native overlay state for a session */
   clearVisualsForSession(sessionId: string): Promise<void>
 
-  /** Unbind all browser instances from a session (non-destructive) */
+  /**
+   * Let go of a session's marks and holds, keeping its cursors — the between-turns version of
+   * {@link destroyForSession}: the session is still around, so the tab it works from stays its
+   * answer to "where does my next unnamed command go".
+   */
   unbindAllForSession(sessionId: string): void
 
   /** Get or create a browser instance for a session, returning the instance ID */
-  getOrCreateForSession(sessionId: string, options?: { workspaceId?: string | null }): string
+  getOrCreateForSession(
+    sessionId: string,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): string
 
   /**
    * Async equivalent of {@link getOrCreateForSession}. Required for the remote
    * bridge — the WS round-trip can't fit into a sync return.
    */
-  getOrCreateForSessionAsync(sessionId: string, options?: { workspaceId?: string | null }): Promise<string>
+  getOrCreateForSessionAsync(
+    sessionId: string,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): Promise<string>
 
   /** Activate or update the agent control overlay for a session */
   setAgentControl(
@@ -170,13 +327,28 @@ export interface IBrowserPaneManager {
 
   // -- Instance management -------------------------------------------------
 
-  /** Create a browser instance for a session (optionally shown) */
-  createForSession(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): string
+  /**
+   * The window a session works in — its **workspace's browser window**.
+   *
+   * One window per workspace, used by every conversation in it and by the user, whatever the
+   * work is, so this is no longer "make my window": the same id comes back whichever session
+   * asks, and **nothing about the window is written from the caller** — which conversations
+   * are working in it is a fact about its tabs (`BrowserTabSummary.cursorOf` / `lockedBy`).
+   *
+   * `sessionId` may be null: opening a browser by hand is the same window.
+   */
+  createForSession(
+    sessionId: string | null,
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
+  ): string
 
   /**
    * Async equivalent of {@link createForSession}. Required for the remote bridge.
    */
-  createForSessionAsync(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): Promise<string>
+  createForSessionAsync(
+    sessionId: string | null,
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
+  ): Promise<string>
 
   /** Get instance info by ID (sync; local-only). For remote-aware code use {@link getInstanceAsync}. */
   getInstance(id: string): BrowserInstanceSnapshot | undefined
@@ -196,23 +368,11 @@ export interface IBrowserPaneManager {
    */
   listInstancesAsync(): Promise<BrowserInstanceInfo[]>
 
-  /** Focus the bound browser instance for a session, creating if needed */
-  focusBoundForSession(sessionId: string, options?: { workspaceId?: string | null }): string
-
-  /** Async equivalent of {@link focusBoundForSession}. */
-  focusBoundForSessionAsync(sessionId: string, options?: { workspaceId?: string | null }): Promise<string>
-
-  /** Bind a browser instance to a session */
-  bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void
-
   /** Focus a browser instance window */
   focus(id: string): void
 
   /** Destroy a browser instance */
   destroyInstance(id: string): void
-
-  /** Hide a browser instance window */
-  hide(id: string): void
 
   /** Clear agent control overlay for all instances in a session */
   clearAgentControl(sessionId: string): void
@@ -220,39 +380,255 @@ export interface IBrowserPaneManager {
   /** Clear agent control overlay for a specific instance */
   clearAgentControlForInstance(instanceId: string, sessionId?: string): { released: boolean; reason?: string }
 
-  // -- Navigation ----------------------------------------------------------
+  // -- Tabs ----------------------------------------------------------------
 
-  navigate(id: string, url: string): Promise<{ url: string; title: string }>
-  goBack(id: string): Promise<void>
-  goForward(id: string): Promise<void>
+  /**
+   * Add a tab to a window, and return its id.
+   *
+   * A window is a container and a tab is the thing in it: several
+   * pages are worked on at once by being several tabs of one window, rather
+   * than by being several windows.
+   *
+   * A window that holds only its own untouched tab — what a freshly created
+   * window is made of — has nothing to preserve, so the tab is created *there*
+   * instead of beside it: opening something into a new window is one tab, not one
+   * tab and a blank one.
+   */
+  createTab(instanceId: string, options?: BrowserTabCreateOptions): string
+
+  /**
+   * Async equivalent of {@link createTab} — required for the remote bridge, whose
+   * caller needs the real tab id rather than a sentinel.
+   */
+  createTabAsync(instanceId: string, options?: BrowserTabCreateOptions): Promise<string>
+
+  /**
+   * Put one tab of a window on screen.
+   *
+   * Everything a window reports — address, title, console, what its
+   * toolbar actions would act on — is read through the tab that is on screen, so
+   * this is what "show that tab" means. An unknown tab id throws: the tab was
+   * named, so a silent no-op would leave the person looking somewhere else.
+   *
+   * This is the person's verb (and the agent's explicit `tab-activate`). A command
+   * does not go through here: it records where it works from with
+   * {@link setSessionTab} and leaves the display alone.
+   */
+  activateTab(instanceId: string, tabId: string): void
+
+  /**
+   * Record that a conversation works **from** this tab, without moving the window.
+   *
+   * The tab is the one that conversation's next unnamed command lands on, and the one it
+   * holds while it works. Written rather than
+   * inferred because the tab on screen is the person's, and a command acting on it
+   * because they happened to be looking at it is exactly the bug the cursor exists to
+   * prevent.
+   */
+  setSessionTab(instanceId: string, tabId: string, sessionId: string): void
+
+  /** Close one tab of a window. Closing a window's last tab closes the window. */
+  closeTab(instanceId: string, tabId: string): void
+
+  /**
+   * Hand one tab to another conversation: it becomes **that conversation's work**, and the tab
+   * it works from. Only a tab that is the caller's own work or nobody's
+   * can be handed on; whether the receiver is a session worth handing to is the session layer's
+   * call, which is also where the receiver's work is resolved (`to` carries it).
+   */
+  assignTab(instanceId: string, tabId: string, to: TabBelongsTo, by: TabBelongsTo): void
+
+  /** A window's tabs, in the order they were opened, with the active one marked. */
+  listTabs(instanceId: string): BrowserTabSummary[]
+
+  /** Async equivalent of {@link listTabs} — required for the remote bridge. */
+  listTabsAsync(instanceId: string): Promise<BrowserTabSummary[]>
+
+  // -- Navigation ----------------------------------------------------------
+  //
+  // Every method below that acts on a tab takes a trailing `tabId` — **the tab it acts
+  // on** — and every one of them means the tab on screen when it is left out.
+  //
+  // Named rather than looked up, because the two are no longer the same thing: a window
+  // holds several tabs and the person is free to read one while a conversation works on
+  // another. The caller resolves it once, with
+  // `pickCommandTarget` — the conversation's own tab, and only the tab on screen when it
+  // has none — and passes it, so there is one decision and one place it is made. The
+  // person's own calls (the toolbar) name nothing and get the tab they are looking at.
+
+  navigate(id: string, url: string, tabId?: string): Promise<{ url: string; title: string }>
+  goBack(id: string, tabId?: string): Promise<void>
+  goForward(id: string, tabId?: string): Promise<void>
+  /**
+   * Reload the page in an instance.
+   *
+   * Fire-and-forget, like the toolbar's own reload: nothing waits for a document
+   * to finish loading, and a caller that needs to act on the reloaded document
+   * reads it afterwards.
+   */
+  reload(id: string, tabId?: string): void
 
   // -- Interaction ---------------------------------------------------------
 
-  getAccessibilitySnapshot(id: string): Promise<AccessibilitySnapshot>
-  clickElement(id: string, ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }): Promise<void>
-  clickAtCoordinates(id: string, x: number, y: number): Promise<void>
-  drag(id: string, x1: number, y1: number, x2: number, y2: number): Promise<void>
-  fillElement(id: string, ref: string, value: string): Promise<void>
-  typeText(id: string, text: string): Promise<void>
-  selectOption(id: string, ref: string, value: string): Promise<void>
-  setClipboard(id: string, text: string): Promise<void>
-  getClipboard(id: string): Promise<string>
-  scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount?: number): Promise<void>
-  sendKey(id: string, args: BrowserKeyArgs): Promise<void>
-  uploadFile(id: string, ref: string, filePaths: string[]): Promise<unknown>
-  evaluate(id: string, expression: string): Promise<unknown>
+  getAccessibilitySnapshot(id: string, tabId?: string): Promise<AccessibilitySnapshot>
+  clickElement(id: string, ref: string, options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number }, tabId?: string): Promise<void>
+  clickAtCoordinates(id: string, x: number, y: number, tabId?: string): Promise<void>
+  drag(id: string, x1: number, y1: number, x2: number, y2: number, tabId?: string): Promise<void>
+  fillElement(id: string, ref: string, value: string, tabId?: string): Promise<void>
+  typeText(id: string, text: string, tabId?: string): Promise<void>
+  selectOption(id: string, ref: string, value: string, tabId?: string): Promise<void>
+  setClipboard(id: string, text: string, tabId?: string): Promise<void>
+  getClipboard(id: string, tabId?: string): Promise<string>
+  scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount?: number, tabId?: string): Promise<void>
+  sendKey(id: string, args: BrowserKeyArgs, tabId?: string): Promise<void>
+  uploadFile(id: string, ref: string, filePaths: string[], tabId?: string): Promise<unknown>
+  evaluate(id: string, expression: string, tabId?: string): Promise<unknown>
+  /** Bytes from the window's own session — its cookies, no page CORS. See `BrowserPaneFns`. */
+  fetchResource(
+    id: string,
+    url: string,
+    options?: { referrer?: string; maxBytes?: number },
+    tabId?: string,
+  ): Promise<BrowserFetchedResource>
+
+  /**
+   * Prompt the user to click an element on the page. Resolves with the picked
+   * element's stable selector + geometry, or `null` on cancel/timeout.
+   */
+  pickElement(id: string, options?: { timeoutMs?: number; pollMs?: number }, tabId?: string): Promise<PickedElement | null>
+
+  // -- Persistent injection -------------------------------------------------
+
+  /**
+   * Register `source` to run in every new document of this instance, before the
+   * page's own scripts. This is what makes an injected script survive a reload.
+   *
+   * `key` is caller-chosen; re-registering the same key replaces the previous
+   * script so re-applying an edited script is idempotent.
+   *
+   * @returns the underlying CDP identifier
+   */
+  addInitScript(id: string, key: string, source: string, tabId?: string): Promise<string>
+
+  /**
+   * Remove every init script whose key starts with `keyPrefix`.
+   * @returns the keys that were removed
+   */
+  clearInitScripts(id: string, keyPrefix: string, tabId?: string): Promise<string[]>
+
+  /**
+   * Run `fn` immediately before this manager reloads a tab, and wait for it.
+   *
+   * A reload is the one request that cannot be answered after it starts: the event a caller
+   * learns about is `did-navigate`, which is the commit — the document already exists, and
+   * its init scripts have already run. So whatever has to be inside that document (the
+   * tweaks carrier's registration) is written here, before the reload is issued. The reload
+   * itself stays fire-and-forget; this only delays it by the work the hook does.
+   *
+   * Optional: hosts with no in-process browser (the null and remote managers) have no reload
+   * to hold, and no carrier to answer it.
+   */
+  setBeforeReload?(fn: (instanceId: string, tabId: string) => Promise<void>): void
+
+  // -- Video frames ---------------------------------------------------------
+
+  /**
+   * Sample frames out of a video the user recorded elsewhere.
+   *
+   * Decoding is Chromium's, so nothing here depends on ffmpeg being installed — and a
+   * codec this Chromium cannot read (ProRes always; HEVC on a machine with no hardware
+   * decoder for it) fails with a message that says so rather than producing a truncated
+   * capture.
+   *
+   * The bytes come back with their offsets; where they are written is the
+   * caller's business, which is the same shape as `capturePage`.
+   */
+  extractVideoFrames(filePath: string, options: VideoFrameOptions): Promise<VideoFrameExtractionResult>
+
+  /**
+   * Take a recording's sound out, as a 16 kHz mono WAV at `outPath`.
+   *
+   * Same decoder, same codec limits as `extractVideoFrames`: a clip Chromium cannot open fails with
+   * a sentence, and a clip with no audio track is told apart from one that cannot be read at all.
+   * The file is written by the host that decoded it, because the bytes are its own.
+   */
+  extractAudio(filePath: string, outPath: string): Promise<AudioExtractionResult>
+
+  // -- Recording ------------------------------------------------------------
+
+  /**
+   * Record one of this conversation's tabs, and keep recording it.
+   *
+   * The recording belongs to `(sessionId, tabId)`, which is what lets the person record the same
+   * tab at the same time without either touching the other. `wait` decides the shape of the
+   * answer: without it the call returns once it is recording, with it the call returns when the
+   * recording ends.
+   *
+   * `dir` is where the file goes, decided by the caller — this layer knows windows and tabs, not
+   * where a conversation keeps its files.
+   */
+  startRecordingForSession(
+    sessionId: string,
+    args: BrowserStartRecordingArgs,
+    /**
+     * Which window to record in — the caller's **workspace's**, like every other browser call.
+     * Required in practice: the window is picked by workspace alone, so omitting it resolves (and
+     * creates) the `workspaceId === null` window instead of the one the caller works in.
+     */
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): Promise<BrowserStartRecordingResult>
+
+  /** End one early. `--ttl` is the ordinary end; this is "it is done now". */
+  stopRecordingForSession(sessionId: string, tabId: string): Promise<BrowserStopRecordingResult>
+
+  /**
+   * Wait for one of this conversation's recordings to end.
+   *
+   * The other half of `wait: false`: that answers at the start so a turn is not held open, and
+   * this is how whoever started it hears about the end. Resolves `null` when nothing is recording
+   * that tab — including when it already ended before this was asked.
+   *
+   * Shape of `pick`: a call that may sit unanswered for a while, rather than a poll.
+   */
+  waitForRecordingEnd(sessionId: string, tabId: string): Promise<BrowserFinishedRecording | null>
+
+  /** End everything one conversation is recording, because it is going away. */
+  endRecordingsForSession(sessionId: string): void
+
+  // -- Diagrams -------------------------------------------------------------
+
+  /**
+   * A `.drawio` document → SVG, an editable SVG, a PNG or a standalone page.
+   *
+   * Drawing is drawio's, in a hidden window of its own — so this works in a session that has
+   * never opened a window, and nothing here reimplements an exporter.
+   */
+  renderDrawio(options: DrawioRenderOptions): Promise<RenderedDrawioFile>
 
   // -- Screenshot ----------------------------------------------------------
 
-  screenshot(id: string, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult>
-  screenshotRegion(id: string, target: BrowserScreenshotRegionTarget): Promise<BrowserScreenshotResult>
+  screenshot(id: string, options?: BrowserScreenshotOptions, tabId?: string): Promise<BrowserScreenshotResult>
+  screenshotRegion(id: string, target: BrowserScreenshotRegionTarget, tabId?: string): Promise<BrowserScreenshotResult>
+  /** The page as a PDF document — the whole page, laid out for printing. */
+  printPdf(id: string, options?: BrowserPrintOptions, tabId?: string): Promise<BrowserPrintResult>
 
   // -- Monitoring ----------------------------------------------------------
 
-  getConsoleLogs(id: string, options?: BrowserConsoleOptions): BrowserConsoleEntry[]
-  windowResize(id: string, width: number, height: number): { width: number; height: number }
-  getNetworkLogs(id: string, options?: BrowserNetworkOptions): BrowserNetworkEntry[]
-  waitFor(id: string, args: BrowserWaitArgs): Promise<BrowserWaitResult>
+  getConsoleLogs(id: string, options?: BrowserConsoleOptions, tabId?: string): BrowserConsoleEntry[]
+  /**
+   * Give one tab's view a viewport. When that tab is the one on screen the window follows (it has to
+   * — that tab's viewport *is* the window's page area); when it is not, only the view is resized and
+   * the person's window is left alone.
+   */
+  resizeViewport(id: string, width: number, height: number, tabId?: string): { width: number; height: number }
+  getNetworkLogs(id: string, options?: BrowserNetworkOptions, tabId?: string): BrowserNetworkEntry[]
+  waitFor(id: string, args: BrowserWaitArgs, tabId?: string): Promise<BrowserWaitResult>
+  /**
+   * What the window's workspace has downloaded, oldest first.
+   *
+   * No tab: a download is not the tab's — it outlives the window it was started in, and
+   * both readers (the chrome's list and the agent's `downloads`) mean the window.
+   */
   getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]>
-  detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }>
+  detectSecurityChallenge(id: string, tabId?: string): Promise<{ detected: boolean; provider: string; signals: string[] }>
 }

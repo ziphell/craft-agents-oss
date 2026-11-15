@@ -35,6 +35,41 @@ describe('session tool filtering helpers', () => {
     expect(SESSION_TOOL_DEFS.some(d => d.name === 'decide' && d.executionMode === 'registry' && d.readOnly === true)).toBe(true);
   });
 
+  it('hides project-scoped tools when the conversation has no project', () => {
+    const projectNames = ['reel_tool'];
+    const without = getSessionToolDefs({ hasProject: false }).map(d => d.name);
+    const withProject = getSessionToolDefs({ hasProject: true }).map(d => d.name);
+
+    for (const name of projectNames) {
+      expect(without.includes(name)).toBe(false);
+      expect(withProject.includes(name)).toBe(true);
+    }
+    // Media generation follows the conversation's content root, so it is offered either way.
+    expect(without.includes('media_tool')).toBe(true);
+    // A caller that does not know the binding keeps the tools (tests, hosts).
+    expect(getSessionToolDefs().some(d => d.name === 'media_tool')).toBe(true);
+    expect(
+      getToolDefsAsJsonSchema({ prefix: 'mcp__session__', hasProject: false }).some(
+        d => d.name === 'mcp__session__reel_tool',
+      ),
+    ).toBe(false);
+  });
+
+  it('hides the device door on a hub that has never paired a device', () => {
+    const without = getSessionToolDefs({ hasDevices: false }).map(d => d.name);
+    const withDevices = getSessionToolDefs({ hasDevices: true }).map(d => d.name);
+
+    expect(without.includes('device_tool')).toBe(false);
+    expect(withDevices.includes('device_tool')).toBe(true);
+    // A caller that does not know the pairing state keeps the tool (tests, hosts).
+    expect(getSessionToolDefs().some(d => d.name === 'device_tool')).toBe(true);
+    expect(
+      getToolDefsAsJsonSchema({ prefix: 'mcp__session__', hasDevices: false }).some(
+        d => d.name === 'mcp__session__device_tool',
+      ),
+    ).toBe(false);
+  });
+
   it('name set and registry stay aligned for filtered output', () => {
     const names = getSessionToolNames({ includeDeveloperFeedback: false });
     const registry = getSessionToolRegistry({ includeDeveloperFeedback: false });
@@ -74,14 +109,6 @@ describe('session tool filtering helpers', () => {
     expect(blocked.has('source_oauth_trigger')).toBe(true);
     expect(blocked.has('source_credential_prompt')).toBe(true);
     expect(blocked.has('spawn_session')).toBe(true);
-
-    // Pages: reads are Explore-safe, mutations are not
-    expect(allowed.has('list_pages')).toBe(true);
-    expect(allowed.has('get_page')).toBe(true);
-    expect(blocked.has('create_page')).toBe(true);
-    expect(blocked.has('update_page')).toBe(true);
-    expect(blocked.has('write_page_data')).toBe(true);
-    expect(blocked.has('delete_page')).toBe(true);
   });
 
   it('safe-mode helpers support MCP prefixing', () => {

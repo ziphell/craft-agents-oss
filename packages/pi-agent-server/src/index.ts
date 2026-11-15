@@ -71,6 +71,7 @@ import { queryMiniModel } from './mini-model-query.ts';
 import {
   CRAFT_PI_EPHEMERAL_QUERY_DEADLINE_MS,
   createCraftSettingsManager,
+  resolveGitBashPath,
 } from './session-settings.ts';
 import {
   EphemeralQueryCancelledError,
@@ -83,7 +84,7 @@ import {
   buildCustomEndpointModelDef,
   normalizeCustomEndpointModelEntry,
   stripPiPrefix,
-  type CustomEndpointApi,
+  type CustomEndpointModelConfig,
   type CustomEndpointModelEntry,
   type CustomEndpointModelOverrides,
 } from './custom-endpoint-models.ts';
@@ -95,6 +96,10 @@ import { buildCallLlmRequest } from '../../shared/src/agent/llm-tool.ts';
 import type { LLMQueryRequest, LLMQueryResult } from '../../shared/src/agent/llm-tool.ts';
 import { PI_TOOL_NAME_MAP, THINKING_TO_PI } from '../../shared/src/agent/backend/pi/constants.ts';
 import { getDefaultSummarizationModel } from '../../shared/src/config/models.ts';
+import { getWebSearchProvider, getWebSearchEnabled, getWebFetchEnabled, getWebFetchMode } from '../../shared/src/config/storage.ts';
+import { getCredentialManager } from '../../shared/src/credentials/manager.ts';
+import type { WebSearchProvider } from './tools/search/types.ts';
+import type { CustomEndpointConfig } from '../../shared/src/config/llm-connections.ts';
 import { createWebFetchTool } from './tools/web-fetch.ts';
 import { resolveSearchProvider } from './tools/search/resolve-provider.ts';
 import { createSearchTool } from './tools/search/create-search-tool.ts';
@@ -114,6 +119,9 @@ import { adaptCredentialForPiSdk, type PiCredential } from './adapt-credential.t
 // Types — JSONL Protocol
 // ============================================================
 
+/** Custom endpoint protocol — determines which streaming adapter Pi SDK uses */
+type CustomEndpointApi = CustomEndpointConfig['api'];
+
 /** Init message from main process — configures the Pi agent server */
 interface InitMessage {
   type: 'init';
@@ -127,6 +135,7 @@ interface InitMessage {
   workingDirectory: string;
   plansFolderPath: string;
   miniModel?: string;
+  imageModel?: string;
   agentDir?: string;
   providerType?: string;
   authType?: string;
@@ -135,8 +144,8 @@ interface InitMessage {
   branchFromSdkSessionId?: string;
   branchFromSessionPath?: string;
   branchFromSdkTurnId?: string;
-  customEndpoint?: { api: CustomEndpointApi; supportsImages?: boolean };
-  customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
+  customEndpoint?: CustomEndpointConfig;
+  customModels?: CustomEndpointModelConfig[];
   piAuth?: { provider: string; credential: PiCredential };
 }
 
@@ -147,8 +156,8 @@ interface RuntimeConfigUpdateMessage {
   providerType?: string;
   authType?: string;
   baseUrl?: string;
-  customEndpoint?: { api: CustomEndpointApi; supportsImages?: boolean };
-  customModels?: Array<string | { id: string; contextWindow?: number; supportsImages?: boolean }>;
+  customEndpoint?: CustomEndpointConfig;
+  customModels?: CustomEndpointModelConfig[];
 }
 
 /** Messages from main process (stdin) */
@@ -240,6 +249,14 @@ interface OutboundRuntimeConfigUpdateResult {
   errorMessage?: string;
 }
 interface OutboundSessionIdUpdate { type: 'session_id_update'; sessionId: string }
+/**
+ * The aborted run has fully unwound: its trailing `message_end` / `agent_end`
+ * have been forwarded, so no further event from that run can arrive. The host
+ * waits for this before it starts the next turn — otherwise the aborted run's
+ * `agent_end` lands in the *new* turn's event queue and closes it before the
+ * model answers (hit by "send now" on a queued message).
+ */
+interface OutboundAbortSettled { type: 'abort_settled' }
 interface OutboundError { type: 'error'; message: string; code?: string; id?: string }
 
 type OutboundMessage =
@@ -256,6 +273,7 @@ type OutboundMessage =
   | OutboundRuntimeConfigUpdateResult
   | OutboundSessionIdUpdate
   | PiLargeResultGateRequest
+  | OutboundAbortSettled
   | OutboundError;
 
 // ============================================================
@@ -340,6 +358,39 @@ function debugLog(message: string): void {
 // main process for the parts the agent's intent needs before summarizing.
 const largeResultGate = createLargeResultGateClient(send);
 setLargeResultFilter(largeResultGate.filter);
+// ============================================================
+// Abort handshake
+// ============================================================
+
+// Upper bound on how long the host may be held back after an abort when the SDK
+// never reports the aborted run's `agent_end` (e.g. it threw instead).
+const ABORT_SETTLE_FALLBACK_MS = 2_000;
+
+// True from the moment an abort is accepted until the aborted run's trailing
+// events (message_end error + agent_end) have been forwarded to the host.
+let abortSettlePending = false;
+let abortSettleTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Whether an SDK run is streaming right now (agent_start … agent_end). Used to
+// tell "nothing to unwind" apart from "the agent_end just hasn't been
+// dispatched yet" — settling on the latter would let the stale event through.
+let abortRunActive = false;
+
+/**
+ * Tell the host the aborted run is fully unwound, so it can start the next turn.
+ * Idempotent: whichever of agent_end / abort() returning / the fallback timer
+ * gets here first wins.
+ */
+function settleAbort(why: string): void {
+  if (!abortSettlePending) return;
+  abortSettlePending = false;
+  if (abortSettleTimer) {
+    clearTimeout(abortSettleTimer);
+    abortSettleTimer = null;
+  }
+  debugLog(`Abort settled (${why})`);
+  send({ type: 'abort_settled' });
+}
 
 /** Find the most recent .jsonl session file in a directory. */
 function findMostRecentSessionFile(sessionDir: string): string | null {
@@ -413,7 +464,7 @@ function stopCallbackServer(): void {
 
 function resolvedCwd(): string {
   const wd = initConfig?.cwd || initConfig?.workingDirectory || process.cwd();
-  if (wd.startsWith('~/')) return join(homedir(), wd.slice(2));
+  if (wd.startsWith('~/') || wd.startsWith('~\\')) return join(homedir(), wd.slice(2));
   if (wd === '~') return homedir();
   return wd;
 }
@@ -480,12 +531,48 @@ function isLocalhostUrl(url: string): boolean {
 let customEndpointModelIds: Set<string> = new Set();
 
 /**
+ * Per-model parameters the connection carries, keyed by model id (Craft's `pi/`
+ * prefix stripped). `resolvePiModel` applies them on top of whatever the registry
+ * resolves for that id, so they are not a custom-endpoint thing — they are what a
+ * user wrote about a model, and a built-in provider's catalog entry is the place
+ * that needs them most (an endpoint that does take images while the catalog says
+ * it does not, a different context window, …).
+ */
+const customModelOverrides = new Map<string, CustomEndpointModelOverrides>();
+
+/**
+ * The connection's model entries, normalized once for every consumer. A
+ * connection that lists no models still names one to run.
+ */
+function connectionModelEntries(): CustomEndpointModelEntry[] {
+  if (!initConfig) return [];
+  return (initConfig.customModels?.length ? initConfig.customModels : [initConfig.model || 'default'])
+    .map(normalizeCustomEndpointModelEntry);
+}
+
+/**
+ * Remember every per-model parameter the connection carries, for **every**
+ * connection type. Called on init and on every runtime update so a parameter
+ * written in `config.json` outlives a save / a re-registration.
+ */
+function rememberModelOverrides(entries: CustomEndpointModelEntry[]): void {
+  customModelOverrides.clear();
+  for (const m of entries) {
+    // Everything except the id is a parameter override. Forwarding the whole
+    // rest (rather than a hand-picked subset) is what keeps a newly supported
+    // parameter from silently stopping at this line.
+    const { id: _id, ...params } = m;
+    if (Object.keys(params).length > 0) {
+      customModelOverrides.set(m.id, params);
+    }
+  }
+}
+
+/**
  * Register (or re-register) the custom-endpoint provider with the given models.
  * Note: registerProvider replaces the entire provider, so we maintain a Set of all
  * known model IDs and always pass the full set.
  */
-const customModelOverrides = new Map<string, CustomEndpointModelOverrides>();
-
 function registerCustomEndpointModels(
   registry: PiModelRegistry,
   api: CustomEndpointApi,
@@ -494,25 +581,16 @@ function registerCustomEndpointModels(
 ): void {
   for (const m of models) {
     customEndpointModelIds.add(m.id);
-    if (m.contextWindow || m.supportsImages !== undefined) {
-      customModelOverrides.set(m.id, {
-        ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
-        ...(m.supportsImages !== undefined ? { supportsImages: m.supportsImages } : {}),
-      });
-    }
   }
   const allIds = [...customEndpointModelIds];
+  const providerHeaders = initConfig?.customEndpoint?.headers;
   registry.registerProvider('custom-endpoint', {
     baseUrl,
     apiKey: resolveCustomEndpointApiKey(),
     api,
     authHeader: true,
-    models: allIds.map(id => buildCustomEndpointModelDef(
-      id,
-      { supportsImages: initConfig?.customEndpoint?.supportsImages === true },
-      customModelOverrides.get(id),
-      api,
-    )),
+    ...(providerHeaders ? { headers: providerHeaders } : {}),
+    models: allIds.map(id => buildCustomEndpointModelDef(id, customModelOverrides.get(id), api)),
   });
   debugLog(`Registered custom endpoint: ${baseUrl} with ${allIds.length} model(s) [${allIds.join(', ')}], api: ${api}`);
 }
@@ -575,15 +653,16 @@ async function createAuthenticatedRuntime(): Promise<{
       // by creating synthetic Model<Api> objects that the SDK requires. One-time per cache
       // lifetime: later config changes re-register via update_runtime_config, which
       // operates on this same shared registry.
+      //
+      // The connection's per-model parameters are remembered first, and for every
+      // connection type — a built-in provider has no registration step, but its model
+      // entries still carry what the user stated about those models.
+      const modelEntries = connectionModelEntries();
+      rememberModelOverrides(modelEntries);
       const hasCustomEndpoint = !!initConfig?.baseUrl?.trim();
       if (hasCustomEndpoint && initConfig?.customEndpoint) {
-        const { api } = initConfig.customEndpoint;
-        const modelEntries: CustomEndpointModelEntry[] = (initConfig.customModels?.length
-          ? initConfig.customModels
-          : [initConfig.model || 'default']
-        ).map(normalizeCustomEndpointModelEntry);
         customEndpointModelIds = new Set();  // Reset on fresh registry creation
-        registerCustomEndpointModels(modelRegistry, api, initConfig.baseUrl!.trim(), modelEntries);
+        registerCustomEndpointModels(modelRegistry, initConfig.customEndpoint.api, initConfig.baseUrl!.trim(), modelEntries);
       } else if (hasCustomEndpoint && !initConfig?.customEndpoint) {
         debugLog('Custom endpoint without protocol config — models may not resolve. Set customEndpoint.api for proper routing.');
       }
@@ -622,20 +701,52 @@ async function ensureSession(): Promise<AgentSession> {
   // The active model is passed so the ChatGPT backend search provider uses a model the
   // account supports instead of a hardcoded one (craft-agents-oss#1023). Resolved per call
   // (alongside the provider) so set_model / token_update refreshes are picked up live.
+  // The provider preference from Settings → AI is read per call too, so changing it
+  // applies to the next search without a restart.
   const activeSearchModel = () => (initConfig?.model ? stripPiPrefix(initConfig.model) : undefined);
+  let lastResolvedSearchProvider: WebSearchProvider | null = null;
+  const resolveSearchNow = (deepSeekKey?: string) => {
+    const provider = resolveSearchProvider(
+      initConfig?.piAuth,
+      activeSearchModel(),
+      getWebSearchProvider(),
+      deepSeekKey,
+    );
+    lastResolvedSearchProvider = provider;
+    return provider;
+  };
   const searchProvider = {
     get name() {
-      return resolveSearchProvider(initConfig?.piAuth, activeSearchModel()).name;
+      return (lastResolvedSearchProvider ?? resolveSearchNow()).name;
     },
     async search(query: string, count: number) {
-      return resolveSearchProvider(initConfig?.piAuth, activeSearchModel()).search(query, count);
+      // The explicit DeepSeek choice uses the key stored in Settings → AI rather
+      // than the active model connection's key. Read per call so a key entered
+      // mid-session applies without a restart.
+      let deepSeekKey: string | undefined;
+      if (getWebSearchProvider() === 'deepseek') {
+        deepSeekKey = (await getCredentialManager().getSearchApiKey('deepseek')) ?? undefined;
+      }
+      return resolveSearchNow(deepSeekKey).search(query, count);
     },
   };
-  const searchTool = createSearchTool(searchProvider);
-  const webFetchTool = createWebFetchTool(() =>
-    initConfig ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId) : null
+  const searchTool = createSearchTool(
+    searchProvider,
+    undefined,
+    () => getWebSearchEnabled(),
   );
-  const webTools = [searchTool, webFetchTool];
+  const webFetchTool = createWebFetchTool(
+    () => (initConfig ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId) : null),
+    () => getWebFetchEnabled(),
+    () => getWebFetchMode(),
+    () => getCredentialManager().getFetchApiKey('deepseek'),
+  );
+  // A door that is turned off is not offered at all: the tool list is the biggest
+  // part of what the model sees, and every call could only refuse.
+  const webTools = [
+    ...(getWebSearchEnabled() ? [searchTool] : []),
+    ...(getWebFetchEnabled() ? [webFetchTool] : []),
+  ];
 
   // Pi SDK 0.70.0 registration contract:
   //   - `customTools` accepts ToolDefinition[] — our hook-wrapped objects go here
@@ -646,9 +757,13 @@ async function ensureSession(): Promise<AgentSession> {
   //     our hooked versions take effect (permissions + large-response summarization).
   //   - Do NOT pass tool *objects* to `tools` — `allowedToolNames = new Set(options.tools)`
   //     then `.has(name)` returns false for every string lookup → zero tools active.
+  // Windows: hand the Bash tool an explicit Git Bash path when one is found,
+  // so per-user installs (`%LOCALAPPDATA%\Programs\Git`) work; without this the
+  // SDK's own resolver only checks Program Files and PATH.
+  const gitBashPath = resolveGitBashPath();
   const builtinDefs = [
     createReadToolDefinition(cwd),
-    createBashToolDefinition(cwd),
+    createBashToolDefinition(cwd, gitBashPath ? { shellPath: gitBashPath } : undefined),
     createEditToolDefinition(cwd),
     createWriteToolDefinition(cwd),
     createGrepToolDefinition(cwd),
@@ -721,7 +836,7 @@ async function ensureSession(): Promise<AgentSession> {
   // Set model if specified
   if (initConfig.model) {
     try {
-      const piModel = resolvePiModel(modelRegistry, initConfig.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint());
+      const piModel = resolvePiModel(modelRegistry, initConfig.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
       if (piModel) {
         // Verify resolved model's provider is compatible with the authenticated provider.
         // Without this, a model that resolves to a different provider (e.g. azure-openai-responses
@@ -1018,7 +1133,7 @@ async function queryLlm(
   if (initConfig.piAuth) {
     const authProvider = initConfig.piAuth.provider;
     const bareModel = model.startsWith('pi/') ? model.slice(3) : model;
-    const resolved = resolvePiModel(modelRegistry, bareModel, authProvider, shouldPreferCustomEndpoint());
+    const resolved = resolvePiModel(modelRegistry, bareModel, authProvider, shouldPreferCustomEndpoint(), customModelOverrides);
     const resolvedProvider = (resolved as any)?.provider;
     const isCompatible = resolvedProvider === authProvider || resolvedProvider === 'custom-endpoint';
     if (!resolved || !isCompatible || isDeniedMiniModelId(model, piAuthProvider)) {
@@ -1042,7 +1157,7 @@ async function queryLlm(
     // fall back to its own internal default (which may require a provider
     // the user hasn't authenticated with, surfacing as a misleading
     // "No API key found for <provider>" error).
-    const piModel = resolvePiModel(modelRegistry, modelId, initConfig!.piAuth?.provider, shouldPreferCustomEndpoint());
+    const piModel = resolvePiModel(modelRegistry, modelId, initConfig!.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
     if (!piModel) {
       throw new Error(
         `Could not resolve mini model "${modelId}" for provider "${initConfig!.piAuth?.provider ?? '(unknown)'}"`,
@@ -1128,8 +1243,16 @@ async function queryLlm(
         }
       });
 
+      // Frames ride with the prompt, in order. This SDK takes them as a flat list, so an image is
+      // paired with its moment by position — which is why the prompt text names the offsets too.
+      const images = (request.images ?? []).map((image) => ({
+        type: 'image' as const,
+        data: image.data,
+        mimeType: image.mimeType,
+      }));
+
       lifecycle.throwIfCancelled();
-      await ephemeralSession.prompt(request.prompt);
+      await ephemeralSession.prompt(request.prompt, images.length > 0 ? { images } : undefined);
       lifecycle.throwIfCancelled();
       debugLog(`[queryLlm] Result length: ${result.trim().length}`);
 
@@ -1174,7 +1297,11 @@ async function preExecuteCallLlm(input: Record<string, unknown>): Promise<LLMQue
   const sessionPath = initConfig
     ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId)
     : undefined;
-  const request = await buildCallLlmRequest(input, { backendName: 'Pi', sessionPath });
+  const request = await buildCallLlmRequest(input, {
+    backendName: 'Pi',
+    sessionPath,
+    getImageModel: () => initConfig?.imageModel,
+  });
   return runEphemeralLlmQuery(nextLocalEphemeralQueryId('callback'), request);
 }
 
@@ -1214,6 +1341,20 @@ function extractToolExecutionMetadata(args: Record<string, unknown> | undefined)
 
 function handleSessionEvent(event: AgentSessionEvent): void {
   let forwardedEvent: OutboundAgentEvent = event;
+
+  // Track run boundaries for the abort handshake (see abortRunActive). Mid-run
+  // events count as "live" too, so a run whose agent_start we somehow missed is
+  // still waited for instead of being declared finished.
+  if (event.type === 'agent_end') {
+    abortRunActive = false;
+  } else if (
+    event.type === 'agent_start' ||
+    event.type === 'turn_start' ||
+    event.type === 'message_start' ||
+    event.type === 'tool_execution_start'
+  ) {
+    abortRunActive = true;
+  }
 
   // Log API errors for debugging and attach provider-native turn anchor for branch cutoffs.
   if (event.type === 'message_end') {
@@ -1342,6 +1483,13 @@ function handleSessionEvent(event: AgentSessionEvent): void {
 
   // Forward all events to main process
   send({ type: 'event', event: forwardedEvent });
+
+  // The aborted run ends here. Report it *after* the agent_end has been
+  // forwarded so the host sees the two in order — it starts the next turn only
+  // once this event is behind it.
+  if (abortSettlePending && forwardedEvent.type === 'agent_end') {
+    settleAbort('agent_end');
+  }
 }
 
 // ============================================================
@@ -1501,12 +1649,32 @@ function handleCancelEphemeralQuery(
 
 async function handleAbort(): Promise<void> {
   compactionEpoch++;
-  if (piSession) {
+
+  // Arm the handshake BEFORE aborting: the SDK dispatches the aborted run's
+  // `agent_end` inside `abort()`, and the host must not be told "settled" until
+  // that event has been forwarded (see settleAbort).
+  abortSettlePending = true;
+  if (abortSettleTimer) clearTimeout(abortSettleTimer);
+  abortSettleTimer = setTimeout(
+    () => settleAbort('fallback timeout'),
+    ABORT_SETTLE_FALLBACK_MS,
+  );
+
+  if (!abortRunActive) {
+    // Nothing is streaming: no trailing events exist, so don't make the host wait.
+    settleAbort('no run in flight');
+  } else if (piSession) {
     try {
       await piSession.abort();
     } catch (error) {
       debugLog(`Abort failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+
+    // The SDK clears abortRunActive by emitting the aborted run's `agent_end`.
+    // Still true here means that dispatch is pending, so keep waiting for it
+    // (the fallback timer eventually releases the host); already false means
+    // `settleAbort('agent_end')` has run and this is a no-op.
+    if (!abortRunActive) settleAbort('run ended');
   }
 
   // Reject all pending pre-tool-use requests
@@ -1651,19 +1819,18 @@ async function handleUpdateRuntimeConfig(msg: RuntimeConfigUpdateMessage): Promi
       customModels: msg.customModels,
     };
 
+    // Same two steps as init, in the same order: remember the connection's per-model
+    // parameters (whatever the connection type), then re-register the custom endpoint
+    // provider when there is one.
+    const modelEntries = connectionModelEntries();
+    rememberModelOverrides(modelEntries);
     if (piModelRegistry && initConfig.baseUrl?.trim() && initConfig.customEndpoint) {
-      const modelEntries: CustomEndpointModelEntry[] = (initConfig.customModels?.length
-        ? initConfig.customModels
-        : [initConfig.model || 'default']
-      ).map(normalizeCustomEndpointModelEntry);
-
       customEndpointModelIds = new Set();
-      customModelOverrides.clear();
       registerCustomEndpointModels(piModelRegistry, initConfig.customEndpoint.api, initConfig.baseUrl.trim(), modelEntries);
     }
 
     if (piSession && piModelRegistry) {
-      let piModel = resolvePiModel(piModelRegistry, msg.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint());
+      let piModel = resolvePiModel(piModelRegistry, msg.model, initConfig.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
       if (!piModel && initConfig.baseUrl?.trim() && initConfig.customEndpoint) {
         const bareId = stripPiPrefix(msg.model);
         registerCustomEndpointModels(piModelRegistry, initConfig.customEndpoint.api, initConfig.baseUrl.trim(), [{ id: bareId }]);
@@ -1696,7 +1863,7 @@ async function handleSetModel(msg: Extract<InboundMessage, { type: 'set_model' }
     debugLog(`[set_model] No active session or model registry, ignoring`);
     return;
   }
-  let piModel = resolvePiModel(piModelRegistry, msg.model, initConfig?.piAuth?.provider, shouldPreferCustomEndpoint());
+  let piModel = resolvePiModel(piModelRegistry, msg.model, initConfig?.piAuth?.provider, shouldPreferCustomEndpoint(), customModelOverrides);
 
   // For custom endpoints, dynamically register unknown models so mid-session switching works.
   // Uses registerCustomEndpointModels which accumulates into the existing model set

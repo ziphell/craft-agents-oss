@@ -79,7 +79,9 @@ const LlmAuthTypeSchema = z.enum([
 
 const CustomEndpointSchema = z.object({
   api: z.enum(['openai-completions', 'anthropic-messages']),
-  supportsImages: z.boolean().optional(),
+  // Extra request headers for the endpoint (gateway tokens, routing hints).
+  // Model capabilities are per model, not per endpoint — see CustomEndpointConfig.
+  headers: z.record(z.string(), z.string()).optional(),
 });
 
 const LlmConnectionSchema = z.object({
@@ -90,6 +92,9 @@ const LlmConnectionSchema = z.object({
   baseUrl: z.string().optional(),
   models: z.array(z.union([z.string(), z.object({ id: z.string() }).passthrough()])).optional(),
   defaultModel: z.string().optional(),
+  fastModel: z.string().optional(),
+  visionModel: z.string().optional(),
+  omniModel: z.string().optional(),
   modelSelectionMode: z.enum(['automaticallySyncedFromProvider', 'userDefined3Tier']).optional(),
   customEndpoint: CustomEndpointSchema.optional(),
   createdAt: z.number(),
@@ -374,7 +379,7 @@ import { getWorkspaceSourcesPath } from '../workspaces/storage.ts';
 
 // --- sources/{slug}/config.json ---
 
-const SourceTypeSchema = z.enum(['mcp', 'api', 'local']);
+const SourceTypeSchema = z.enum(['mcp', 'api', 'local', 'web', 'email']);
 
 // MCP source supports two transport types:
 // - HTTP/SSE: requires url and authType
@@ -450,6 +455,25 @@ const LocalSourceConfigSchema = z.object({
   format: z.string().optional(),
 });
 
+const WebSourceConfigSchema = z.object({
+  url: z.string().url(),
+});
+
+const EmailEndpointSchema = z.object({
+  host: z.string().min(1).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  secure: z.boolean().optional(),
+});
+
+const EmailSourceConfigSchema = z.object({
+  address: z.string().email(),
+  provider: z.string().min(1).optional(),
+  displayName: z.string().optional(),
+  defaultMailbox: z.string().min(1).optional(),
+  imap: EmailEndpointSchema.optional(),
+  smtp: EmailEndpointSchema.optional(),
+});
+
 // Source brand schema
 const SourceBrandSchema = z.object({
   color: EntityColorSchema.optional(),
@@ -465,6 +489,8 @@ export const FolderSourceConfigSchema = z.object({
   mcp: McpSourceConfigSchema.optional(),
   api: ApiSourceConfigSchema.optional(),
   local: LocalSourceConfigSchema.optional(),
+  web: WebSourceConfigSchema.optional(),
+  email: EmailSourceConfigSchema.optional(),
   brand: SourceBrandSchema.optional(),
   isAuthenticated: z.boolean().optional(),
   lastTestedAt: z.number().int().min(0).optional(),
@@ -479,9 +505,11 @@ export const FolderSourceConfigSchema = z.object({
       case 'mcp': return !!data.mcp;
       case 'api': return !!data.api;
       case 'local': return !!data.local;
+      case 'web': return !!data.web;
+      case 'email': return !!data.email;
     }
   },
-  { message: 'Config must include type-specific configuration (mcp, api, or local)' }
+  { message: 'Config must include type-specific configuration (mcp, api, local, web, or email)' }
 );
 
 /**

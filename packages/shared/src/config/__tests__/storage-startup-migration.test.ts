@@ -146,6 +146,55 @@ describe('startup migration (integration)', () => {
     expect(connection.defaultModel).toBe(migratedModels[0])
   })
 
+  it('records the Fast tier as fastModel for an existing userDefined3Tier connection', () => {
+    const { configDir, workspaceRoot, configPath } = setupWorkspaceConfigDir()
+    const models = ['pi/claude-opus-4-6', 'pi/claude-sonnet-4-6', 'pi/claude-haiku-4-5']
+
+    writeRootConfig(configPath, workspaceRoot, [
+      {
+        slug: 'pi-api-key',
+        name: 'Craft Agents Backend (Anthropic)',
+        providerType: 'pi',
+        authType: 'api_key',
+        piAuthProvider: 'anthropic',
+        modelSelectionMode: 'userDefined3Tier',
+        createdAt: Date.now(),
+        models,
+        defaultModel: models[0],
+      },
+    ])
+
+    runMigration(configDir)
+
+    // The user picked that model as the Fast tier; recording it keeps the choice
+    // stable if the list is later reordered or renamed.
+    expect(readPiApiKeyConnection(configPath).fastModel).toBe('pi/claude-haiku-4-5')
+  })
+
+  it('does not overwrite an existing fastModel on startup', () => {
+    const { configDir, workspaceRoot, configPath } = setupWorkspaceConfigDir()
+    const models = ['pi/claude-opus-4-6', 'pi/claude-sonnet-4-6', 'pi/claude-haiku-4-5']
+
+    writeRootConfig(configPath, workspaceRoot, [
+      {
+        slug: 'pi-api-key',
+        name: 'Craft Agents Backend (Anthropic)',
+        providerType: 'pi',
+        authType: 'api_key',
+        piAuthProvider: 'anthropic',
+        modelSelectionMode: 'userDefined3Tier',
+        createdAt: Date.now(),
+        models,
+        defaultModel: models[0],
+        fastModel: 'pi/claude-sonnet-4-6',
+      },
+    ])
+
+    runMigration(configDir)
+
+    expect(readPiApiKeyConnection(configPath).fastModel).toBe('pi/claude-sonnet-4-6')
+  })
+
   it('normalizes auto mode model set back to provider defaults', () => {
     const { configDir, workspaceRoot, configPath } = setupWorkspaceConfigDir()
 

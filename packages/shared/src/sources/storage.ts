@@ -516,6 +516,11 @@ export async function createSource(
         config.local = input.local;
       }
       break;
+    case 'web':
+      if (input.web) {
+        config.web = input.web;
+      }
+      break;
   }
 
   // Validate and store icon (emoji or URL)

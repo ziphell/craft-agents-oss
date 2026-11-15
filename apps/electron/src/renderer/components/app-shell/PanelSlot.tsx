@@ -111,7 +111,7 @@ export function PanelSlot({
         data-panel-role="content"
         data-compact={isCompact || undefined}
         className={cn(
-          'h-full overflow-hidden relative @container/panel',
+          'h-full overflow-clip relative @container/panel',
           !isOnly && isFocusedPanel ? 'shadow-panel-focused z-[1]' : 'shadow-middle z-0',
           'bg-foreground-2',
         )}

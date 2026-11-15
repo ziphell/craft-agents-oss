@@ -39,6 +39,17 @@ export function getContextDisplay(status?: ContextStatus, modelContextWindow?: n
   }
 }
 
+/**
+ * The composer's compact badge. It reads the snapshot-derived display and
+ * nothing else: a legacy per-turn count, or a share of the raw window, would
+ * disagree with the window the SDK actually compacts on — which is exactly how
+ * a badge comes to sit at 99% while compaction is still a quarter of the
+ * window away.
+ */
+export function shouldShowCompactBadge(display: ReturnType<typeof getContextDisplay>): boolean {
+  return display.showWarning && display.canCompact
+}
+
 type Translate = (key: string, options?: Record<string, string | number>) => string
 
 /** Shared text contract keeps desktop and compact/mobile labels identical. */

@@ -3,7 +3,19 @@
 .tiptap-editor {
   --tiptap-bubble-z: var(--z-floating-menu, 400);
   --tiptap-image-selection-width: 1.5px;
-  --tiptap-image-selection-color: color-mix(in oklch, var(--accent) 45%, transparent);
+  /*
+   * Selection is **blue**, and the text on it is knocked out.
+   *
+   * Blue rather than the brand accent (purple), because inside a document the two mean different things: purple is
+   * "this is an action", blue is "this is chosen". A tinted band with the text at its own colour is what this used to
+   * be — readable on a light background and nearly invisible on a dark one, and it made a selection look like a
+   * highlight. `light-dark()` follows the app's `color-scheme` (`packages/ui/src/styles/index.css`), so light mode gets
+   * a deeper blue and dark mode a brighter one; both take white text, which is the inversion a dark glyph needs.
+   */
+  --tiptap-selection: light-dark(oklch(0.52 0.19 258), oklch(0.60 0.18 258));
+  --tiptap-selection-text: #fff;
+  /* The outline around a selected rich block (a picture, a diagram, a page) is the same blue, softer. */
+  --tiptap-image-selection-color: color-mix(in oklch, var(--tiptap-selection) 60%, transparent);
   --tiptap-list-indent: 1.5rem;
 }
 
@@ -32,34 +44,37 @@
   margin-top: 0;
 }
 
-/* Headings */
+/*
+ * Headings — the reading face's own values, because these two faces are one document.
+ *
+ * `Markdown`'s `minimal` components are the yardstick: `h1` and `h2` are both 16px and differ by weight, `h3` is
+ * 15px. They used to be 20/18/16px here, so switching faces jumped every heading in the document. Changing one
+ * without the other is what `__tests__/tiptap-typography.test.ts` refuses.
+ */
 .tiptap-editor .tiptap-prose h1 {
-  font-size: 1.25rem;
+  font-size: 1rem; /* text-[16px] */
   font-weight: 700;
-  margin-top: 1.25rem;
-  margin-bottom: 0.5rem;
+  margin: 1.25rem 0 0.75rem; /* mt-5 mb-3 */
   line-height: 1.3;
 }
 
 .tiptap-editor .tiptap-prose h2 {
-  font-size: 1.125rem;
+  font-size: 1rem; /* text-[16px] */
   font-weight: 600;
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
+  margin: 1rem 0 0.75rem; /* mt-4 mb-3 */
   line-height: 1.3;
 }
 
 .tiptap-editor .tiptap-prose h3 {
-  font-size: 1rem;
+  font-size: 0.9375rem; /* text-[15px] */
   font-weight: 600;
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
+  margin: 1rem 0 0.5rem; /* mt-4 mb-2 */
   line-height: 1.3;
 }
 
 /* Bold & Italic */
 .tiptap-editor .tiptap-prose strong {
-  font-weight: 700;
+  font-weight: 600; /* font-semibold, as the renderer sets it */
 }
 
 .tiptap-editor .tiptap-prose em {
@@ -71,21 +86,26 @@
   color: color-mix(in oklch, var(--foreground) 50%, transparent);
 }
 
-/* Lists */
+/* Lists — `minimal` uses `ps-[16px]` for a bullet and `pl-6` for a number, and `space-y-1` between items. */
 .tiptap-editor .tiptap-prose ul {
   list-style-type: disc;
-  padding-inline-start: var(--tiptap-list-indent);
+  padding-inline-start: 1rem;
+  padding-inline-end: 0.5rem;
   margin: 0.5rem 0;
 }
 
 .tiptap-editor .tiptap-prose ol {
   list-style-type: decimal;
-  padding-inline-start: var(--tiptap-list-indent);
+  padding-inline-start: 1.5rem;
   margin: 0.5rem 0;
 }
 
 .tiptap-editor .tiptap-prose li {
   line-height: 1.625;
+}
+
+.tiptap-editor .tiptap-prose li + li {
+  margin-top: 0.25rem; /* space-y-1 */
 }
 
 .tiptap-editor .tiptap-prose li > p {
@@ -111,13 +131,149 @@
   list-style-type: square;
 }
 
+/* Tables — a requirement and what covers it, side by side, is most of what these
+   documents are made of.
+
+   Drawn as the reading face draws them: no grid, a rule under the header and under each row, 14px. A full box around
+   every cell was the other half of the jump when switching faces (`__tests__/tiptap-typography.test.ts`). */
+.tiptap-editor .tiptap-prose table {
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  width: 100%;
+  font-size: 0.875rem; /* text-sm */
+}
+
+.tiptap-editor .tiptap-prose th, .tiptap-editor .tiptap-prose td {
+  position: relative;
+  vertical-align: top;
+  padding: 0.5rem 0.75rem; /* py-2 px-3 */
+}
+
+.tiptap-editor .tiptap-prose th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  border-bottom: 1px solid var(--border);
+}
+
+.tiptap-editor .tiptap-prose td {
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 50%, transparent);
+}
+
+.tiptap-editor .tiptap-prose td > p,
+.tiptap-editor .tiptap-prose th > p {
+  margin: 0;
+}
+
+/* Cells covered by a cell selection, which is how a table is edited as a block — the same blue, as a wash (the cell's
+   own text is not knocked out: a cell selection usually covers many cells, and white text in each would read as
+   damage rather than as a selection). */
+.tiptap-editor .tiptap-prose .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: color-mix(in oklch, var(--tiptap-selection) 16%, transparent);
+}
+
 /* Blockquote */
 .tiptap-editor .tiptap-prose blockquote {
-  border-left: 2px solid color-mix(in oklch, var(--foreground) 30%, transparent);
+  border-left: 2px solid color-mix(in oklch, var(--muted-foreground) 30%, transparent);
   padding-left: 0.75rem;
   margin: 0.5rem 0;
   font-style: italic;
+  color: var(--muted-foreground);
 }
+
+/*
+ * A callout — `> [!NOTE]` and the twelve other types.
+ *
+ * The box, the colour and the name are the reading face's (`Markdown`'s `CALLOUT_STYLES`), written as CSS because this
+ * face has no React component to hang them on. The name is drawn from `data-callout-label`, which the node writes from
+ * the shared table in `callouts.ts`.
+ */
+/* The box every callout gets, and the plain colours an unknown type keeps (`> [!TODO]`, `> [!quote]`, a type this app
+   has never heard of). The known ones below only change the two colours. */
+.tiptap-editor .tiptap-prose blockquote[data-callout] {
+  border-left-width: 4px;
+  border-color: color-mix(in oklch, var(--foreground) 30%, transparent);
+  border-radius: 0 0.375rem 0.375rem 0;
+  padding: 0.5rem 0.75rem 0.5rem 1rem;
+  margin: 0.75rem 0;
+  background: color-mix(in oklch, var(--foreground) 5%, transparent);
+  font-style: normal;
+  color: inherit;
+}
+
+.tiptap-editor .tiptap-prose blockquote[data-callout]::before {
+  content: attr(data-callout-label);
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* note / info */
+.tiptap-editor .tiptap-prose blockquote[data-callout='note'],
+.tiptap-editor .tiptap-prose blockquote[data-callout='info'] {
+  border-color: color-mix(in oklch, var(--accent) 60%, transparent);
+  background: color-mix(in oklch, var(--accent) 5%, transparent);
+}
+.tiptap-editor .tiptap-prose blockquote[data-callout='note']::before,
+.tiptap-editor .tiptap-prose blockquote[data-callout='info']::before {
+  color: var(--accent);
+}
+
+/* tip / success */
+.tiptap-editor .tiptap-prose blockquote[data-callout='tip'],
+.tiptap-editor .tiptap-prose blockquote[data-callout='success'] {
+  border-color: color-mix(in oklch, var(--success) 60%, transparent);
+  background: color-mix(in oklch, var(--success) 5%, transparent);
+}
+.tiptap-editor .tiptap-prose blockquote[data-callout='tip']::before,
+.tiptap-editor .tiptap-prose blockquote[data-callout='success']::before {
+  color: var(--success-text, var(--success));
+}
+
+/* important / question / example / warning */
+.tiptap-editor .tiptap-prose blockquote[data-callout='important'],
+.tiptap-editor .tiptap-prose blockquote[data-callout='question'],
+.tiptap-editor .tiptap-prose blockquote[data-callout='example'],
+.tiptap-editor .tiptap-prose blockquote[data-callout='warning'] {
+  border-color: color-mix(in oklch, var(--info) 60%, transparent);
+  background: color-mix(in oklch, var(--info) 5%, transparent);
+}
+.tiptap-editor .tiptap-prose blockquote[data-callout='important']::before,
+.tiptap-editor .tiptap-prose blockquote[data-callout='question']::before,
+.tiptap-editor .tiptap-prose blockquote[data-callout='example']::before,
+.tiptap-editor .tiptap-prose blockquote[data-callout='warning']::before {
+  color: var(--info-text, var(--info));
+}
+
+.tiptap-editor .tiptap-prose blockquote[data-callout='warning'] {
+  background: color-mix(in oklch, var(--info) 10%, transparent);
+  border-color: color-mix(in oklch, var(--info) 70%, transparent);
+}
+
+/* caution / danger / failure / bug */
+.tiptap-editor .tiptap-prose blockquote[data-callout='caution'],
+.tiptap-editor .tiptap-prose blockquote[data-callout='danger'],
+.tiptap-editor .tiptap-prose blockquote[data-callout='failure'],
+.tiptap-editor .tiptap-prose blockquote[data-callout='bug'] {
+  border-color: color-mix(in oklch, var(--destructive) 60%, transparent);
+  background: color-mix(in oklch, var(--destructive) 5%, transparent);
+}
+.tiptap-editor .tiptap-prose blockquote[data-callout='caution']::before,
+.tiptap-editor .tiptap-prose blockquote[data-callout='danger']::before,
+.tiptap-editor .tiptap-prose blockquote[data-callout='failure']::before,
+.tiptap-editor .tiptap-prose blockquote[data-callout='bug']::before {
+  color: var(--destructive-text, var(--destructive));
+}
+
+/* todo / quote (and anything a document invented) are the plain colours above — nothing to override. */
 
 /* Inline code */
 .tiptap-editor .tiptap-prose code {
@@ -135,6 +291,28 @@
   background: color-mix(in oklch, var(--foreground) 3%, transparent);
   padding: 0.75rem;
   overflow-x: auto;
+}
+
+/*
+ * What shiki paints, and what we paint instead.
+ *
+ * The highlighter puts the **light theme's own surface and text colour as inline styles** on the block
+ * (`background-color:#fff; color:#24292e`), and the dark pair beside them as custom properties
+ * (`--shiki-dark-bg`, `--shiki-dark`). Nothing consumed that pair — shiki's stylesheet is not imported here — so a
+ * dark-mode document drew the light theme: a white block with dark text on a dark page, and token colours chosen for
+ * white. (Measured on the real node view, 2026-11-02.)
+ *
+ * The block's surface is the editor's (`pre`, above): a code block is not a piece of code copied out of a theme, it is
+ * part of the page. The tokens keep the theme's colours, switched for the scheme.
+ */
+.tiptap-editor .tiptap-prose pre.shiki {
+  background-color: transparent !important;
+  color: inherit;
+}
+
+.dark .tiptap-editor .tiptap-prose pre.shiki,
+.dark .tiptap-editor .tiptap-prose pre.shiki span {
+  color: var(--shiki-dark, inherit) !important;
 }
 
 .tiptap-editor .tiptap-prose pre code {
@@ -273,10 +451,23 @@
 
 /* ── Shiki dual-theme ── */
 /* Light mode is default. Dark mode switches via CSS variables set by Shiki. */
-.dark .tiptap-editor .shiki,
-.dark .tiptap-editor .shiki span {
+.dark .tiptap-editor .shiki {
   color: var(--shiki-dark) !important;
   background-color: var(--shiki-dark-bg) !important;
+}
+
+/*
+ * **A token has no surface of its own.**
+ *
+ * `--shiki-dark-bg` is set on the block (the wrapper, or the `<pre>`), so every token `<span>` inside it inherits
+ * it — and colouring those spans painted the theme's background behind *each token*, leaving the gaps between them
+ * the page's own colour. A code block came out as a row of individually lit chips, which reads as "every line is
+ * selected" (reported 2026-11-03, measured: `span` computed `background-color: rgb(36, 41, 46)` in the dark
+ * theme). The block's surface is the block's (`pre`, below); a token only carries its colour.
+ */
+.dark .tiptap-editor .shiki span {
+  color: var(--shiki-dark) !important;
+  background-color: transparent !important;
 }
 
 /* Shiki code blocks: override pre background set by Shiki node decoration */
@@ -460,9 +651,9 @@
   background: color-mix(in oklch, var(--accent) 8%, transparent);
 }
 
-/* Highlight inline math when selected via keyboard (NodeSelection) */
+/* Highlight inline math when selected via keyboard (NodeSelection) — the same blue as everything else selected. */
 .tiptap-mathematics-render--editable.ProseMirror-selectednode {
-  background: color-mix(in oklch, var(--accent) 15%, transparent);
+  background: color-mix(in oklch, var(--tiptap-selection) 16%, transparent);
 }
 
 /* Suppress individual text selection inside rendered blocks.
@@ -480,19 +671,48 @@
   color: inherit !important;
 }
 
-/* Match text selection color to the block-level highlight */
-.tiptap-editor .tiptap-prose ::selection {
-  background: color-mix(in oklch, var(--accent) 12%, transparent);
+/*
+ * Text selection: blue, with the text knocked out so a dark glyph stays readable on the band — but **only while the
+ * selection is the selection**. While ProseMirror is hiding it (a node is being dragged, so the DOM selection is
+ * meaningless) the browser would still paint its own band over everything the pointer crosses, and a band that strong
+ * turns a drag into a smear. `:not()` keeps the blue out of that state entirely, so the text underneath also keeps its
+ * own colour.
+ */
+.tiptap-editor .tiptap-prose:not(.ProseMirror-hideselection) ::selection {
+  background: var(--tiptap-selection);
+  color: var(--tiptap-selection-text);
 }
 
-/* Unified rich-block selection outline (image + mermaid + latex).
+/* Firefox paints selection through `::-moz-selection`; the app only has to run in Chromium, but a `::selection` that
+   silently does nothing in one engine is the kind of thing nobody notices until somebody does. */
+.tiptap-editor .tiptap-prose:not(.ProseMirror-hideselection) ::-moz-selection {
+  background: var(--tiptap-selection);
+  color: var(--tiptap-selection-text);
+}
+
+/*
+ * A hidden selection paints nothing at all — no band, no caret.
+ *
+ * `prosemirror-view` ships exactly this rule in its own stylesheet, which this app does not load (it imports TipTap's),
+ * and even if it did, the blue rule above is two classes deep and would win. Both products we compared do the same
+ * suppression at this point; genoffice also hides the caret, which is what the second rule is for.
+ */
+.tiptap-editor .tiptap-prose.ProseMirror-hideselection ::selection,
+.tiptap-editor .tiptap-prose.ProseMirror-hideselection ::-moz-selection {
+  background: transparent;
+}
+
+.tiptap-editor .tiptap-prose.ProseMirror-hideselection {
+  caret-color: transparent;
+}
+
+/* Unified rich-block selection outline (mermaid + latex + preview blocks).
    Covers both keyboard NodeSelection (.ProseMirror-selectednode) and range
    decorations (.is-selected), where classes can land on the same element or
-   a wrapping ancestor depending on ProseMirror/NodeView structure. */
-.tiptap-image-block.ProseMirror-selectednode,
-.ProseMirror-selectednode .tiptap-image-block,
-.tiptap-image-block.is-selected,
-.is-selected .tiptap-image-block,
+   a wrapping ancestor depending on ProseMirror/NodeView structure.
+
+   Images are not here: they are a plain `<img>` (the node view that drew a shell around one was never registered),
+   and the `<img>` fallback below is what their selection looks like. */
 .tiptap-mermaid-block.ProseMirror-selectednode,
 .ProseMirror-selectednode .tiptap-mermaid-block,
 .tiptap-mermaid-block.is-selected,
@@ -500,11 +720,15 @@
 .tiptap-latex-block.ProseMirror-selectednode,
 .ProseMirror-selectednode .tiptap-latex-block,
 .tiptap-latex-block.is-selected,
-.is-selected .tiptap-latex-block {
+.is-selected .tiptap-latex-block,
+.tiptap-preview-block.ProseMirror-selectednode,
+.ProseMirror-selectednode .tiptap-preview-block,
+.tiptap-preview-block.is-selected,
+.is-selected .tiptap-preview-block {
   outline: var(--tiptap-image-selection-width) solid var(--tiptap-image-selection-color);
   outline-offset: 2px;
   border-radius: 0.5rem;
-  background: color-mix(in oklch, var(--accent) 5%, transparent);
+  background: color-mix(in oklch, var(--tiptap-selection) 6%, transparent);
 }
 
 /* Compatibility fallback: keep visual parity if selection class lands directly on <img>. */
@@ -518,7 +742,7 @@
 
 .tiptap-mathematics-render--editable.is-selected,
 .is-selected .tiptap-mathematics-render--editable {
-  background: color-mix(in oklch, var(--accent) 15%, transparent);
+  background: color-mix(in oklch, var(--tiptap-selection) 16%, transparent);
   border-radius: 3px;
 }
 
@@ -607,4 +831,61 @@
   font-size: 12px;
   color: color-mix(in oklch, var(--foreground) 55%, transparent);
   padding: 8px;
+}
+
+/*
+ * What an agent changed, while it is recent.
+ *
+ * A wash rather than a mark: it is a decoration, so it lives in the view and never in the document — it cannot be
+ * saved into the file, undone, or copied out. The colour is derived from the accent so it works in both themes,
+ * and it is quiet enough to read through: the text is still the point, the tint only says "this is new".
+ */
+.agent-changed {
+  background-color: color-mix(in srgb, Highlight 18%, transparent);
+  border-radius: 2px;
+  transition: background-color 600ms ease-out;
+}
+
+/* Where the agent stopped. A bar, and a label that names it — the same contract as a collaborator's caret. */
+.agent-caret {
+  position: relative;
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin: 0 -1px;
+  vertical-align: text-bottom;
+  background-color: Highlight;
+  animation: agent-caret-pulse 1.6s ease-in-out infinite;
+}
+
+.agent-caret-label {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  margin-bottom: 2px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: Highlight;
+  color: HighlightText;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+@keyframes agent-caret-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-caret {
+    animation: none;
+  }
 }

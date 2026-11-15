@@ -47,6 +47,13 @@ export interface EntityRowProps {
   /** Left icon area — rendered in-flow as a flex child before the content column.
    *  Consumers can pass multiple icons (e.g. via a fragment) for a horizontal icon group. */
   icon?: React.ReactNode
+  /** A leading visual wider than the icon slot — a fixed-size preview box (e.g. an
+   *  artifact thumbnail). Takes the icon's place in the title row, and an empty box of
+   *  the same size takes its place in the alignment spacers beneath, so those lines
+   *  stay aligned with the title. When set, `icon` is unused. */
+  leading?: React.ReactNode
+  /** The size class for the `leading` box and its spacers (default `h-9 w-9`). */
+  leadingClassName?: string
   /** Title content (ReactNode for search highlighting support) */
   title: React.ReactNode
   /** Additional className on the title wrapper (e.g. shimmer animation) */
@@ -121,6 +128,8 @@ export interface EntityRowProps {
 
 export function EntityRow({
   icon,
+  leading,
+  leadingClassName,
   title,
   titleClassName,
   titleTrailing,
@@ -263,6 +272,18 @@ export function EntityRow({
     ? null
     : contextMenuContent ?? menuContent
 
+  // A `leading` visual is drawn once, in the icon's place — unlike `icon`, which is
+  // rendered again invisibly under the title as an alignment spacer. The spacer here is
+  // an empty box of the leading box's own size, so the lines beneath still line up with
+  // the title without mounting a second copy of the visual.
+  const leadingBoxClass = leadingClassName ?? 'h-9 w-9'
+  const leadingNode = leading ? (
+    <div className={cn('shrink-0 flex items-center', leadingBoxClass)}>{leading}</div>
+  ) : null
+  const leadingSpacer = leading ? (
+    <div className={cn('shrink-0 invisible', leadingBoxClass)} aria-hidden="true" />
+  ) : null
+
   // Build the inner content (shared between with-context-menu and without)
   const innerContent = (
     <div className="relative group select-none pl-2 mr-2">
@@ -298,11 +319,12 @@ export function EntityRow({
           {/* Title */}
           {titleTrailing ? (
             <div className="flex items-center gap-[10px] w-full min-w-0">
-              {icon && (
-                <div className="shrink-0 flex items-center gap-[10px] [&>*]:w-3 [&>*]:h-3">
-                  {icon}
-                </div>
-              )}
+              {leadingNode ??
+                (icon && (
+                  <div className="shrink-0 flex items-center gap-[10px] [&>*]:w-3 [&>*]:h-3">
+                    {icon}
+                  </div>
+                ))}
               <div className={cn("font-sans truncate min-w-0", titleClassName)}>
                 {title}
               </div>
@@ -358,11 +380,12 @@ export function EntityRow({
             </div>
           ) : (
             <div className="flex items-center gap-[10px] w-full pr-6 min-w-0">
-              {icon && (
-                <div className="shrink-0 flex items-center gap-[10px] [&>*]:w-3 [&>*]:h-3">
-                  {icon}
-                </div>
-              )}
+              {leadingNode ??
+                (icon && (
+                  <div className="shrink-0 flex items-center gap-[10px] [&>*]:w-3 [&>*]:h-3">
+                    {icon}
+                  </div>
+                ))}
               <div className={cn("font-medium font-sans line-clamp-2 min-w-0 -mb-[2px]", titleClassName)}>
                 {title}
               </div>
@@ -373,11 +396,12 @@ export function EntityRow({
           {/* Subtitle line */}
           {subtitle && (
             <div className="flex items-start gap-[10px] w-full text-[12px] text-foreground/55 min-w-0 -mt-1">
-              {icon && (
-                <div className="shrink-0 flex items-center gap-[10px] [&>*]:w-3 [&>*]:h-3 invisible" aria-hidden="true">
-                  {icon}
-                </div>
-              )}
+              {leadingSpacer ??
+                (icon && (
+                  <div className="shrink-0 flex items-center gap-[10px] [&>*]:w-3 [&>*]:h-3 invisible" aria-hidden="true">
+                    {icon}
+                  </div>
+                ))}
               <div className="min-w-0 flex-1 line-clamp-2 leading-[1.35]">
                 {subtitle}
               </div>
@@ -388,11 +412,12 @@ export function EntityRow({
           {(badges || trailing) && (
             <div className="flex items-center gap-[10px] text-xs text-foreground/70 w-full -mb-[2px] min-w-0">
               {/* Invisible spacer matching icon container width */}
-              {icon && (
-                <div className="shrink-0 flex items-center gap-[10px] [&>*]:w-3 [&>*]:h-3 invisible" aria-hidden="true">
-                  {icon}
-                </div>
-              )}
+              {leadingSpacer ??
+                (icon && (
+                  <div className="shrink-0 flex items-center gap-[10px] [&>*]:w-3 [&>*]:h-3 invisible" aria-hidden="true">
+                    {icon}
+                  </div>
+                ))}
               {badges && (
                 <div
                   className="flex-1 flex items-center gap-1 min-w-0 overflow-x-auto scrollbar-hide"

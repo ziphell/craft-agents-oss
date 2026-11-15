@@ -1419,6 +1419,17 @@ export const chatComponents: ComponentEntry[] = [
     mockData: () => ({}),
     variants: [
       {
+        name: 'Assistant (Craft Bot)',
+        description: 'The assistant’s composer: everything that writes the message — `@` references (sources, skills, files, tabs) and `/` commands, attachments, model, permission mode, queue — and none of the per-conversation plumbing (labels, board column, working-directory selector).',
+        props: {
+          placeholder: 'Ask it to do something in this workspace…',
+          showLabels: false,
+          showStatuses: false,
+          showSources: true,
+          showWorkingDirectory: false,
+        },
+      },
+      {
         name: 'Default (Comprehensive)',
         description: 'App-like full setup with badges, labels, statuses, sources, and working directory',
         props: {},

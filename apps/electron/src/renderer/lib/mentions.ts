@@ -14,8 +14,22 @@ import type { LoadedSkill, LoadedSource } from '../../shared/types'
 import { AGENTS_PLUGIN_NAME } from '@craft-agent/shared/skills/types'
 import { getSourceIconSync, getSkillIconSync } from './icon-cache'
 
-// Import and re-export parsing functions from shared (pure string operations, no renderer deps)
-import { parseMentions, stripAllMentions, resolveSkillMentions, resolveSourceMentions, type ParsedMentions } from '@craft-agent/shared/mentions'
+// Import and re-export parsing functions from shared (pure string operations, no renderer deps).
+// The tab / element marker formats are shared with the agent side, which rewrites
+// them for the model — so their format lives there too (shared/mentions/*.ts).
+import {
+  elementLabel,
+  findElementMentions,
+  findTabMentions,
+  parseElementMention,
+  parseMentions,
+  parseTabMention,
+  stripAllMentions,
+  resolveSkillMentions,
+  resolveSourceMentions,
+  tabLabel,
+  type ParsedMentions,
+} from '@craft-agent/shared/mentions'
 export { parseMentions, stripAllMentions, resolveSkillMentions, resolveSourceMentions, type ParsedMentions }
 
 // ============================================================================
@@ -30,8 +44,18 @@ const WS_ID_CHARS = '[\\w .-]'
 // Types
 // ============================================================================
 
+/**
+ * Mention kinds the composer can hold.
+ *
+ * `element` is the odd one out: the `@` menu never yields it (the browser panel
+ * inserts it when a page element is picked), so it is deliberately not part of
+ * `MentionItemType`. The rest — including `tab`, a whole tab of the browser window —
+ * are things the `@` menu offers.
+ */
+export type ComposerMentionType = MentionItemType | 'element'
+
 export interface MentionMatch {
-  type: MentionItemType
+  type: ComposerMentionType
   id: string
   /** Full match text including @ prefix */
   fullMatch: string
@@ -108,6 +132,28 @@ export function findMentionMatches(
       id: match[2],
       fullMatch: match[1],
       startIndex: match.index,
+    })
+  }
+
+  // Match element mentions: [element:<selector>|<text>|<url>|<tabId>] — an encoded payload, so
+  // the id here is the raw payload and consumers decode it (see element-mention).
+  for (const element of findElementMentions(text)) {
+    matches.push({
+      type: 'element',
+      id: element.payload,
+      fullMatch: element.fullMatch,
+      startIndex: element.startIndex,
+    })
+  }
+
+  // Match tab mentions: [tab:<url>|<title>|<tabId>] — the same encoded-payload shape, for a
+  // whole tab of the browser window rather than one element of it (see tab-mention).
+  for (const tab of findTabMentions(text)) {
+    matches.push({
+      type: 'tab',
+      id: tab.payload,
+      fullMatch: tab.fullMatch,
+      startIndex: tab.startIndex,
     })
   }
 
@@ -214,7 +260,10 @@ export function extractBadges(
   const skillsBySlug = new Map(skills.map(s => [s.slug, s]))
   const sourcesBySlug = new Map(sources.map(s => [s.config.slug, s]))
 
-  return matches.map(match => {
+  return matches.flatMap(match => {
+    // Every reference keeps its marker in the message — the store keeps it so the sent chip can
+    // be redrawn from it, and the agent rewrites it for the model (see the resolve* functions).
+
     let label = match.id
     let iconDataUrl: string | undefined
     let filePath: string | undefined
@@ -239,6 +288,14 @@ export function extractBadges(
       // Show folder name as label, full relative path stored for tooltip
       label = match.id.split('/').pop() || match.id
       filePath = match.id
+    } else if (match.type === 'tab') {
+      // The id is the encoded payload (see tab-mention); the title is the chip.
+      const ref = parseTabMention(match.id)
+      label = ref ? tabLabel(ref) : match.id
+    } else if (match.type === 'element') {
+      // The same, for a picked element: what it says, or its selector when it says nothing.
+      const ref = parseElementMention(match.id)
+      label = ref ? elementLabel(ref) : match.id
     }
 
     // For skills, create fully-qualified rawText (pluginName:slug) so the agent
@@ -251,15 +308,16 @@ export function extractBadges(
       rawText = `[skill:${pluginName}:${match.id}]`
     }
 
-    return {
-      type: match.type as 'source' | 'skill' | 'file' | 'folder',
+    return [{
+      // Every ComposerMentionType is a ContentBadge type now that all references are badged.
+      type: match.type as ContentBadge['type'],
       label,
       rawText,
       iconDataUrl,
       filePath,
       start: match.startIndex,
       end: match.startIndex + match.fullMatch.length,
-    }
+    }]
   })
 }
 

@@ -15,6 +15,16 @@ export interface MarkdownPreviewSpec {
   src?: string
   title?: string
   items?: MarkdownPreviewItem[]
+  /**
+   * Which page of `src` to open on, by the name the document gives it. Absent opens the first.
+   *
+   * A diagram's field, and it is the **file's**: the pages of a `.drawio` document are its own, and
+   * nothing in it says which one is current — so this is a request, not a selection, and it says which
+   * page is drawn rather than which of several files to show. The shape here is shared with the
+   * sibling preview blocks, and one that has no pages simply never reads it, the way it ignores a
+   * `label` it does not draw.
+   */
+  page?: string
 }
 
 /**
@@ -53,6 +63,7 @@ export function parseMarkdownPreviewSpec(code: string): MarkdownPreviewSpec | nu
     return {
       src: spec.src,
       title: typeof spec.title === 'string' ? spec.title : undefined,
+      ...(typeof spec.page === 'string' ? { page: spec.page } : {}),
     }
   }
 

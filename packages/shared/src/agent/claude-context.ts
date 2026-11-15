@@ -40,6 +40,9 @@ import {
   validateToolIcons,
 } from '../config/validators.ts';
 import { validateAutomations } from '../automations/index.ts';
+import { resolveEndpoints } from '../sources/email/presets.ts';
+import { EmailImapClient } from '../sources/email/imap.ts';
+import { verifySmtp } from '../sources/email/smtp.ts';
 import {
   validateMcpConnection as validateMcpConnectionImpl,
   validateStdioMcpConnection as validateStdioMcpConnectionImpl,
@@ -262,6 +265,56 @@ export function createClaudeContext(options: ClaudeContextOptions): SessionToolC
     // MCP validation
     validateStdioMcpConnection,
     validateMcpConnection,
+
+    // Mailbox validation: log in to IMAP and verify SMTP with the stored credential.
+    testEmailSource: async (source: SourceConfig): Promise<ApiTestResult> => {
+      if (!source.email) return { success: false, error: 'No mailbox configuration' };
+
+      const loaded = {
+        config: source as unknown as FolderSourceConfig,
+        guide: null,
+        folderPath: getSourcePath(workspacePath, source.slug),
+        workspaceRootPath: workspacePath,
+        workspaceId,
+      };
+
+      const credential = await getSourceCredentialManager().getEmailCredential(loaded);
+      if (!credential?.pass) {
+        return {
+          success: false,
+          error: 'Credentials needed',
+          hint: 'Ask for the password or authorization code with source_credential_prompt (mode "basic").',
+        };
+      }
+
+      const endpoints = resolveEndpoints({
+        address: source.email.address,
+        provider: source.email.provider,
+        defaultMailbox: source.email.defaultMailbox,
+        imap: source.email.imap,
+        smtp: source.email.smtp,
+      });
+      if ('error' in endpoints) return { success: false, error: endpoints.error };
+
+      const auth = { user: credential.user, pass: credential.pass };
+      const imap = new EmailImapClient(endpoints.imap, auth, { defaultMailbox: source.email.defaultMailbox });
+      try {
+        await imap.connect();
+        await imap.listFolders();
+      } catch (error) {
+        return { success: false, error: `IMAP: ${error instanceof Error ? error.message : String(error)}` };
+      } finally {
+        await imap.close().catch(() => {});
+      }
+
+      try {
+        await verifySmtp(endpoints.smtp, auth);
+      } catch (error) {
+        return { success: false, error: `SMTP: ${error instanceof Error ? error.message : String(error)}` };
+      }
+
+      return { success: true };
+    },
 
     // Icon helpers (simplified - full implementation would use logo.ts)
     isIconUrl: (value: string): boolean => {

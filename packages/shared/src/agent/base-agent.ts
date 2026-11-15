@@ -43,7 +43,6 @@ import type {
   RecoveryMessage,
 } from './backend/types.ts';
 import { AbortReason } from './backend/types.ts';
-import type { AuthRequest } from './session-scoped-tools.ts';
 import type { Workspace } from '../config/storage.ts';
 
 // Core modules
@@ -60,12 +59,36 @@ import { PrerequisiteManager } from './core/prerequisite-manager.ts';
 import type { AutomationSystem } from '../automations/automation-system.ts';
 import type { AgentEvent as AutomationAgentEvent, SdkAutomationInput } from '../automations/types.ts';
 import { getSessionPlansPath, getSessionDataPath, getSessionPath } from '../sessions/storage.ts';
+import type { SessionMode } from '../sessions/types.ts';
+import { loadProjectById } from '../projects/storage.ts';
 import { getMiniAgentSystemPrompt } from '../prompts/system.ts';
 import { buildTitlePrompt, buildRegenerateTitlePrompt, validateTitle } from '../utils/title-generator.ts';
 
 // Skill extraction for Codex/Copilot backends (Claude uses native SDK Skill tool)
-import { parseMentions, resolveSkillMentions, resolveSourceMentions, resolveFileMentions } from '../mentions/index.ts';
+import { parseMentions, resolveSkillMentions, resolveSourceMentions, resolveTabMentions, resolveElementMentions, resolveFileMentions } from '../mentions/index.ts';
 import { loadAllSkills } from '../skills/storage.ts';
+
+/**
+ * The folder of the project this session belongs to, when it belongs to one.
+ *
+ * Resolved through the same loader the project and spec prompt blocks read — the session's bound
+ * project id — so the folder a prompt names and the folder Explore mode allows writes to can
+ * never be two different answers. A session in no project, or one whose project is gone, names
+ * none and no folder is passed on.
+ */
+function resolveBoundProjectFolderPath(
+  workspaceRootPath: string,
+  projectId: string | undefined,
+  onDebug: (message: string) => void,
+): string | undefined {
+  if (!projectId) return undefined;
+  try {
+    return loadProjectById(workspaceRootPath, projectId)?.folderPath;
+  } catch (error) {
+    onDebug(`[projectFolderPath] Failed to load project ${projectId}: ${error instanceof Error ? error.message : error}`);
+    return undefined;
+  }
+}
 
 // ============================================================
 // Mini Agent Configuration
@@ -286,6 +309,13 @@ export abstract class BaseAgent implements AgentBackend {
       workingDirectory: this.workingDirectory,
       plansFolderPath: getSessionPlansPath(config.workspace.rootPath, this._sessionId),
       dataFolderPath: getSessionDataPath(config.workspace.rootPath, this._sessionId),
+      // The session's project folder — resolved from the same source the project/spec prompt
+      // blocks use (the session's bound project id), and absent for a session in no project.
+      projectFolderPath: resolveBoundProjectFolderPath(
+        config.workspace.rootPath,
+        config.session?.projectId,
+        (message) => this.debug(message),
+      ),
     });
 
     // SourceManager: tracks active/inactive sources and formats state for context injection
@@ -312,10 +342,15 @@ export abstract class BaseAgent implements AgentBackend {
       onDebug: (msg) => this.debug(msg),
     });
 
-    // PrerequisiteManager: blocks source tool calls until guide.md is read
+    // PrerequisiteManager: blocks source tool calls until guide.md is read.
+    // The read set is persisted in the session folder: an app restart rebuilds this manager, but the
+    // resumed conversation still holds the guides, so the gate should not re-ask for them.
     this.prerequisiteManager = new PrerequisiteManager({
       workspaceRootPath: config.workspace.rootPath,
       onDebug: (msg) => this.debug(msg),
+      readStatePath: config.session?.id
+        ? join(getSessionPath(config.workspace.rootPath, config.session.id), 'prerequisite-reads.json')
+        : undefined,
     });
 
     // AutomationSystem: workspace-level automations from automations.json
@@ -487,10 +522,16 @@ export abstract class BaseAgent implements AgentBackend {
    * After compaction the LLM no longer has guide content in context,
    * so it must re-read before using source tools.
    * Also resets seen sources so guide paths re-appear in source introductions.
+   *
+   * Both agents call this on compaction, which is also why the current session mode is re-armed
+   * here: the mode block now rides user messages, and compaction rolls the earlier ones into a
+   * summary — so without this the model would come out of compaction with no mode at all. The
+   * block is re-injected once on the next user message (see PromptBuilder.resetInjectedSessionMode).
    */
   resetPrerequisiteState(): void {
     this.prerequisiteManager.resetReadState();
     this.sourceManager.resetSeenSources();
+    this.promptBuilder.resetInjectedSessionMode();
   }
 
   /**
@@ -522,6 +563,21 @@ export abstract class BaseAgent implements AgentBackend {
       this.config.session.sdkCwd = path;
     }
     this.debug(`SDK cwd updated: ${path}`);
+  }
+
+  /**
+   * Update the layer this session is working in (`goal`/`spec`/`plan`, or null for none).
+   *
+   * The mode is announced to the model through the user message, not the system prompt — the
+   * system prompt is the cached prefix and must not change when the mode does. So this only keeps
+   * the session config current (PromptBuilder holds the same object and notices the change on the
+   * next turn); it emits nothing here.
+   */
+  setSessionMode(mode: SessionMode | null): void {
+    if (this.config.session) {
+      this.config.session.mode = mode ?? undefined;
+    }
+    this.debug(`Session mode updated: ${mode ?? 'none'}`);
   }
 
   // ============================================================
@@ -888,11 +944,17 @@ ${formattedMessages}
     // Resolve mentions to semantic markers (like file mentions) instead of stripping them.
     // This preserves sentence structure: "find the bug in [skill:datadog-api]"
     // becomes "find the bug in [Mentioned skill: Datadog API (slug: datadog-api)]"
+    // Tabs and picked page elements are rewritten the same way — their markers reach here too,
+    // because the store keeps them so the sent chip can be redrawn from the marker
+    // (see tab-mention / element-mention). This is also where an unknown or malformed marker is
+    // simply left alone.
     const skillNames = new Map(skills.map(s => [s.slug, s.metadata.name]));
     const withSkills = resolveSkillMentions(message, skillNames);
     const withSources = resolveSourceMentions(withSkills);
+    const withTabs = resolveTabMentions(withSources);
+    const withElements = resolveElementMentions(withTabs);
     const workDir = this.config.session?.workingDirectory ?? this.workingDirectory;
-    const resolved = resolveFileMentions(withSources, workDir).trim();
+    const resolved = resolveFileMentions(withElements, workDir).trim();
 
     // If user sent only skill mentions with no other text, add a directive
     const cleanMessage = (!resolved && skillPaths.size > 0)
@@ -1086,6 +1148,9 @@ ${formattedMessages}
       backendName: this.backendName,
       sessionPath,
       validateModel: this.validateCallLlmModel?.bind(this),
+      // The session layer resolved this from the connection (`resolveImageModel`), so a call
+      // carrying pictures reaches a model that can see instead of being refused by default.
+      getImageModel: () => this.config.imageModel,
     });
     return this.queryLlm(request);
   }

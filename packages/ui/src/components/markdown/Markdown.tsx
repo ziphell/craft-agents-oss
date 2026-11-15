@@ -7,19 +7,16 @@ import remarkMath from 'remark-math'
 import 'katex/dist/katex.min.css'
 import { cn } from '../../lib/utils'
 import { CodeBlock, InlineCode } from './CodeBlock'
-import { MarkdownDiffBlock } from './MarkdownDiffBlock'
-import { MarkdownJsonBlock } from './MarkdownJsonBlock'
-import { MarkdownMermaidBlock } from './MarkdownMermaidBlock'
-import { MarkdownDatatableBlock } from './MarkdownDatatableBlock'
-import { MarkdownSpreadsheetBlock } from './MarkdownSpreadsheetBlock'
-import { MarkdownHtmlBlock } from './MarkdownHtmlBlock'
-import { MarkdownImageBlock } from './MarkdownImageBlock'
-import { MarkdownLatexBlock } from './MarkdownLatexBlock'
-import { MarkdownPdfBlock } from './MarkdownPdfBlock'
-import { MarkdownDocBlock } from './MarkdownDocBlock'
+import { MarkdownImage } from './MarkdownImage'
+import { fenceBlockType, fenceDrawing } from './fences'
+import { renderFence } from './fence-components'
 import { preprocessLinks } from './linkify'
 import { resolveMarkdownLinkTarget } from './link-target'
+import { resolveDocumentPath } from './document-path'
 import remarkCollapsibleSections from './remarkCollapsibleSections'
+import remarkCallouts from './remarkCallouts'
+import { calloutName } from './callouts'
+import { tableCellAlignOf, tableCellAlignStyle } from './extensions/TableAlignment'
 import { CollapsibleSection } from './CollapsibleSection'
 import { useCollapsibleMarkdown } from './CollapsibleMarkdownContext'
 import { wrapWithSafeProxy } from './safe-components'
@@ -35,22 +32,33 @@ import { markdownUrlTransform } from './url-transform'
 export type DisablablePreviewBlock =
   | 'markdown-preview'
   | 'html-preview'
+  | 'office-preview'
   | 'pdf-preview'
   | 'image-preview'
+  | 'drawio-preview'
+
+/** The names above, as the set the fence dispatch tests. */
+const DISABLABLE_PREVIEW_BLOCKS = new Set<DisablablePreviewBlock>([
+  'markdown-preview',
+  'html-preview',
+  'office-preview',
+  'pdf-preview',
+  'image-preview',
+  'drawio-preview',
+])
 
 /**
- * Render modes for markdown content:
+ * Render modes for markdown content — two, and both are implemented:
  *
- * - 'terminal': Raw output with minimal formatting, control chars visible
- *   Best for: Debug output, raw logs, when you want to see exactly what's there
+ * - 'terminal': raw output with minimal formatting, for debug output and logs
+ * - 'minimal': clean rendering with syntax highlighting, for chat messages and documents (the default)
  *
- * - 'minimal': Clean rendering with syntax highlighting but no extra chrome
- *   Best for: Chat messages, inline content, when you want readability without clutter
- *
- * - 'full': Rich rendering with beautiful tables, styled code blocks, proper typography
- *   Best for: Documentation, long-form content, when presentation matters
+ * There used to be a third, `'full'`, declared in this type and never written: it type-checked, and what a caller got
+ * for it was whatever fell through the last `return` — a component map with no classes at all. A document opened to be
+ * read is `minimal` (its `mode` says so in `MarkdownEditorPane`), and the editing face matches that by hand
+ * (`.tiptap-prose` in `tiptap-editor.css`, held to it by `__tests__/tiptap-typography.test.ts`).
  */
-export type RenderMode = 'terminal' | 'minimal' | 'full'
+export type RenderMode = 'terminal' | 'minimal'
 
 export interface MarkdownProps {
   children: string
@@ -86,6 +94,15 @@ export interface MarkdownProps {
    */
   hideFirstMermaidExpand?: boolean
   /**
+   * The folder the document being rendered lives in, when it is a file on disk.
+   *
+   * A picture named beside the document (`![](shots/cart.png)`) is resolved against it —
+   * see `MarkdownImage`. Omitted for content that is not a file (a message in a
+   * conversation), where a relative destination has no folder to be relative to and is
+   * left as it was.
+   */
+  baseDir?: string
+  /**
    * Disable specific preview-block handlers for nested rendering.
    *
    * When a preview-block component renders user-supplied markdown through
@@ -96,6 +113,75 @@ export interface MarkdownProps {
    * Default behavior (prop omitted): all preview blocks are registered.
    */
   disablePreviewBlocks?: ReadonlySet<DisablablePreviewBlock>
+}
+
+/**
+ * How each callout type looks — the type's own name, in its own colour.
+ *
+ * A colour and a word, no icon set: the word is what GitHub and Obsidian both show above the text,
+ * and it is what a person recognises. An unknown type keeps its own name in the neutral colour rather
+ * than being dropped — a document from another tool still reads as the callout it says it is.
+ */
+/**
+ * How each type is painted. The *names* live in `callouts.ts`, because the editing face draws the same label (its
+ * callout is a blockquote attribute, so there is no React component to hold a table like this one).
+ */
+const CALLOUT_STYLES: Record<string, { label: string; box: string }> = {
+  note: { label: 'text-accent', box: 'border-accent/60 bg-accent/5' },
+  info: { label: 'text-accent', box: 'border-accent/60 bg-accent/5' },
+  tip: { label: 'text-[var(--success-text)]', box: 'border-success/60 bg-success/5' },
+  success: { label: 'text-[var(--success-text)]', box: 'border-success/60 bg-success/5' },
+  important: { label: 'text-[var(--info-text)]', box: 'border-info/60 bg-info/5' },
+  question: { label: 'text-[var(--info-text)]', box: 'border-info/60 bg-info/5' },
+  example: { label: 'text-[var(--info-text)]', box: 'border-info/60 bg-info/5' },
+  warning: { label: 'text-[var(--info-text)]', box: 'border-info/70 bg-info/10' },
+  caution: { label: 'text-[var(--destructive-text)]', box: 'border-destructive/60 bg-destructive/5' },
+  danger: { label: 'text-[var(--destructive-text)]', box: 'border-destructive/60 bg-destructive/5' },
+  failure: { label: 'text-[var(--destructive-text)]', box: 'border-destructive/60 bg-destructive/5' },
+  bug: { label: 'text-[var(--destructive-text)]', box: 'border-destructive/60 bg-destructive/5' },
+  todo: { label: 'text-muted-foreground', box: 'border-foreground/30 bg-foreground-5' },
+  quote: { label: 'text-muted-foreground', box: 'border-foreground/30 bg-foreground-5' },
+}
+
+/**
+ * The callout a blockquote says it is, if it says anything.
+ *
+ * Two keys, because the same property has two spellings depending on what ran: `rehype-raw`
+ * normalises `data-*` attributes into camel case (`dataCallout`), and a pipeline without it leaves
+ * the hyphens alone. Reading both means the callout does not depend on which plugins happen to be
+ * in front of it — a lesson paid for by a document that rendered a callout in one place and a plain
+ * quote in another.
+ */
+function calloutType(node: unknown): string | null {
+  const properties = (node as { properties?: Record<string, unknown> } | undefined)?.properties
+  const callout = properties?.['data-callout'] ?? properties?.['dataCallout']
+  return typeof callout === 'string' && callout.length > 0 ? callout : null
+}
+
+/**
+ * A blockquote that named its type — the same rendering in every mode.
+ *
+ * The modes differ in how carefully they set prose (a message is `minimal`, a document opened to be
+ * read is not), but a callout is a *thing*, not a setting: it gets its colour and its name either
+ * way, or a document would mean something different in two places.
+ */
+function CalloutBlockquote({ type, children }: { type: string; children: React.ReactNode }) {
+  const style = CALLOUT_STYLES[type] ?? {
+    label: 'text-muted-foreground',
+    box: 'border-foreground/30 bg-foreground-5',
+  }
+
+  return (
+    <blockquote
+      data-callout={type}
+      className={cn('border-l-4 pl-4 pr-3 py-2 my-3 rounded-r-md not-italic', style.box)}
+    >
+      <div className={cn('mb-1 text-[11px] font-semibold uppercase tracking-wide', style.label)}>
+        {calloutName(type)}
+      </div>
+      {children}
+    </blockquote>
+  )
 }
 
 /** Context for collapsible sections */
@@ -115,6 +201,8 @@ interface CollapsibleContext {
  *   cause component re-mounting on every streaming update.
  * @param hideFirstMermaidExpand - Whether to hide the expand button on the first
  *   mermaid block when the message starts with a mermaid fence. Defaults to true.
+ * @param baseDir - The folder the document lives in, used to resolve a picture named
+ *   beside it. Absent for content that is not a file.
  */
 function stableHash(input: string): string {
   let hash = 2166136261
@@ -133,6 +221,7 @@ function createComponents(
   firstMermaidCodeRef?: React.RefObject<string | null>,
   hideFirstMermaidExpand: boolean = true,
   disablePreviewBlocks?: ReadonlySet<DisablablePreviewBlock>,
+  baseDir?: string,
 ): Partial<Components> {
   const isPreviewEnabled = (name: DisablablePreviewBlock) => !disablePreviewBlocks?.has(name)
   let blockIndex = 0
@@ -159,6 +248,42 @@ function createComponents(
         {child}
       </div>
     )
+  }
+
+  /**
+   * The block a fence draws, or null when it is a code block.
+   *
+   * The one place the renderer decides "is this fence somebody else's block, and may it be drawn".
+   * Which fence draws what, and how each is called, is `fences` and `fence-components` — so both
+   * render modes and the editor's in-place blocks answer the same question the same way, and a
+   * fence added to the table is drawn here without another `if`.
+   */
+  const fenceBlock = (lang: string | undefined, code: string) => {
+    const drawing = fenceDrawing(lang ?? '')
+    if (!drawing) return null
+
+    // A document may name another document, and drawing that one inside this one has no floor:
+    // the fence falls through to a code block instead.
+    if (DISABLABLE_PREVIEW_BLOCKS.has(drawing as DisablablePreviewBlock) && !isPreviewEnabled(drawing as DisablablePreviewBlock)) {
+      return null
+    }
+
+    // Mermaid hides its own expand button when it is the first content of a message — the turn's
+    // fullscreen button occupies the same top-right spot. Detection uses firstMermaidCodeRef
+    // (content match) rather than AST line positions, which are unreliable after `preprocessLinks`.
+    const isFirstMermaidBlock =
+      drawing === 'mermaid' &&
+      hideFirstMermaidExpand &&
+      firstMermaidCodeRef?.current != null &&
+      code === firstMermaidCodeRef.current
+
+    const node = renderFence(drawing, code, 'my-2', {
+      onUrlClick,
+      onFileClick,
+      showExpandButton: !isFirstMermaidBlock,
+    })
+
+    return node ? { drawing, node } : null
   }
 
   const baseComponents: Partial<Components> = {
@@ -218,7 +343,10 @@ function createComponents(
 
         const resolvedTarget = resolveMarkdownLinkTarget(target)
         if (resolvedTarget.kind === 'file' && onFileClick) {
-          onFileClick(resolvedTarget.path)
+          // A file named beside the document is relative to *that* document, not to the app — the
+          // rule a picture already follows (`document-path.ts`). An absolute path or a `file:` URL
+          // comes back null and is opened exactly as written.
+          onFileClick(resolveDocumentPath(baseDir, resolvedTarget.path) ?? resolvedTarget.path)
         } else if (resolvedTarget.kind === 'url' && onUrlClick) {
           onUrlClick(resolvedTarget.url)
         }
@@ -234,6 +362,9 @@ function createComponents(
         </a>
       )
     },
+    // Pictures: a destination that names a file beside the document is read and shown
+    // (`MarkdownImage`); everything else is the plain `<img>` it always was.
+    img: (props) => <MarkdownImage baseDir={baseDir} {...props} />,
   }
 
   // Terminal mode: minimal formatting
@@ -262,9 +393,8 @@ function createComponents(
     }
   }
 
-  // Minimal mode: clean with syntax highlighting
-  if (mode === 'minimal') {
-    return {
+  // The reading style — what a conversation and an open document are both drawn with.
+  return {
       ...baseComponents,
       // Inline code
       code: ({ className, children, ...props }) => {
@@ -274,63 +404,9 @@ function createComponents(
         // Block code
         if (match || isBlock) {
           const code = String(children).replace(/\n$/, '')
-          // Diff code blocks → pierre/diffs for a proper diff viewer
-          if (match?.[1] === 'diff') {
-            return wrapBlock('code', code, <MarkdownDiffBlock code={code} className="my-2" />, props.node?.position)
-          }
-          // JSON code blocks → interactive tree viewer
-          if (match?.[1] === 'json') {
-            return wrapBlock('code', code, <MarkdownJsonBlock code={code} className="my-2" />, props.node?.position)
-          }
-          // Datatable code blocks → sortable/filterable data table
-          if (match?.[1] === 'datatable') {
-            return wrapBlock('datatable', code, <MarkdownDatatableBlock code={code} className="my-2" />, props.node?.position)
-          }
-          // Spreadsheet code blocks → Excel-style grid
-          if (match?.[1] === 'spreadsheet') {
-            return wrapBlock('spreadsheet', code, <MarkdownSpreadsheetBlock code={code} className="my-2" />, props.node?.position)
-          }
-          // HTML preview blocks → sandboxed iframe
-          if (match?.[1] === 'html-preview' && isPreviewEnabled('html-preview')) {
-            return wrapBlock('html-preview', code, <MarkdownHtmlBlock code={code} className="my-2" />, props.node?.position)
-          }
-          // PDF preview blocks → inline first page with expand to full viewer
-          if (match?.[1] === 'pdf-preview' && isPreviewEnabled('pdf-preview')) {
-            return wrapBlock('pdf-preview', code, <MarkdownPdfBlock code={code} className="my-2" />, props.node?.position)
-          }
-          // Image preview blocks → inline image with expand to full viewer
-          if (match?.[1] === 'image-preview' && isPreviewEnabled('image-preview')) {
-            return wrapBlock('image-preview', code, <MarkdownImageBlock code={code} className="my-2" />, props.node?.position)
-          }
-          // Markdown preview blocks → inline rendered .md file
-          if (match?.[1] === 'markdown-preview' && isPreviewEnabled('markdown-preview')) {
-            return wrapBlock(
-              'markdown-preview',
-              code,
-              <MarkdownDocBlock code={code} className="my-2" onUrlClick={onUrlClick} onFileClick={onFileClick} />,
-              props.node?.position,
-            )
-          }
-          // LaTeX/math code blocks → KaTeX rendered display math
-          if (match?.[1] === 'latex' || match?.[1] === 'math') {
-            return wrapBlock('latex', code, <MarkdownLatexBlock code={code} className="my-2" />, props.node?.position)
-          }
-          // Mermaid code blocks → zinc-styled SVG diagram.
-          // Hide the inline expand button when the mermaid block is the first
-          // content in the message — TurnCard's own fullscreen button occupies
-          // the same top-right spot. Detection uses firstMermaidCodeRef (content
-          // match) rather than AST line positions which are unreliable after
-          // preprocessLinks transforms the markdown.
-          if (match?.[1] === 'mermaid') {
-            const isFirstBlock = hideFirstMermaidExpand &&
-                                firstMermaidCodeRef?.current != null &&
-                                code === firstMermaidCodeRef.current
-            return wrapBlock(
-              'mermaid',
-              code,
-              <MarkdownMermaidBlock code={code} className="my-2" showExpandButton={!isFirstBlock} />,
-              props.node?.position,
-            )
+          const fence = fenceBlock(match?.[1], code)
+          if (fence) {
+            return wrapBlock(fenceBlockType(fence.drawing), code, fence.node, props.node?.position)
           }
           return wrapBlock('code', code, <CodeBlock code={code} language={match?.[1]} mode="full" className="my-2" />, props.node?.position)
         }
@@ -378,179 +454,38 @@ function createComponents(
         </div>
       ),
       thead: ({ children }) => <thead className="border-b">{children}</thead>,
-      th: ({ children }) => (
-        <th className="text-left py-2 px-3 font-semibold text-muted-foreground">{children}</th>
+      // `align` comes from GFM's delimiter row (`|:--|:-:|--:|`) and reaches these components as a property of the
+      // hast element. It used to be dropped here, so a table showed its alignment in the file and nowhere on screen.
+      th: ({ children, node }) => (
+        <th style={tableCellAlignStyle(tableCellAlignOf(node))} className="text-left py-2 px-3 font-semibold text-muted-foreground">
+          {children}
+        </th>
       ),
-      td: ({ children }) => (
-        <td className="py-2 px-3 border-b border-border/50">{children}</td>
+      td: ({ children, node }) => (
+        <td style={tableCellAlignStyle(tableCellAlignOf(node))} className="py-2 px-3 border-b border-border/50">
+          {children}
+        </td>
       ),
       // Headings - H1/H2 same size, differentiated by weight
       h1: ({ children }) => <h1 className="font-sans text-[16px] font-bold mt-5 mb-3">{children}</h1>,
       h2: ({ children }) => <h2 className="font-sans text-[16px] font-semibold mt-4 mb-3">{children}</h2>,
       h3: ({ children }) => <h3 className="font-sans text-[15px] font-semibold mt-4 mb-2">{children}</h3>,
       // Blockquotes
-      blockquote: ({ children }) => (
-        <blockquote className="border-l-2 border-muted-foreground/30 pl-3 my-2 text-muted-foreground italic">
-          {children}
-        </blockquote>
-      ),
+      blockquote: ({ children, node }) => {
+        const callout = calloutType(node)
+        if (callout) return <CalloutBlockquote type={callout}>{children}</CalloutBlockquote>
+        return (
+          <blockquote className="border-l-2 border-muted-foreground/30 pl-3 my-2 text-muted-foreground italic">
+            {children}
+          </blockquote>
+        )
+      },
       // Horizontal rules
       hr: () => <hr className="my-4 border-border" />,
       // Strong/emphasis
       strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
       em: ({ children }) => <em className="italic">{children}</em>,
     }
-  }
-
-  // Full mode: rich styling
-  return {
-    ...baseComponents,
-    // Full code blocks with copy button
-    code: ({ className, children, ...props }) => {
-      const match = /language-([\w-]+)/.exec(className || '')
-      const isBlock = 'node' in props && props.node?.position?.start.line !== props.node?.position?.end.line
-
-      if (match || isBlock) {
-        const code = String(children).replace(/\n$/, '')
-        // Diff code blocks → pierre/diffs for a proper diff viewer
-        if (match?.[1] === 'diff') {
-          return wrapBlock('code', code, <MarkdownDiffBlock code={code} className="my-2" />, props.node?.position)
-        }
-        // JSON code blocks → interactive tree viewer
-        if (match?.[1] === 'json') {
-          return wrapBlock('code', code, <MarkdownJsonBlock code={code} className="my-2" />, props.node?.position)
-        }
-        // Datatable code blocks → sortable/filterable data table
-        if (match?.[1] === 'datatable') {
-          return wrapBlock('datatable', code, <MarkdownDatatableBlock code={code} className="my-2" />, props.node?.position)
-        }
-        // Spreadsheet code blocks → Excel-style grid
-        if (match?.[1] === 'spreadsheet') {
-          return wrapBlock('spreadsheet', code, <MarkdownSpreadsheetBlock code={code} className="my-2" />, props.node?.position)
-        }
-        // HTML preview blocks → sandboxed iframe
-        if (match?.[1] === 'html-preview' && isPreviewEnabled('html-preview')) {
-          return wrapBlock('html-preview', code, <MarkdownHtmlBlock code={code} className="my-2" />, props.node?.position)
-        }
-        // PDF preview blocks → inline first page with expand to full viewer
-        if (match?.[1] === 'pdf-preview' && isPreviewEnabled('pdf-preview')) {
-          return wrapBlock('pdf-preview', code, <MarkdownPdfBlock code={code} className="my-2" />, props.node?.position)
-        }
-        // Image preview blocks → inline image with expand to full viewer
-        if (match?.[1] === 'image-preview' && isPreviewEnabled('image-preview')) {
-          return wrapBlock('image-preview', code, <MarkdownImageBlock code={code} className="my-2" />, props.node?.position)
-        }
-        // Markdown preview blocks → inline rendered .md file
-        if (match?.[1] === 'markdown-preview' && isPreviewEnabled('markdown-preview')) {
-          return wrapBlock(
-            'markdown-preview',
-            code,
-            <MarkdownDocBlock code={code} className="my-2" onUrlClick={onUrlClick} onFileClick={onFileClick} />,
-            props.node?.position,
-          )
-        }
-        // LaTeX/math code blocks → KaTeX rendered display math
-        if (match?.[1] === 'latex' || match?.[1] === 'math') {
-          return wrapBlock('latex', code, <MarkdownLatexBlock code={code} className="my-2" />, props.node?.position)
-        }
-        // Mermaid code blocks → zinc-styled SVG diagram.
-        // (Same first-block detection as minimal mode — see comment above.)
-        if (match?.[1] === 'mermaid') {
-          const isFirstBlock = hideFirstMermaidExpand &&
-                              firstMermaidCodeRef?.current != null &&
-                              code === firstMermaidCodeRef.current
-          return wrapBlock(
-            'mermaid',
-            code,
-            <MarkdownMermaidBlock code={code} className="my-2" showExpandButton={!isFirstBlock} />,
-            props.node?.position,
-          )
-        }
-        return wrapBlock('code', code, <CodeBlock code={code} language={match?.[1]} mode="full" className="my-2" />, props.node?.position)
-      }
-
-      return <InlineCode>{children}</InlineCode>
-    },
-    pre: ({ children }) => <>{children}</>,
-    // Rich paragraph spacing
-    p: ({ children }) => <p className="my-3 leading-relaxed">{children}</p>,
-    // Styled lists - ul uses tighter spacing, ol uses standard for number alignment
-    ul: ({ children, className }) => (
-      <ul
-        className={cn(
-          'my-3 space-y-1.5 ps-[16px] pe-2 list-disc marker:text-[var(--md-bullets)]',
-          className?.includes('contains-task-list') && 'list-none ps-0 marker:content-none',
-        )}
-      >
-        {children}
-      </ul>
-    ),
-    ol: ({ children, className }) => (
-      <ol className={cn('my-3 space-y-1.5 pl-6 list-decimal', className)}>{children}</ol>
-    ),
-    li: ({ children, className }) => (
-      <li className={cn('leading-relaxed', className?.includes('task-list-item') && 'list-none')}>{children}</li>
-    ),
-    // Beautiful tables
-    table: ({ children }) => (
-      <div className="my-4 overflow-x-auto rounded-md border">
-        <table className="min-w-full divide-y divide-border">{children}</table>
-      </div>
-    ),
-    thead: ({ children }) => <thead className="bg-muted/50">{children}</thead>,
-    tbody: ({ children }) => <tbody className="divide-y divide-border">{children}</tbody>,
-    th: ({ children }) => (
-      <th className="text-left py-3 px-4 font-semibold text-sm">{children}</th>
-    ),
-    td: ({ children }) => (
-      <td className="py-3 px-4 text-sm">{children}</td>
-    ),
-    tr: ({ children }) => (
-      <tr className="hover:bg-muted/30 transition-colors">{children}</tr>
-    ),
-    // Rich headings - H1/H2 same size, differentiated by weight
-    h1: ({ children }) => (
-      <h1 className="font-sans text-[16px] font-bold mt-7 mb-4">{children}</h1>
-    ),
-    h2: ({ children }) => (
-      <h2 className="font-sans text-[16px] font-semibold mt-6 mb-3">{children}</h2>
-    ),
-    h3: ({ children }) => (
-      <h3 className="font-sans text-[15px] font-semibold mt-5 mb-3">{children}</h3>
-    ),
-    h4: ({ children }) => (
-      <h4 className="text-[14px] font-semibold mt-3 mb-1">{children}</h4>
-    ),
-    // Styled blockquotes
-    blockquote: ({ children }) => (
-      <blockquote className="border-l-4 border-foreground/30 bg-muted/30 pl-4 pr-3 py-2 my-3 rounded-r-md">
-        {children}
-      </blockquote>
-    ),
-    // Task lists (GFM)
-    input: ({ type, checked }) => {
-      if (type === 'checkbox') {
-        return (
-          <input
-            type="checkbox"
-            checked={checked}
-            readOnly
-            className="mr-2 rounded border-muted-foreground"
-          />
-        )
-      }
-      return <input type={type} />
-    },
-    // Horizontal rules
-    hr: () => <hr className="my-6 border-border" />,
-    // Strong/emphasis
-    strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-    em: ({ children }) => <em className="italic">{children}</em>,
-    del: ({ children }) => <del className="line-through text-muted-foreground">{children}</del>,
-    // Handle unknown <markdown> tags that may come through rehype-raw
-    // Type assertion needed because 'markdown' is not a standard HTML element
-    markdown: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  } as Partial<Components>
 }
 
 /**
@@ -572,6 +507,7 @@ export function Markdown({
   onFileClick,
   collapsible = false,
   hideFirstMermaidExpand = true,
+  baseDir,
   disablePreviewBlocks,
 }: MarkdownProps) {
   // Get collapsible context if enabled
@@ -591,8 +527,8 @@ export function Markdown({
   }
 
   const components = React.useMemo(
-    () => wrapWithSafeProxy(createComponents(mode, onUrlClick, onFileClick, collapsible ? collapsibleContext : null, firstMermaidCodeRef, hideFirstMermaidExpand, disablePreviewBlocks)),
-    [mode, onUrlClick, onFileClick, collapsible, collapsibleContext, hideFirstMermaidExpand, disablePreviewBlocks]
+    () => wrapWithSafeProxy(createComponents(mode, onUrlClick, onFileClick, collapsible ? collapsibleContext : null, firstMermaidCodeRef, hideFirstMermaidExpand, disablePreviewBlocks, baseDir)),
+    [mode, onUrlClick, onFileClick, collapsible, collapsibleContext, hideFirstMermaidExpand, disablePreviewBlocks, baseDir]
   )
 
   // Preprocess to convert raw URLs and file paths to markdown links
@@ -611,8 +547,8 @@ export function Markdown({
         MARKDOWN_MATH_OPTIONS
       ]
       return collapsible
-        ? [remarkGfm, mathPlugin, remarkCollapsibleSections]
-        : [remarkGfm, mathPlugin]
+        ? [remarkGfm, mathPlugin, remarkCallouts, remarkCollapsibleSections]
+        : [remarkGfm, mathPlugin, remarkCallouts]
     },
     [collapsible]
   )
@@ -646,6 +582,7 @@ export const MemoizedMarkdown = React.memo(
         prevProps.id === nextProps.id &&
         prevProps.children === nextProps.children &&
         prevProps.mode === nextProps.mode &&
+        prevProps.baseDir === nextProps.baseDir &&
         prevProps.disablePreviewBlocks === nextProps.disablePreviewBlocks
       )
     }
@@ -653,6 +590,7 @@ export const MemoizedMarkdown = React.memo(
     return (
       prevProps.children === nextProps.children &&
       prevProps.mode === nextProps.mode &&
+      prevProps.baseDir === nextProps.baseDir &&
       prevProps.disablePreviewBlocks === nextProps.disablePreviewBlocks
     )
   }

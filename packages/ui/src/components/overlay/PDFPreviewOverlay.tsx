@@ -11,7 +11,7 @@
 import { useState, useCallback, useMemo, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Document, Page, pdfjs } from 'react-pdf'
-import { FileText } from 'lucide-react'
+import { FileText, PenLine } from 'lucide-react'
 import { PreviewOverlay } from './PreviewOverlay'
 import { CopyButton } from './CopyButton'
 import { ItemNavigator } from './ItemNavigator'
@@ -39,6 +39,25 @@ export interface PDFPreviewOverlayProps {
   /** Async loader that returns PDF data as Uint8Array */
   loadPdfData: (path: string) => Promise<Uint8Array>
   theme?: 'light' | 'dark'
+  /** Draw in place (a panel column) instead of in a window of its own. */
+  embedded?: boolean
+  /** Draw the header or leave the chrome to the caller. Embedded only. */
+  chrome?: boolean
+  /**
+   * Open the pdf in the editing surface, when this host has one.
+   *
+   * This window is a **reader** — it draws pages, and that is the common case: someone clicks a
+   * `.pdf` to read it, and an 8 MB editor would be a poor answer to that. Filling a form, marking up
+   * a clause, splitting or cropping pages is the rarer, deliberate act, so it gets a button here
+   * rather than becoming the default. Absent (a host with no editor) the button is not drawn.
+   *
+   * "Edit" and not "annotate": the vendored editor applies its own changes with pdf-lib and asks
+   * the host only for bytes and a save path, so what it can do is far wider than markup — form
+   * fields, page extraction/crop/n-up and image export all write back. The tooltip names the two
+   * things it cannot: in-place text surgery and permanent redaction (both were stubbed out of the
+   * bundle that provides `savePdfToPath`).
+   */
+  onEdit?: (path: string) => void
 }
 
 export function PDFPreviewOverlay({
@@ -49,6 +68,9 @@ export function PDFPreviewOverlay({
   initialIndex = 0,
   loadPdfData,
   theme = 'light',
+  embedded = false,
+  chrome = true,
+  onEdit,
 }: PDFPreviewOverlayProps) {
   const { t } = useTranslation()
 
@@ -118,6 +140,28 @@ export function PDFPreviewOverlay({
   const headerActions = (
     <div className="flex items-center gap-2">
       <ItemNavigator items={resolvedItems} activeIndex={activeIdx} onSelect={setActiveIdx} size="md" />
+      {/* Editing is deliberate, so it is offered and not imposed — see `onEdit`.
+
+          An icon with no label beside it, like the copy and expand buttons next to it: the header
+          of a reader is a row of controls, and one of them spelling out a word makes the row look
+          broken. The words live where they can be as long as they need to be — the accessible name
+          says what it is, the tooltip says what it does and does not do ("edit" alone would promise
+          text surgery this editor does not have). */}
+      {onEdit && (
+        <button
+          type="button"
+          onClick={() => onEdit(activeItem?.src || filePath)}
+          aria-label={t('preview.editPdf')}
+          title={t('preview.editPdfHint')}
+          /* The row's other buttons are `w-7 h-7` with a 16px icon (the header's copy is `p-1.5`
+             around `w-4 h-4`); this one was `p-1` around `h-3.5 w-3.5` — 22px in a row of 28px
+             boxes, and no centring, so it read as a smaller, lesser control than copy beside it.
+             Same box, same icon size, same place in the row. */
+          className="flex h-7 w-7 items-center justify-center rounded-[6px] bg-background text-muted-foreground shadow-minimal transition-colors hover:text-foreground"
+        >
+          <PenLine className="h-4 w-4" />
+        </button>
+      )}
       <CopyButton content={activeItem?.src || filePath} title={t('common.copyPath')} className="bg-background shadow-minimal" />
     </div>
   )
@@ -127,6 +171,8 @@ export function PDFPreviewOverlay({
       isOpen={isOpen}
       onClose={onClose}
       theme={theme}
+      embedded={embedded}
+      chrome={chrome}
       typeBadge={{
         icon: FileText,
         label: 'PDF',

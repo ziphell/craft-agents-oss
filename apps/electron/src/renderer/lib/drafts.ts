@@ -11,6 +11,10 @@
  * The detection criterion is `isAbsolutePath(a.path)`. File-picker and OS-drag go
  * through `webUtils.getPathForFile` (exposed on `electronAPI.getFilePath`) which
  * returns the absolute path. Paste/web-drag keep the filename-only synthetic path.
+ *
+ * A remote window adds a third case: a file picked from the hub's disk is path-backed too,
+ * but its path belongs to the server. Those refs carry `fromServer` and hydrate through the
+ * hub — reading that path locally would either fail or pick up an unrelated local file.
  */
 
 import type { FileAttachment } from '@craft-agent/shared/protocol'
@@ -57,6 +61,11 @@ function buildContent(a: FileAttachment): DraftAttachmentContent {
  * cap — the caller drops it from the draft with a console warn.
  */
 export function toDraftRef(a: FileAttachment): DraftAttachmentRef | null {
+  // A file picked from the server's disk is addressed by a path only the server understands,
+  // so it stays path-backed but is tagged: hydrate must read it through the hub, not locally.
+  if (a.fromServer) {
+    return { path: a.path, name: a.name, fromServer: true }
+  }
   if (isAbsolutePath(a.path)) {
     return { path: a.path, name: a.name }
   }

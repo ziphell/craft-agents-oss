@@ -1,7 +1,9 @@
 import * as React from 'react'
+import { useAtomValue } from 'jotai'
 
 import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
 import { getPathBasename } from '@/lib/platform'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 
 import {
   addRecentWorkingDir,
@@ -44,6 +46,8 @@ export interface UseWorkingDirectoryStateResult {
   folderName: string | undefined
   /** Whether the Reset action should be offered. */
   showReset: boolean
+  /** Whether there is a folder to open in the system file manager. */
+  canOpenLocation: boolean
   /** Whether the surface should show a search/filter input
    *  (true when more than {@link WORKING_DIR_FILTER_THRESHOLD} sortedRecent entries). */
   showFilter: boolean
@@ -52,6 +56,8 @@ export interface UseWorkingDirectoryStateResult {
   handleReset: () => void
   handleRemoveRecent: (e: React.MouseEvent, path: string) => void
   handleChooseFolder: () => void
+  /** Open the conversation's working folder in the system file manager. */
+  handleOpenLocation: () => void
 
   serverBrowser: Pick<
     ServerBrowserBridge,
@@ -63,6 +69,13 @@ export interface UseWorkingDirectoryStateResult {
  * Shared state machine for the working-directory selector. Powers both the
  * desktop popover (FreeFormInput.WorkingDirectoryBadge) and the compact
  * drawer (CompactWorkingDirectorySelector) so they cannot drift.
+ *
+ * It answers one question — **which folder does this conversation work in** — and
+ * nothing else. Whether the conversation is about the project's specs is a separate
+ * question with its own badge beside this one, and toggling it does not move the folder.
+ *
+ * A pick is reported and the session answers with events, so no surface keeps a
+ * second copy of the choice to fall out of step.
  *
  * The hook owns: recent-dirs list, home dir, git branch fetch, filter input
  * state, and all mutation handlers. The hook does **not** own: surface open
@@ -85,12 +98,13 @@ export function useWorkingDirectoryState(
   const [homeDir, setHomeDir] = React.useState<string>('')
   const [gitBranch, setGitBranch] = React.useState<string | null>(null)
   const [filter, setFilter] = React.useState('')
+  const isRemoteWindow = useAtomValue(windowIsRemoteAtom)
 
   React.useEffect(() => {
     setRecentDirs(getRecentWorkingDirs(workspaceId))
     window.electronAPI?.getHomeDir?.().then((dir: string) => {
       if (dir) setHomeDir(dir)
-    })
+    }).catch(() => {})
   }, [workspaceId])
 
   React.useEffect(() => {
@@ -146,6 +160,17 @@ export function useWorkingDirectoryState(
     pickDirectory()
   }, [onClose, pickDirectory])
 
+  // The folder this conversation works in: the chosen folder, or the session's own folder
+  // when none is chosen. This is what "Open location" opens.
+  const openLocationPath = workingDirectory ?? sessionFolderPath
+
+  const handleOpenLocation = React.useCallback(() => {
+    if (!openLocationPath || isRemoteWindow) return
+    // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
+    window.electronAPI.openFile(openLocationPath)
+    onClose()
+  }, [openLocationPath, isRemoteWindow, onClose])
+
   const sortedRecent = React.useMemo(
     () => deriveSortedRecent(recentDirs, workingDirectory),
     [recentDirs, workingDirectory],
@@ -168,11 +193,14 @@ export function useWorkingDirectoryState(
     hasFolder,
     folderName,
     showReset,
+    // "Open location" reveals a folder on this machine; a remote window's folder is on the hub.
+    canOpenLocation: !!openLocationPath && !isRemoteWindow,
     showFilter,
     handleSelectRecent,
     handleReset,
     handleRemoveRecent,
     handleChooseFolder,
+    handleOpenLocation,
     serverBrowser: {
       showServerBrowser,
       serverBrowserMode,

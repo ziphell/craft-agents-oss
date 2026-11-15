@@ -34,6 +34,11 @@ export interface DocumentFormattedMarkdownOverlayProps {
   onOpenFile?: (path: string) => void
   /** Optional file path — shows badge with "Open" / "Reveal in {file manager}" menu */
   filePath?: string
+  /**
+   * The folder the content's document lives in, when it is a file on disk — so a picture
+   * named beside it resolves (`Markdown`). Omitted for content that is not a file.
+   */
+  baseDir?: string
   /** Optional type badge — tool/format indicator (e.g. "Write") shown in header */
   typeBadge?: OverlayTypeBadge
   /** Optional error message — renders a tinted error banner above the content card */
@@ -66,6 +71,7 @@ export function DocumentFormattedMarkdownOverlay({
   onOpenUrl,
   onOpenFile,
   filePath,
+  baseDir,
   typeBadge,
   error,
   sessionId,
@@ -86,12 +92,13 @@ export function DocumentFormattedMarkdownOverlay({
       typeBadge={typeBadge}
       copyContent={content}
       error={error ? { label: 'Write Failed', message: error } : undefined}
+      closeOnBackdropClick
     >
       {/* Content wrapper — min-h-full for vertical centering within FullscreenOverlayBase's scroll container.
           Scrolling and gradient fade mask are handled by FullscreenOverlayBase. */}
       <div className="min-h-full flex flex-col justify-center px-6 py-16">
         {/* Content card - my-auto centers vertically when content is small, flows naturally when large */}
-        <div className="bg-background rounded-[16px] shadow-strong w-full max-w-[960px] h-fit mx-auto my-auto">
+        <div className="bg-background rounded-[16px] shadow-strong w-full max-w-[960px] h-fit mx-auto my-auto" data-overlay-card>
           {/* Plan header (variant="plan" only) */}
           {variant === 'plan' && (
             <div className="px-4 py-2 border-b border-border/30 flex items-center gap-2 bg-success/5 rounded-t-[16px]">
@@ -125,6 +132,7 @@ export function DocumentFormattedMarkdownOverlay({
                   onUrlClick={onOpenUrl}
                   onFileClick={onOpenFile}
                   hideFirstMermaidExpand={false}
+                  baseDir={baseDir}
                 >
                   {content}
                 </Markdown>

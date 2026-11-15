@@ -1,4 +1,3 @@
-import { resolve } from 'path'
 import { join } from 'path'
 import { homedir } from 'os'
 import { execSync } from 'child_process'
@@ -6,7 +5,7 @@ import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getGitBashPath, setGitBashPath, clearGitBashPath } from '@craft-agent/shared/config'
 import { classifyExternalUrl, formatBlockedUrlError } from '@craft-agent/shared/utils/url-safety'
 import { isUsableGitBashPath, validateGitBashPath } from '@craft-agent/server-core/services'
-import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
+import { validateFilePath, getWorkspaceAllowedDirs, resolveWorkspacePath } from '@craft-agent/server-core/handlers'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from './handler-deps'
 import {
@@ -42,6 +41,7 @@ export const GUI_HANDLED_CHANNELS = [
   RPC_CHANNELS.badge.REFRESH,
   RPC_CHANNELS.badge.SET_ICON,
   RPC_CHANNELS.window.GET_FOCUS_STATE,
+  RPC_CHANNELS.window.GET_MAXIMIZED_STATE,
   RPC_CHANNELS.notification.SHOW,
   RPC_CHANNELS.notification.GET_ENABLED,
   RPC_CHANNELS.notification.SET_ENABLED,
@@ -236,10 +236,8 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
 
   server.handle(RPC_CHANNELS.shell.OPEN_FILE, async (ctx, path: string) => {
     try {
-      const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
-      const absolutePath = resolve(expanded)
       const workspaceId = ctx.workspaceId ?? deps.windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
-      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(workspaceId))
+      const safePath = await validateFilePath(resolveWorkspacePath(path, workspaceId), getWorkspaceAllowedDirs(workspaceId, { sessionManager: deps.sessionManager }))
       const result = await requestClientOpenPath(server, ctx.clientId, safePath)
       if (result.error) throw new Error(result.error)
     } catch (error) {
@@ -251,10 +249,8 @@ export function registerSystemCoreHandlers(server: RpcServer, deps: HandlerDeps)
 
   server.handle(RPC_CHANNELS.shell.SHOW_IN_FOLDER, async (ctx, path: string) => {
     try {
-      const expanded = path.startsWith('~') ? path.replace(/^~/, homedir()) : path
-      const absolutePath = resolve(expanded)
       const workspaceId = ctx.workspaceId ?? deps.windowManager?.getWorkspaceForWindow(ctx.webContentsId!)
-      const safePath = await validateFilePath(absolutePath, getWorkspaceAllowedDirs(workspaceId))
+      const safePath = await validateFilePath(resolveWorkspacePath(path, workspaceId), getWorkspaceAllowedDirs(workspaceId, { sessionManager: deps.sessionManager }))
       await requestClientShowInFolder(server, ctx.clientId, safePath)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
@@ -301,10 +297,12 @@ export function registerSystemGuiHandlers(server: RpcServer, deps: HandlerDeps):
 
   server.handle(RPC_CHANNELS.menu.NEW_WINDOW, async (ctx) => {
     if (!windowManager) return
-    const workspaceId = ctx.workspaceId ?? windowManager.getWorkspaceForWindow(ctx.webContentsId!)
-    if (workspaceId) {
-      windowManager.createWindow({ workspaceId })
-    }
+    const webContentsId = ctx.webContentsId!
+    const workspaceId = ctx.workspaceId ?? windowManager.getWorkspaceForWindow(webContentsId)
+    if (!workspaceId) return
+    // Remote is a window property: a new window from a remote window stays on that server.
+    const remote = windowManager.getRemoteForWindow(webContentsId)
+    windowManager.createWindow({ workspaceId, ...(remote ? { remote } : {}) })
   })
 
   server.handle(RPC_CHANNELS.menu.MINIMIZE, async (ctx) => {
@@ -422,14 +420,22 @@ export function registerSystemGuiHandlers(server: RpcServer, deps: HandlerDeps):
     sessionManager.refreshBadge()
   })
 
-  server.handle(RPC_CHANNELS.badge.SET_ICON, async (_ctx, dataUrl: string) => {
+  server.handle(RPC_CHANNELS.badge.SET_ICON, async (_ctx, dataUrl: string, count?: number) => {
     const { setDockIconWithBadge } = await import('../notifications')
-    setDockIconWithBadge(dataUrl)
+    setDockIconWithBadge(dataUrl, count)
   })
 
   server.handle(RPC_CHANNELS.window.GET_FOCUS_STATE, async () => {
     const { isAnyWindowFocused } = require('../notifications')
     return isAnyWindowFocused()
+  })
+
+  // Whether the calling window is maximized. The app draws the Windows caption buttons itself
+  // (`window-manager.ts` drops the OS overlay), so the maximize button has to say which of the two
+  // it is, and a window that mounts after the last change asks rather than waits for an event.
+  server.handle(RPC_CHANNELS.window.GET_MAXIMIZED_STATE, async (ctx) => {
+    if (!windowManager) return false
+    return windowManager.getWindowByWebContentsId(ctx.webContentsId!)?.isMaximized() ?? false
   })
 }
 

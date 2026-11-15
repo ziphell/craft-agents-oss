@@ -162,6 +162,77 @@ describe('PiEventAdapter', () => {
       });
     });
 
+    it('should emit thinking_complete before text_complete when the message carries reasoning', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+      const events = collect(adapter.adaptEvent({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'toolUse',
+          content: [
+            { type: 'thinking', thinking: 'First paragraph\n\nSecond paragraph' },
+            { type: 'text', text: 'Let me check.' },
+          ],
+        },
+      } as any));
+
+      expect(events.map(e => e.type)).toEqual(['thinking_complete', 'text_complete']);
+      expect(events[0]).toMatchObject({
+        type: 'thinking_complete',
+        text: 'First paragraph\n\nSecond paragraph',
+      });
+      expect(events[1]).toMatchObject({
+        type: 'text_complete',
+        text: 'Let me check.',
+        isIntermediate: true,
+      });
+      // Distinct sub-turn ids: reasoning must never merge into commentary.
+      expect(events[0].turnId).not.toBe(events[1].turnId);
+    });
+
+    it('should emit one thinking_complete per reasoning block, in content order', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+      const events = collect(adapter.adaptEvent({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'toolUse',
+          content: [
+            { type: 'thinking', thinking: 'First reasoning segment.' },
+            { type: 'thinking', thinking: 'Second reasoning segment.' },
+            { type: 'text', text: 'Now calling the tool.' },
+          ],
+        },
+      } as any));
+
+      expect(events.map(e => e.type)).toEqual([
+        'thinking_complete',
+        'thinking_complete',
+        'text_complete',
+      ]);
+      expect(events[0]).toMatchObject({ text: 'First reasoning segment.' });
+      expect(events[1]).toMatchObject({ text: 'Second reasoning segment.' });
+      // Each segment is its own activity — never merged into one step.
+      expect(events[0].turnId).not.toBe(events[1].turnId);
+    });
+
+    it('should skip redacted thinking (signature only)', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+      const events = collect(adapter.adaptEvent({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'stop',
+          content: [
+            { type: 'thinking', thinking: '   ', thinkingSignature: 'sig' },
+            { type: 'text', text: 'Done.' },
+          ],
+        },
+      } as any));
+
+      expect(events.map(e => e.type)).toEqual(['text_complete']);
+    });
+
     it('should attach sdkMessageId from message_end onto the text_complete', () => {
       collect(adapter.adaptEvent({ type: 'turn_start' } as any));
       const events = collect(adapter.adaptEvent({

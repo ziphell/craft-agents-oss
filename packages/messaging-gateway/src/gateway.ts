@@ -152,6 +152,16 @@ export class MessagingGateway {
    */
   private readonly accessDeps: AccessControlDeps
   private readonly buttonRecentRejectReplies = new Map<string, number>()
+  /**
+   * Recently processed inbound messages, keyed by
+   * `platform:channelId:threadId:messageId`. Bounded + TTL'd (see
+   * `isDuplicateInbound`). Chat platforms redeliver an unacked message (Lark
+   * ~19s) or retry on transport hiccups; without this the same sentence lands
+   * in the session twice.
+   */
+  private readonly recentInbound = new Map<string, number>()
+  private static readonly INBOUND_DEDUP_TTL_MS = 5 * 60 * 1000
+  private static readonly INBOUND_DEDUP_MAX = 1000
 
   constructor(opts: GatewayOptions) {
     this.sessionManager = opts.sessionManager
@@ -316,6 +326,18 @@ export class MessagingGateway {
 
   private wireAdapter(adapter: PlatformAdapter): void {
     adapter.onMessage(async (msg: IncomingMessage) => {
+      // Drop redelivered messages before any command/routing work so a
+      // platform retry can't double-execute the same sentence.
+      if (msg.messageId && this.isDuplicateInbound(msg)) {
+        this.log.info('dropping redelivered inbound message', {
+          event: 'message_duplicate_dropped',
+          platform: msg.platform,
+          channelId: msg.channelId,
+          threadId: msg.threadId,
+          messageId: msg.messageId,
+        })
+        return
+      }
       const isCommand = msg.text.trim().startsWith('/')
       if (isCommand) {
         const handled = await this.commands.handleCommand(adapter, msg)
@@ -333,6 +355,37 @@ export class MessagingGateway {
       platform: adapter.platform,
       capabilities: adapter.capabilities,
     })
+  }
+
+  /**
+   * Return true when this exact inbound message was already processed within
+   * the dedup window. Keyed by platform + channel + thread + message id (each
+   * platform retry/redelivery reuses the same id). The map is bounded and
+   * TTL-pruned so a long-lived gateway can't grow without bound.
+   */
+  private isDuplicateInbound(msg: IncomingMessage): boolean {
+    const key = `${msg.platform}:${msg.channelId}:${msg.threadId ?? ''}:${msg.messageId}`
+    const now = Date.now()
+    const seenAt = this.recentInbound.get(key)
+    if (seenAt !== undefined && now - seenAt <= MessagingGateway.INBOUND_DEDUP_TTL_MS) {
+      return true
+    }
+
+    if (this.recentInbound.size >= MessagingGateway.INBOUND_DEDUP_MAX) {
+      // First drop anything already past the TTL…
+      for (const [k, ts] of this.recentInbound) {
+        if (now - ts > MessagingGateway.INBOUND_DEDUP_TTL_MS) this.recentInbound.delete(k)
+      }
+      // …then, if still full, evict oldest insertions (Map preserves order).
+      while (this.recentInbound.size >= MessagingGateway.INBOUND_DEDUP_MAX) {
+        const oldest = this.recentInbound.keys().next().value
+        if (oldest === undefined) break
+        this.recentInbound.delete(oldest)
+      }
+    }
+
+    this.recentInbound.set(key, now)
+    return false
   }
 
   // -------------------------------------------------------------------------

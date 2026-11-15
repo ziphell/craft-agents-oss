@@ -14,6 +14,7 @@
 
 import * as React from 'react'
 import { useTranslation } from "react-i18next"
+import { useAtomValue } from 'jotai'
 import {
   Archive,
   ArchiveRestore,
@@ -32,6 +33,7 @@ import {
   Send,
   FolderKanban,
   Check,
+  Bot,
 } from 'lucide-react'
 import { useMenuComponents } from '@/components/ui/menu-context'
 import { getStateColor, getStateIcon, type SessionStatusId } from '@/config/session-status-config'
@@ -43,6 +45,7 @@ import type { SessionMeta } from '@/atoms/sessions'
 import { getSessionStatus, hasUnreadMeta, hasMessagesMeta } from '@/utils/session'
 import { MessagingSessionMenuItem } from '@/components/messaging/MessagingSessionMenuItem'
 import { useSessionMenuActions } from '@/hooks/useSessionMenuActions'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 
 export interface SessionMenuProjectOption {
   id: string
@@ -74,6 +77,8 @@ export interface SessionMenuProps {
   onMarkUnread: () => void
   onSessionStatusChange: (state: SessionStatusId) => void
   onOpenInNewWindow: () => void
+  /** Hand this conversation to Craft Bot: its brief goes into the Bot's composer, unsent. */
+  onHandOffToBot?: () => void
   onSendToWorkspace?: () => void
   onDelete: () => void
 }
@@ -95,6 +100,7 @@ export function SessionMenu({
   onMarkUnread,
   onSessionStatusChange,
   onOpenInNewWindow,
+  onHandOffToBot,
   onSendToWorkspace,
   onDelete,
   hasTransferTargets,
@@ -102,6 +108,8 @@ export function SessionMenu({
   onSetProjectId,
 }: SessionMenuProps) {
   const { t } = useTranslation()
+  // The session folder is on the workspace's server, so a remote window cannot reveal it here.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
 
   const sessionId = item.id
   const isFlagged = item.isFlagged ?? false
@@ -141,6 +149,14 @@ export function SessionMenu({
             />
           </SubContent>
         </Sub>
+      )}
+
+      {/* Hand to Craft Bot — the conversation as context, not as a command */}
+      {onHandOffToBot && (
+        <MenuItem onClick={onHandOffToBot}>
+          <Bot className="h-3.5 w-3.5" />
+          <span className="flex-1">{t("bot.handOff")}</span>
+        </MenuItem>
       )}
 
       {/* Send to Workspace — visible when at least one other workspace exists */}
@@ -293,10 +309,12 @@ export function SessionMenu({
       </MenuItem>
 
       {/* Show in file manager */}
-      <MenuItem onClick={actions.showInFinder}>
-        <FolderOpen className="h-3.5 w-3.5" />
-        <span className="flex-1">{t("sessionMenu.showInFileManager", { fileManager: getFileManagerName() })}</span>
-      </MenuItem>
+      {canRevealLocally && (
+        <MenuItem onClick={actions.showInFinder}>
+          <FolderOpen className="h-3.5 w-3.5" />
+          <span className="flex-1">{t("sessionMenu.showInFileManager", { fileManager: getFileManagerName() })}</span>
+        </MenuItem>
+      )}
 
       {/* Copy Path */}
       <MenuItem onClick={actions.copyPath}>

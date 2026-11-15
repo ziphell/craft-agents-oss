@@ -116,6 +116,116 @@ describe('updateLlmConnection – customEndpoint', () => {
   })
 })
 
+describe('updateLlmConnection – merge semantics', () => {
+  /**
+   * The whole point of the merge contract: the UI is a view over the same file
+   * a user can hand-edit, so a save must not destroy what the UI never saw.
+   * See docs/custom-endpoint-plan.md §6 阶段 1.
+   */
+  it('keeps connection keys the code does not know about', () => {
+    const { runUpdate, readConnection } = setup([
+      makeConnection({ headers: { 'X-Gateway-Token': 'abc' }, vendorOption: { nested: true } }),
+    ])
+
+    const ok = runUpdate('custom-compat', { name: 'Renamed Endpoint' })
+    expect(ok).toBe(true)
+
+    const conn = readConnection('custom-compat')
+    expect(conn.name).toBe('Renamed Endpoint')
+    expect(conn.headers).toEqual({ 'X-Gateway-Token': 'abc' })
+    expect(conn.vendorOption).toEqual({ nested: true })
+  })
+
+  it('keeps per-model params when the update only carries bare ids (the connection form path)', () => {
+    const stored = { id: 'qwen3-coder', name: 'Qwen3 Coder', contextWindow: 262_144, maxTokens: 32_768 }
+    const { runUpdate, readConnection } = setup([makeConnection({ models: [stored] })])
+
+    const ok = runUpdate('custom-compat', { models: ['qwen3-coder', 'qwen3-coder-mini'] })
+    expect(ok).toBe(true)
+
+    const conn = readConnection('custom-compat')
+    expect(conn.models[0]).toEqual(stored)
+    expect(conn.models[1]).toBe('qwen3-coder-mini')
+  })
+
+  it('lets an object entry replace the stored params for that id', () => {
+    const { runUpdate, readConnection } = setup([
+      makeConnection({ models: [{ id: 'qwen3-coder', contextWindow: 262_144 }] }),
+    ])
+
+    const ok = runUpdate('custom-compat', { models: [{ id: 'qwen3-coder' }] })
+    expect(ok).toBe(true)
+
+    expect(readConnection('custom-compat').models).toEqual([{ id: 'qwen3-coder' }])
+  })
+
+  it('drops models that are no longer listed', () => {
+    const { runUpdate, readConnection } = setup([
+      makeConnection({ models: ['keep-me', 'drop-me'] }),
+    ])
+
+    const ok = runUpdate('custom-compat', { models: ['keep-me'] })
+    expect(ok).toBe(true)
+
+    expect(readConnection('custom-compat').models).toEqual(['keep-me'])
+  })
+
+  it('shallow-merges customEndpoint so the other endpoint keys survive a protocol edit', () => {
+    const { runUpdate, readConnection } = setup([
+      makeConnection({ customEndpoint: { api: 'openai-completions', headers: { 'X-Gateway-Token': 'abc' } } }),
+    ])
+
+    const ok = runUpdate('custom-compat', { customEndpoint: { api: 'anthropic-messages' } })
+    expect(ok).toBe(true)
+
+    expect(readConnection('custom-compat').customEndpoint).toEqual({
+      api: 'anthropic-messages',
+      headers: { 'X-Gateway-Token': 'abc' },
+    })
+  })
+
+  it('deletes a key when the update passes null', () => {
+    const { runUpdate, readConnection } = setup([makeConnection()])
+
+    const ok = runUpdate('custom-compat', { baseUrl: null })
+    expect(ok).toBe(true)
+
+    const conn = readConnection('custom-compat')
+    expect('baseUrl' in conn).toBe(false)
+  })
+})
+
+describe('updateLlmConnection – fastModel', () => {
+  it('persists the picked small/fast model', () => {
+    const { runUpdate, readConnection } = setup([makeConnection()])
+
+    const ok = runUpdate('custom-compat', { fastModel: 'qwen-turbo' })
+    expect(ok).toBe(true)
+
+    expect(readConnection('custom-compat').fastModel).toBe('qwen-turbo')
+  })
+
+  it('preserves fastModel across an unrelated update', () => {
+    const { runUpdate, readConnection } = setup([makeConnection({ fastModel: 'qwen-turbo' })])
+
+    const ok = runUpdate('custom-compat', { name: 'Renamed Endpoint' })
+    expect(ok).toBe(true)
+
+    const conn = readConnection('custom-compat')
+    expect(conn.name).toBe('Renamed Endpoint')
+    expect(conn.fastModel).toBe('qwen-turbo')
+  })
+
+  it('deletes the key when the update passes null (back to not picked)', () => {
+    const { runUpdate, readConnection } = setup([makeConnection({ fastModel: 'qwen-turbo' })])
+
+    const ok = runUpdate('custom-compat', { fastModel: null })
+    expect(ok).toBe(true)
+
+    expect('fastModel' in readConnection('custom-compat')).toBe(false)
+  })
+})
+
 describe('updateLlmConnection – Anthropic OAuth identity (issue #838)', () => {
   const identity = {
     oauthAccountUuid: 'acct-uuid-123',

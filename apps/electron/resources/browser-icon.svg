@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Window icon for the standalone browser window ("Craft Browser").
+
+  The Craft glyph on the app icon's white tile, with the glyph recoloured blue so
+  the browser window is told apart from the app window (whose glyph stays purple)
+  at a glance in the taskbar and the window switcher. The tile geometry and the
+  glyph's size within it mirror resources/source.png, so the two icons read as
+  one family.
+
+  Rasterised to browser-icon.png (512, Linux - keeps the tile's inset margin,
+  like the app's icon.png) and browser-icon.ico (multi-size, Windows - the
+  transparent margin is trimmed so the tile fills the canvas and does not read as
+  smaller than its neighbours). macOS ignores a BrowserWindow icon entirely.
+-->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EDEDF2"/>
+    </linearGradient>
+  </defs>
+  <rect x="98" y="98" width="828" height="828" rx="186" fill="url(#tile)" stroke="#000000" stroke-opacity="0.05" stroke-width="3"/>
+  <g transform="translate(267.05, 254.15) scale(28.65)" fill="#3B82F6">
+    <path d="M3.17890888,3.6 L3.17890888,0 L16,0 L16,3.6 L3.17890888,3.6 Z M9.642,7.2 L9.64218223,10.8 L0,10.8 L0,3.6 L16,3.6 L16,7.2 L9.642,7.2 Z M3.17890888,18 L3.178,14.4 L0,14.4 L0,10.8 L16,10.8 L16,18 L3.17890888,18 Z" fill-rule="nonzero"/>
+  </g>
+</svg>

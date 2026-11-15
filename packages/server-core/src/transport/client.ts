@@ -13,12 +13,34 @@ import {
   PROTOCOL_VERSION,
   REQUEST_TIMEOUT_MS,
   SEQUENCE_ACK_INTERVAL_MS,
+  RPC_CHANNELS,
   isErrorCode,
   type ErrorCode,
   type MessageEnvelope,
 } from '@craft-agent/shared/protocol'
 import type { RpcClient } from './types'
 import { serializeEnvelope, deserializeEnvelope } from './codec'
+
+/**
+ * Generate a request/envelope id.
+ *
+ * `crypto.randomUUID()` is only exposed in secure contexts — a browser served
+ * over plain HTTP from a non-localhost origin (e.g. a LAN IP) does not have it,
+ * which throws inside `onopen` and stops the handshake from ever being sent.
+ * `crypto.getRandomValues` works in insecure contexts too, so fall back to
+ * formatting a v4 UUID from random bytes.
+ */
+function randomId(): string {
+  const c = globalThis.crypto
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+  const bytes = new Uint8Array(16)
+  if (c && typeof c.getRandomValues === 'function') c.getRandomValues(bytes)
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
 
 // ---------------------------------------------------------------------------
 // Pending request state
@@ -46,6 +68,7 @@ export type TransportConnectionStatus =
 
 export type TransportConnectionErrorKind =
   | 'auth'
+  | 'scope'
   | 'protocol'
   | 'timeout'
   | 'network'
@@ -96,6 +119,8 @@ export interface WsRpcClientOptions {
   connectTimeout?: number
   /** Capabilities to advertise on handshake. Handlers must be registered via handleCapability(). */
   clientCapabilities?: string[]
+  /** Human-readable identity shown in the server's connected-client list. */
+  clientInfo?: { name?: string; platform?: string; deviceId?: string; allowedRoots?: string[]; hubRootBase?: string; probe?: boolean; role?: 'window' | 'device' }
   /** Runtime mode — local embedded or remote thin-client connection. */
   mode?: TransportMode
   /** Accept self-signed TLS certificates for wss:// connections. Default: false. Only works in Node.js (main process). */
@@ -115,6 +140,7 @@ export class WsRpcClient implements RpcClient {
   private anyEventListeners = new Set<(channel: string, ...args: any[]) => void>()
   private clientId: string | null = null
   private _serverVersion: string | null = null
+  private _tokenScope: 'client' | 'device' | 'both' | null = null
   private connected = false
   private reconnectAttempt = 0
   private lastSeenSeq = 0
@@ -137,10 +163,11 @@ export class WsRpcClient implements RpcClient {
   private serverChannels: Set<string> | null = null
 
   private readonly url: string
-  private readonly workspaceId: string | undefined
+  private workspaceId: string | undefined
   private readonly webContentsId: number | undefined
   private readonly token: string | undefined
   private readonly clientCapabilities: string[]
+  private readonly clientInfo: { name?: string; platform?: string; deviceId?: string; allowedRoots?: string[]; hubRootBase?: string; probe?: boolean } | null
   private readonly requestTimeout: number
   private readonly maxReconnectDelay: number
   private readonly autoReconnect: boolean
@@ -154,6 +181,7 @@ export class WsRpcClient implements RpcClient {
     this.webContentsId = opts?.webContentsId
     this.token = opts?.token
     this.clientCapabilities = opts?.clientCapabilities ?? []
+    this.clientInfo = opts?.clientInfo ?? null
     this.requestTimeout = opts?.requestTimeout ?? REQUEST_TIMEOUT_MS
     this.maxReconnectDelay = opts?.maxReconnectDelay ?? 30_000
     this.autoReconnect = opts?.autoReconnect ?? true
@@ -183,7 +211,7 @@ export class WsRpcClient implements RpcClient {
         return
       }
 
-      const id = crypto.randomUUID()
+      const id = randomId()
       const timeout = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error(`Request timeout: ${channel} (${this.requestTimeout}ms)`))
@@ -239,6 +267,22 @@ export class WsRpcClient implements RpcClient {
   /** Server version from handshake_ack (null if server didn't send one / not yet connected). */
   getServerVersion(): string | null {
     return this._serverVersion
+  }
+
+  /** What the credential behind this connection may do, as the server reported it. */
+  getTokenScope(): 'client' | 'device' | 'both' | null {
+    return this._tokenScope
+  }
+
+  /**
+   * Change the workspace this connection speaks for, so the next handshake carries it.
+   *
+   * `window:switchWorkspace` updates the server's record but not this client's own identity. Left
+   * alone, a reconnect would present the workspace the connection was **created** with, fail the
+   * server's identity check, and come back as a different client on the old workspace.
+   */
+  setWorkspace(workspaceId: string): void {
+    this.workspaceId = workspaceId
   }
 
   getConnectionState(): TransportConnectionState {
@@ -323,19 +367,26 @@ export class WsRpcClient implements RpcClient {
   // -------------------------------------------------------------------------
 
   /**
-   * Create a WebSocket instance. In Node.js (main process), uses the `ws` library
-   * to support TLS options (e.g. rejectUnauthorized for self-signed certs).
-   * In the renderer (browser), falls back to the global WebSocket.
+   * Create a WebSocket instance. In Node.js (main process and Electron preloads), uses the
+   * `ws` library; in the browser, falls back to the global WebSocket.
+   *
+   * `ws` is preferred whenever Node is available, not just for TLS options: the renderer page's
+   * CSP (`connect-src` in index.html) only allows `ws://localhost` and `ws://127.0.0.1`, so a
+   * socket opened from an already-loaded page to a LAN/tunnel hub is refused by Chromium — with
+   * an error event that carries no message. `ws` is not subject to the page CSP and reports the
+   * real cause (ECONNREFUSED, DNS, TLS), which is why a remote window connects at preload time
+   * but the same server fails when switched to from a loaded window.
    */
   private createWebSocket(url: string): WebSocket {
-    const needsTlsOptions = url.startsWith('wss://') && !this.tlsRejectUnauthorized
-
-    if (needsTlsOptions && typeof process !== 'undefined' && process.versions?.node) {
-      // Node.js / Electron main process — use `ws` library for TLS options
+    if (typeof process !== 'undefined' && process.versions?.node) {
+      // Node.js / Electron — use `ws` library
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { WebSocket: WsWebSocket } = require('ws') as typeof import('ws')
-        return new WsWebSocket(url, { rejectUnauthorized: false }) as unknown as WebSocket
+        const tlsOptions = url.startsWith('wss://') && !this.tlsRejectUnauthorized
+          ? { rejectUnauthorized: false }
+          : undefined
+        return new WsWebSocket(url, tlsOptions) as unknown as WebSocket
       } catch {
         // Fallback if ws not available
         return new WebSocket(url)
@@ -402,13 +453,14 @@ export class WsRpcClient implements RpcClient {
 
       // Send handshake (includes reconnection info if available)
       const handshake: MessageEnvelope = {
-        id: crypto.randomUUID(),
+        id: randomId(),
         type: 'handshake',
         protocolVersion: PROTOCOL_VERSION,
         workspaceId: this.workspaceId,
         webContentsId: this.webContentsId,
         token: this.token,
         clientCapabilities: this.clientCapabilities.length > 0 ? this.clientCapabilities : undefined,
+        clientInfo: this.clientInfo ? { ...this.clientInfo, mode: this.mode } : { mode: this.mode },
         reconnectClientId: reconnectSnapshot?.clientId,
         lastSeq: reconnectSnapshot?.lastSeq,
       }
@@ -520,6 +572,7 @@ export class WsRpcClient implements RpcClient {
         this.pendingReconnect = null
         this.clientId = envelope.clientId ?? null
         this._serverVersion = envelope.serverVersion ?? null
+        this._tokenScope = envelope.tokenScope ?? null
         this.serverChannels = envelope.registeredChannels
           ? new Set(envelope.registeredChannels)
           : null
@@ -619,6 +672,12 @@ export class WsRpcClient implements RpcClient {
         }
 
         if (envelope.channel) {
+          // A slot's scope can change while this socket stays open; keep the local answer in step
+          // instead of holding the value the handshake happened to carry.
+          if (envelope.channel === RPC_CHANNELS.server.TOKEN_SCOPE) {
+            const next = envelope.args?.[0]
+            if (next === 'client' || next === 'device' || next === 'both') this._tokenScope = next
+          }
           // Server is shutting down — stop reconnection before dispatching
           if (envelope.channel === 'server:shuttingDown') {
             this.permanentlyClosed = true
@@ -827,7 +886,7 @@ export class WsRpcClient implements RpcClient {
     this.ackTimer = setInterval(() => {
       if (this.connected && this.lastSeenSeq > 0) {
         const ack: MessageEnvelope = {
-          id: crypto.randomUUID(),
+          id: randomId(),
           type: 'sequence_ack',
           lastSeq: this.lastSeenSeq,
         }
@@ -957,6 +1016,9 @@ export class WsRpcClient implements RpcClient {
     const normalized = typeof code === 'string' ? code.toUpperCase() : ''
 
     if (normalized === 'AUTH_FAILED') return 'auth'
+    // The credential is valid but may not open windows here. Distinct from `auth`: retrying will
+    // not help until the hub changes the slot's scope.
+    if (normalized === 'REMOTE_CONTROL_DENIED' || normalized === 'SCOPE_FORBIDDEN') return 'scope'
     if (normalized === 'PROTOCOL_VERSION_UNSUPPORTED') return 'protocol'
     if (normalized === 'HANDSHAKE_TIMEOUT' || normalized === 'REQUEST_TIMEOUT' || normalized === 'CLIENT_REQUEST_TIMEOUT') {
       return 'timeout'

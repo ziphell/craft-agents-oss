@@ -25,6 +25,7 @@
 
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAtomValue } from 'jotai'
 import { motion } from 'motion/react'
 import {
   Archive,
@@ -39,6 +40,7 @@ import {
   Copy,
   Flag,
   FlagOff,
+  FolderKanban,
   FolderOpen,
   Globe,
   Link2Off,
@@ -73,12 +75,14 @@ import {
   type SessionStatusId,
 } from '@/config/session-status-config'
 import type { SessionMeta } from '@/atoms/sessions'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import { getSessionStatus, hasUnreadMeta, hasMessagesMeta } from '@/utils/session'
 import { getFileManagerName } from '@/lib/platform'
 import { useMessagingConnect, type MessagingPlatform } from '@/components/messaging/MessagingSessionMenuItem'
 import { useSessionMenuActions } from '@/hooks/useSessionMenuActions'
+import type { SessionMenuProjectOption } from './SessionMenu'
 
-type View = 'root' | 'status' | 'labels' | 'share' | 'messaging'
+type View = 'root' | 'status' | 'labels' | 'projects' | 'share' | 'messaging'
 
 export interface CompactSessionMenuProps {
   /** Title text shown in the trigger button + drawer header. */
@@ -93,6 +97,10 @@ export interface CompactSessionMenuProps {
   sessionStatuses: SessionStatus[]
   labels?: LabelConfig[]
   hasTransferTargets?: boolean
+  /** Workspace projects (omit to hide the Projects pane). */
+  projects?: SessionMenuProjectOption[]
+  /** Bind/unbind this session's project. `null` clears it. */
+  onSetProjectId?: (projectId: string | null) => void
 
   // Callbacks — same as SessionMenu
   onLabelsChange?: (labels: string[]) => void
@@ -131,6 +139,8 @@ export function CompactSessionMenu({
   sessionStatuses,
   labels = [],
   hasTransferTargets,
+  projects = [],
+  onSetProjectId,
   onLabelsChange,
   onRename,
   onFlag,
@@ -180,8 +190,13 @@ export function CompactSessionMenu({
   const sessionLabels = item.labels ?? []
   const _hasMessages = hasMessagesMeta(item)
   const _hasUnread = hasUnreadMeta(item)
+  // The session folder is on the workspace's server, so a remote window cannot reveal it here.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
 
   const actions = useSessionMenuActions({ item, onLabelsChange })
+
+  // The project this conversation is bound to — what it is about, not where it works.
+  const boundProject = projects.find((project) => project.id === item.projectId)
 
   const flatLabelItems = React.useMemo(
     (): LabelMenuItem[] => createLabelMenuItems(labels),
@@ -216,6 +231,7 @@ export function CompactSessionMenu({
     switch (view) {
       case 'status':    return t('sessionMenu.status')
       case 'labels':    return t('sessionMenu.labels')
+      case 'projects':  return t('sessionMenu.projects')
       case 'share':     return t('sessionMenu.shared')
       case 'messaging': return t('sessionMenu.connectMessaging')
       default:          return title ?? ''
@@ -305,6 +321,9 @@ export function CompactSessionMenu({
               onOpenMessagingSub={() => setView('messaging')}
               onOpenStatusSub={() => setView('status')}
               onOpenLabelsSub={() => setView('labels')}
+              showProjects={projects.length > 0 && !!onSetProjectId}
+              projectName={boundProject?.name}
+              onOpenProjectsSub={() => setView('projects')}
               onFlag={closeAfter(onFlag)}
               onUnflag={closeAfter(onUnflag)}
               onArchive={closeAfter(onArchive)}
@@ -314,7 +333,7 @@ export function CompactSessionMenu({
               onRefreshTitle={closeAfter(actions.refreshTitle)}
               onOpenInNewPanel={closeAfter(actions.openInNewPanel)}
               onOpenInNewWindow={closeAfter(onOpenInNewWindow)}
-              onShowInFinder={closeAfter(actions.showInFinder)}
+              onShowInFinder={canRevealLocally ? closeAfter(actions.showInFinder) : undefined}
               onCopyPath={closeAfter(actions.copyPath)}
               onDelete={closeAfter(onDelete)}
             />
@@ -336,6 +355,17 @@ export function CompactSessionMenu({
               items={flatLabelItems}
               appliedLabelIds={actions.appliedLabelIds}
               onToggle={actions.toggleLabel}
+            />
+          )}
+
+          {view === 'projects' && (
+            <ProjectsPane
+              projects={projects}
+              activeProjectId={item.projectId}
+              onSelect={(projectId) => {
+                onSetProjectId?.(projectId)
+                setOpen(false)
+              }}
             />
           )}
 
@@ -372,6 +402,11 @@ interface RootPaneProps {
   hasMessages: boolean
   hasUnread: boolean
   hasTransferTargets?: boolean
+  /** Bound project's name, shown as the Projects row's trailing text. */
+  projectName?: string
+  /** Whether the Projects pane is offered (projects exist and something can bind them). */
+  showProjects: boolean
+  onOpenProjectsSub: () => void
   onShare?: () => void
   onOpenShareSub: () => void
   onSendToWorkspace?: () => void
@@ -403,6 +438,9 @@ function RootPane({
   hasMessages,
   hasUnread,
   hasTransferTargets,
+  projectName,
+  showProjects,
+  onOpenProjectsSub,
   onShare,
   onOpenShareSub,
   onSendToWorkspace,
@@ -476,6 +514,16 @@ function RootPane({
         />
       )}
 
+      {showProjects && (
+        <Row
+          icon={<FolderKanban className="h-4 w-4" />}
+          label={t('sessionMenu.projects')}
+          trailing={projectName ? <TrailingText>{projectName}</TrailingText> : undefined}
+          chevron
+          onTap={onOpenProjectsSub}
+        />
+      )}
+
       {!isFlagged ? (
         <Row icon={<Flag className="h-4 w-4 text-info" />} label={t('sessionMenu.flag')} onTap={onFlag} />
       ) : (
@@ -503,11 +551,13 @@ function RootPane({
       {onOpenInNewWindow && (
         <Row icon={<AppWindow className="h-4 w-4" />} label={t('sessionMenu.openInNewWindow')} onTap={onOpenInNewWindow} />
       )}
-      <Row
-        icon={<FolderOpen className="h-4 w-4" />}
-        label={t('sessionMenu.showInFileManager', { fileManager: getFileManagerName() })}
-        onTap={onShowInFinder}
-      />
+      {onShowInFinder && (
+        <Row
+          icon={<FolderOpen className="h-4 w-4" />}
+          label={t('sessionMenu.showInFileManager', { fileManager: getFileManagerName() })}
+          onTap={onShowInFinder}
+        />
+      )}
       <Row icon={<Copy className="h-4 w-4" />} label={t('sessionMenu.copyPath')} onTap={onCopyPath} />
 
       <Separator />
@@ -581,6 +631,38 @@ function LabelsPane({
           />
         )
       })}
+    </div>
+  )
+}
+
+function ProjectsPane({
+  projects,
+  activeProjectId,
+  onSelect,
+}: {
+  projects: SessionMenuProjectOption[]
+  activeProjectId?: string
+  onSelect: (projectId: string | null) => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <div className="flex flex-col">
+      <Row
+        icon={<FolderKanban className="h-4 w-4" />}
+        label={t('sessionMenu.noProject')}
+        radioSelected={!activeProjectId}
+        onTap={() => onSelect(null)}
+      />
+      <Separator />
+      {projects.map((project) => (
+        <Row
+          key={project.id}
+          icon={<FolderKanban className="h-4 w-4" />}
+          label={project.name}
+          radioSelected={activeProjectId === project.id}
+          onTap={() => onSelect(project.id)}
+        />
+      ))}
     </div>
   )
 }
@@ -671,6 +753,15 @@ function CountBadge({ count }: { count: number }) {
   return (
     <span className="text-[11px] tabular-nums text-foreground/50">
       {count}
+    </span>
+  )
+}
+
+/** The bound value of a pane the root row only summarises (a project name). */
+function TrailingText({ children, mono = false }: { children: React.ReactNode; mono?: boolean }) {
+  return (
+    <span className={cn('text-xs text-foreground/50 truncate max-w-[40%]', mono && 'font-mono')}>
+      {children}
     </span>
   )
 }

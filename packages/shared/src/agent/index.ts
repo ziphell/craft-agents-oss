@@ -4,6 +4,13 @@ export * from './conversation-summary.ts';
 
 // Export PiAgent for direct use
 export { PiAgent, PiBackend } from './pi-agent.ts';
+// Device meta-tool types (`device_tool` runs shell/files/browser/computer on a named device)
+export * from './device-tool.ts';
+// Desktop-driving surface and its command language (`device_tool {"tool":"computer"}`)
+export * from './computer-pane.ts';
+export * from './computer-commands.ts';
+export * from './computer-bridge.ts';
+export { createComputerTools } from './computer-tools.ts';
 export * from './errors.ts';
 export * from './options.ts';
 
@@ -12,6 +19,8 @@ export {
   // Session-scoped tools provider
   getSessionScopedTools,
   cleanupSessionScopedTools,
+  /** Drop every cached tool list, so a setting that changes membership or a brief applies. */
+  invalidateAllSessionToolsCaches,
   // Plan file management
   getSessionPlansDir,
   getLastPlanFilePath,
@@ -35,6 +44,26 @@ export {
   type MicrosoftOAuthAuthRequest,
   type CredentialInputMode,
 } from './session-scoped-tools.ts';
+
+// The browser profile a session works in, as the prompt needs it — volatile context, never the
+// cached system prefix.
+export {
+  setBrowserProfilePromptState,
+  getBrowserProfilePromptState,
+  consumeBrowserProfileChange,
+  clearBrowserProfilePromptState,
+  type BrowserProfilePromptState,
+} from './browser-profile-prompt-state.ts';
+
+// Whether this server has a browser of its own — same volatile channel, same reason.
+export {
+  setBrowserHostState,
+  getBrowserHostState,
+  clearBrowserHostState,
+  setRecordingHostState,
+  getRecordingHostState,
+  clearRecordingHostState,
+} from './browser-host-state.ts';
 
 // Export mode-manager - Centralized mode management
 export {
@@ -161,14 +190,8 @@ export {
 // Export core utilities for shared agent logic
 export * from './core/index.ts';
 
-// Export browser tool name normalization helpers
-export {
-  LEGACY_BROWSER_TOOL_ALIASES,
-  normalizeCanonicalBrowserToolName,
-  normalizeBrowserToolName,
-  isCanonicalBrowserToolName,
-  isBrowserToolNameOrAlias,
-} from './browser-tool-names.ts';
+// Which pane tool (browser_tool) a tool name denotes
+export { resolveToolName } from './tool-names.ts';
 
 // Export PowerShell validator root setter (for Electron startup on Windows)
 export { setPowerShellValidatorRoot } from './powershell-validator.ts';

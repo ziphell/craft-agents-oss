@@ -4,7 +4,7 @@
  * Renders content based on the unified NavigationState:
  * - Chats navigator: ChatPage for selected session, or empty state
  * - Sources navigator: SourceInfoPage for selected source, or empty state
- * - Settings navigator: Settings, Preferences, or Shortcuts page
+ * - Settings navigator: Settings, Preferences, or Shortcuts design
  *
  * The NavigationState is the single source of truth for what to display.
  *
@@ -32,7 +32,9 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   isProjectsNavigation,
-  isPagesNavigation,
+  isTweaksNavigation,
+  isCreationsNavigation,
+  isBotNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
@@ -44,8 +46,10 @@ import { getSettingsPageComponent } from '@/pages/settings/settings-pages'
 import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
-import { PagesHome } from '../pages/PagesHome'
-import { PageView } from '../pages/PageView'
+import { TweakView } from '../tweaks/TweakView'
+import { CreationsHome } from '../creations/CreationsHome'
+import { SessionCanvasWorkspace } from '../canvas/SessionCanvasWorkspace'
+import { BotPage } from '@/pages/BotPage'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
@@ -236,10 +240,10 @@ export function MainContentPanel({
     </StoplightProvider>
   )
 
-  // Settings navigator - uses component map from settings-pages.ts.
+  // Settings navigator - uses component map from settings-designs.ts.
   // Bare `settings` route (subpage === null) means navigator-only view in compact mode;
   // PanelStackContainer hides the content panel entirely. On desktop the panel still
-  // mounts, so fall back to the App page so it isn't empty.
+  // mounts, so fall back to the App design so it isn't empty.
   if (isSettingsNavigation(navState)) {
     const subpage = navState.subpage ?? 'app'
     const SettingsPageComponent = getSettingsPageComponent(subpage)
@@ -361,20 +365,46 @@ export function MainContentPanel({
     )
   }
 
-  // Pages navigator - full-width library grid, or one page's embedded render
-  if (isPagesNavigation(navState)) {
+  // Tweaks navigator - show one tweak's detail page, or an empty state
+  if (isTweaksNavigation(navState)) {
+    if (navState.details) {
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <TweakView key={navState.details.tweakSlug} tweakSlug={navState.details.tweakSlug} />
+        </Panel>
+      )
+    }
+    // No tweak selected - empty state
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
-        {navState.details ? (
-          <PageView key={navState.details.pageSlug} pageSlug={navState.details.pageSlug} />
-        ) : (
-          <PagesHome />
-        )}
+        <div className="flex items-center justify-center h-full text-muted-foreground">
+          <p className="text-sm">{t("tweaks.noTweakSelected")}</p>
+        </div>
       </Panel>
     )
   }
 
-  // Projects navigator - show project detail page or empty state
+  // Creations navigator — the library of works the agent produced. One screen: a work is a file,
+  // so opening a card opens that file rather than routing into a detail view.
+  if (isCreationsNavigation(navState)) {
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        <CreationsHome />
+      </Panel>
+    )
+  }
+
+  // Craft Bot — the assistant's console. Its own panel, not a workspace: everything it does happens
+  // in the workspace a task is sent to, and that work opens as a session of its own.
+  if (isBotNavigation(navState)) {
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        <BotPage />
+      </Panel>
+    )
+  }
+
+  // Projects navigator - show project detail design or empty state
   if (isProjectsNavigation(navState)) {
     const projectDetails = navState.details
     if (projectDetails && projectDetails.type === 'project') {
@@ -426,7 +456,8 @@ export function MainContentPanel({
     if (navState.details) {
       return wrapWithStoplight(
         <Panel variant="grow" className={className}>
-          <ChatPage sessionId={navState.details.sessionId} />
+          {/* The conversation, plus its project's canvas when the project asks for it. */}
+          <SessionCanvasWorkspace sessionId={navState.details.sessionId} />
         </Panel>
       )
     }

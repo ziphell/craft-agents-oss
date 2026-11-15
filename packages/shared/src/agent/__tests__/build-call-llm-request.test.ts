@@ -106,6 +106,15 @@ describe('buildCallLlmRequest()', () => {
     ).rejects.toThrow('Image attachments are not supported in Codex mode');
   });
 
+  it('accepts an image when a vision model is resolvable, and routes it there', async () => {
+    const result = await buildCallLlmRequest(
+      { prompt: 'What is in this?', attachments: [join(TMP_DIR, 'image.png')] },
+      { backendName: 'Test', getImageModel: () => 'vision-1' }
+    );
+    expect(result.model).toBe('vision-1');
+    expect(result.images?.length).toBe(1);
+  });
+
   it('rejects missing file attachments', async () => {
     await expect(
       buildCallLlmRequest(

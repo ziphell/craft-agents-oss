@@ -368,7 +368,7 @@ export const SOURCE_CONFIG_REQUIRED_FIELDS = ['slug', 'name', 'type'];
 /**
  * Valid source types
  */
-export const SOURCE_TYPES = ['mcp', 'api', 'local'] as const;
+export const SOURCE_TYPES = ['mcp', 'api', 'local', 'web', 'email'] as const;
 
 /**
  * Basic source config validation (schema-level).

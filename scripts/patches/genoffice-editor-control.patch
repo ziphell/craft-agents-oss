@@ -1,0 +1,483 @@
+diff --git a/apps/docs/src/renderer/App.tsx b/apps/docs/src/renderer/App.tsx
+index 3a46fdf0..42a5ce77 100644
+--- a/apps/docs/src/renderer/App.tsx
++++ b/apps/docs/src/renderer/App.tsx
+@@ -6356,7 +6356,7 @@ export function App() {
+   // genoffice CLI (`open --block`, `selection`): the shell evaluates this hook
+   useEffect(() => {
+     ;(window as unknown as Record<string, unknown>).__genofficeControl = (req: ControlRequest) =>
+-      handleDocsControl(req, editor, doc !== null)
++      handleDocsControl(req, editor, doc !== null, setReadMode)
+   })
+ 
+   useEffect(() => (editor ? installSelectionBar(editor) : undefined), [editor])
+@@ -7601,7 +7601,11 @@ export function App() {
+                 onClose={closeNav}
+               />
+             )}
+-            {doc && (
++            {/* The floating Ask-AI entry on a selection. It exists to start an AI run (or queue an
++                anchored edit for one), so a host that switches the AI sidebar off has nothing for it
++                to reach: the same switch that hides the dock hides this. Word treats its Copilot the
++                same way — the switch is about a document's AI chrome, not only about a panel. */}
++            {doc && aiSidebarEnabled && (
+               <AiAskPopover
+                 editor={editor}
+                 queueFull={editQueue.length >= EDIT_QUEUE_MAX}
+diff --git a/apps/docs/src/renderer/control.ts b/apps/docs/src/renderer/control.ts
+index b8d82fa6..2aa3602e 100644
+--- a/apps/docs/src/renderer/control.ts
++++ b/apps/docs/src/renderer/control.ts
+@@ -1,9 +1,36 @@
+ import type { Editor } from '@tiptap/core'
+ import { navigateToBlock } from './ai/doc-nav'
+ 
+-/** Request/reply the shell relays from `genoffice open --block` and `genoffice selection`. */
++/**
++ * Request/reply the shell relays from `genoffice open --block`, `genoffice selection`, and a host
++ * that wants the document to be **not editable**.
++ *
++ * `readMode` is a different thing from refusing to save. A host that only refuses writes leaves the
++ * document editable: the person types, the page changes, and pressing save is the first time they
++ * learn it was only a preview — their words are simply lost. This sets the editor's own `editable`
++ * flag, which is the state the document is actually in.
++ */
+ export type ControlRequest =
+-  { cmd: 'goto'; target: { kind: string; block?: number } } | { cmd: 'selection' }
++  | { cmd: 'goto'; target: { kind: string; block?: number } }
++  | { cmd: 'selection' }
++  | { cmd: 'readMode'; on: boolean }
++  /**
++   * Replace one span of the open document, **if it still says what the caller was told it says**.
++   *
++   * Three rules, and each one is a refusal rather than a guess:
++   *
++   * - `expectedText` is the fingerprint. A selection moves when anybody types, so a caller that
++   *   describes a span by offsets alone would replace whatever happens to be there now.
++   * - The span must sit inside **one block**. Replacing across blocks is a structural edit —
++   *   paragraph boundaries, list items, table rows — and there is no honest way to do it from two
++   *   offsets.
++   * - The replacement is inserted as **text**, never parsed as HTML: a caller sending `<b>x</b>`
++   *   meant those characters, and a document that turned them bold would be a surprise authored
++   *   two processes away.
++   *
++   * One request is one transaction, which is why it is one step of the person's undo.
++   */
++  | { cmd: 'edit'; from: number; to: number; expectedText: string; text: string }
+ 
+ export type ControlReply =
+   | { status: 'ok'; result: Record<string, unknown> }
+@@ -17,7 +44,16 @@ export function handleDocsControl(
+   req: ControlRequest,
+   editor: Editor | null,
+   loaded: boolean,
++  setReadMode?: (on: boolean) => void,
+ ): ControlReply {
++  if (req.cmd === 'readMode') {
++    if (!setReadMode) {
++      return { status: 'error', error: { reason: 'unsupported', message: 'this host has no read mode' } }
++    }
++    setReadMode(req.on !== false)
++    return { status: 'ok', result: { readMode: req.on !== false, editable: editor?.isEditable ?? false } }
++  }
++
+   if (!editor || !loaded) return { status: 'not_ready' }
+   const doc = editor.state.doc
+   if (req.cmd === 'selection') {
+@@ -33,9 +69,57 @@ export function handleDocsControl(
+         blocks: [first, Math.max(first, last)],
+         text: empty ? '' : doc.textBetween(from, to, '\n'),
+         collapsed: empty,
++        // The positions as the document counts them. A host that wants to *change* this selection
++        // (rather than only read it) needs them: the text alone cannot say which occurrence was
++        // meant, and a document that says a sentence twice is exactly where that matters.
++        from,
++        to,
+       },
+     }
+   }
++  if (req.cmd === 'edit') {
++    if (!editor.isEditable) {
++      return { status: 'error', error: { reason: 'read_only', message: 'the document is not editable' } }
++    }
++    // A composing IME has a selection the person is still building; changing the document under it
++    // would throw away what they were typing.
++    if (editor.view.composing) {
++      return { status: 'error', error: { reason: 'busy', message: 'the person is typing' } }
++    }
++    const { from, to, expectedText, text } = req
++    const size = doc.content.size
++    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > size) {
++      return {
++        status: 'error',
++        error: { reason: 'out_of_range', message: `the selection is outside the document (0-${size})` },
++      }
++    }
++    const current = doc.textBetween(from, to, '\n')
++    if (current !== expectedText) {
++      return {
++        status: 'error',
++        error: {
++          reason: 'stale',
++          message: 'the selection no longer holds what it held when it was offered',
++          detail: { found: current.slice(0, 200), expected: expectedText.slice(0, 200) },
++        },
++      }
++    }
++    const firstBlock = doc.resolve(from).index(0)
++    const lastBlock = doc.resolve(Math.max(from, to - 1)).index(0)
++    if (firstBlock !== lastBlock || /[\r\n]/.test(text)) {
++      return {
++        status: 'error',
++        error: { reason: 'crosses_blocks', message: 'a replacement has to stay inside one paragraph' },
++      }
++    }
++    const applied = editor.chain().focus().insertContentAt({ from, to }, { type: 'text', text }).run()
++    if (!applied) {
++      return { status: 'error', error: { reason: 'rejected', message: 'the editor refused the change' } }
++    }
++    return { status: 'ok', result: { from, to: from + text.length, replaced: expectedText } }
++  }
++
+   const { block } = req.target
+   if (block === undefined || !Number.isInteger(block) || block < 0 || block >= doc.childCount) {
+     return {
+diff --git a/apps/sheets/src/renderer/App.tsx b/apps/sheets/src/renderer/App.tsx
+index e8e50987..31ab6782 100644
+--- a/apps/sheets/src/renderer/App.tsx
++++ b/apps/sheets/src/renderer/App.tsx
+@@ -664,6 +664,14 @@ export function App({
+   /// App-level setting, Excel-style: not stored in the file, kept across
+   /// workbook switches.
+   const [formulaBarVisible, setFormulaBarVisible] = useState(true)
++  /**
++   * Preview posture: the workbook in its own viewer permission, with the ribbon put away.
++   *
++   * Not the same thing as a host refusing to save — that leaves the grid editable and the person's
++   * typing lands nowhere. This is Univer's `viewer` mode, which is what a shared read-only file is,
++   * plus the chrome switch below. A host asks for it over `__genofficeControl({ cmd: 'readMode' })`.
++   */
++  const [readMode, setReadMode] = useState(false)
+   /// Cross-highlight ("reading mode") of the active row/column, persisted in
+   /// localStorage like the auto-save flag; off until the user opts in.
+   const [crossHighlightVisible, setCrossHighlightVisible] = useState(loadCrossHighlightPreference)
+@@ -5515,6 +5523,24 @@ export function App({
+     }
+   })()
+ 
++  // Read mode: the grid alone. The permission is Univer's own (`viewer`), so the cells are not
++  // editable at all rather than editable-until-you-save; the class takes the ribbon away, and the
++  // document is then the whole window. Escape leaves — the same key the docs editor's read mode uses.
++  useEffect(() => {
++    document.body.classList.toggle('read-mode', readMode)
++    void univerRef.current?.univerAPI
++      .getActiveWorkbook()
++      ?.getWorkbookPermission()
++      .setMode(readMode ? 'viewer' : 'editor')
++      .catch(() => undefined)
++    if (!readMode) return undefined
++    const onKey = (event: KeyboardEvent) => {
++      if (event.key === 'Escape') setReadMode(false)
++    }
++    window.addEventListener('keydown', onKey)
++    return () => window.removeEventListener('keydown', onKey)
++  }, [readMode])
++
+   // genoffice CLI (`open --range`, `selection`): the shell evaluates this hook
+   useEffect(() => {
+     ;(window as unknown as Record<string, unknown>).__genofficeControl = (req: ControlRequest) =>
+@@ -5522,6 +5548,7 @@ export function App({
+         req,
+         univerRef.current?.univerAPI.getActiveWorkbook(),
+         lazyWorkbookRef.current !== null,
++        setReadMode,
+       )
+   })
+ 
+diff --git a/apps/sheets/src/renderer/control.ts b/apps/sheets/src/renderer/control.ts
+index 3049f2ac..4f1d9644 100644
+--- a/apps/sheets/src/renderer/control.ts
++++ b/apps/sheets/src/renderer/control.ts
+@@ -1,8 +1,43 @@
+ import type { FWorkbook, FWorksheet } from '@univerjs/sheets/facade'
+ 
+-/** Request/reply the shell relays from `genoffice open --range` and `genoffice selection`. */
++/** Request/reply the shell relays from `genoffice open --range`, `genoffice selection`, and a host
++ * that wants the workbook to be **not editable**. */
+ export type ControlRequest =
+-  { cmd: 'goto'; target: { kind: string; sheet?: string; range?: string } } | { cmd: 'selection' }
++  | { cmd: 'goto'; target: { kind: string; sheet?: string; range?: string } }
++  | { cmd: 'selection' }
++  /**
++   * Put the workbook in its own viewer permission, and take the editing chrome away.
++   *
++   * `readMode` is a different thing from refusing to save. A host that only refuses writes leaves
++   * the grid editable: the person clicks a cell, types, and pressing save is the first time they
++   * learn it was only a preview — their numbers are simply lost. This sets Univer's workbook
++   * permission (the same `viewer` mode a shared read-only file opens in), which is the state the
++   * document is actually in: no caret, no editing commands.
++   *
++   * Ask **after** the document is open: a permission set on a workbook that is still loading is
++   * replaced when the file arrives.
++   */
++  | { cmd: 'readMode'; on: boolean }
++  /**
++   * Write a block of cells, **if the block still looks the way the caller was told it does**.
++   *
++   * `expectEmpty` is the common case and the fingerprint that needs no reading: filling a blank
++   * table. `expected` is the explicit version — a grid compared cell by cell, for the write that
++   * lands where something already is. Both are refusals rather than guesses: a caller that cannot
++   * say what is there now does not get to overwrite it.
++   *
++   * One write is one Univer command, which is one step of the person's undo.
++   */
++  | {
++      cmd: 'edit'
++      /** Sheet name; omitted means the active sheet. */
++      sheet?: string
++      /** A1 range (`B2:D5`, or `Sheet1!B2:D5`). */
++      range: string
++      expectEmpty?: boolean
++      expected?: unknown[][]
++      values: unknown[][]
++    }
+ 
+ export type ControlReply =
+   | { status: 'ok'; result: Record<string, unknown> }
+@@ -28,9 +63,69 @@ export function handleSheetsControl(
+   req: ControlRequest,
+   workbook: FWorkbook | null | undefined,
+   fileLoaded: boolean,
++  setReadMode?: (on: boolean) => void,
+ ): ControlReply {
++  if (req.cmd === 'readMode') {
++    if (!setReadMode) {
++      return { status: 'error', error: { reason: 'unsupported', message: 'this host has no read mode' } }
++    }
++    setReadMode(req.on !== false)
++    return { status: 'ok', result: { readMode: req.on !== false, editable: workbook ? req.on === false : false } }
++  }
++
+   // a pre-warmed spare view has a placeholder workbook mounted before the file is in
+   if (!workbook || !fileLoaded) return { status: 'not_ready' }
++  if (req.cmd === 'edit') {
++    const split = splitSheetRange(req.range)
++    if (!split) {
++      return { status: 'error', error: { reason: 'invalid_range', message: `not an A1 range: ${req.range}` } }
++    }
++    const wanted = req.sheet ?? split.sheet
++    const sheet = wanted ? workbook.getSheetByName(wanted) : workbook.getActiveSheet()
++    if (!sheet) {
++      return { status: 'error', error: { reason: 'no_sheet', message: `there is no sheet named ${wanted}` } }
++    }
++    const target = sheet.getRange(split.range)
++    const height = target.getHeight()
++    const width = target.getWidth()
++    const shaped = (grid: unknown[][]) =>
++      Array.isArray(grid) && grid.length === height && grid.every((row) => Array.isArray(row) && row.length === width)
++    if (!shaped(req.values)) {
++      return {
++        status: 'error',
++        error: {
++          reason: 'shape',
++          message: `${split.range} is ${height}×${width}; values must be a grid of that shape`,
++        },
++      }
++    }
++    const plain = (grid: unknown[][]): unknown[][] =>
++      grid.map((row) => row.map((cell) => (cell && typeof cell === 'object' && 'v' in (cell as object) ? (cell as { v?: unknown }).v ?? null : (cell ?? null))))
++    const current = plain(target.getValues())
++    const looksEmpty = (grid: unknown[][]) => grid.every((row) => row.every((cell) => cell === null || cell === ''))
++    if (req.expectEmpty === true && !looksEmpty(current)) {
++      return {
++        status: 'error',
++        error: { reason: 'stale', message: `${split.range} is not empty any more`, detail: { found: current } },
++      }
++    }
++    if (Array.isArray(req.expected) && JSON.stringify(req.expected) !== JSON.stringify(current)) {
++      return {
++        status: 'error',
++        error: {
++          reason: 'stale',
++          message: `${split.range} no longer holds what it held when it was offered`,
++          detail: { found: current },
++        },
++      }
++    }
++    target.setValues(req.values.map((row) => row.map((value) => (value === null || value === undefined ? null : { v: value as never }))))
++    return {
++      status: 'ok',
++      result: { sheet: sheet.getSheetName(), range: split.range, values: plain(target.getValues()) },
++    }
++  }
++
+   if (req.cmd === 'selection') {
+     const sheet = workbook.getActiveSheet()
+     try {
+diff --git a/apps/sheets/src/renderer/styles.css b/apps/sheets/src/renderer/styles.css
+index ff06516a..c99d641b 100644
+--- a/apps/sheets/src/renderer/styles.css
++++ b/apps/sheets/src/renderer/styles.css
+@@ -406,6 +406,15 @@ textarea:disabled {
+   color: var(--text-muted);
+ }
+ 
++/* ---- Read mode: the grid alone, no editing chrome (what a preview mounts) ----
++ * The permission is Univer's own (`viewer`); this is the other half — the ribbon, its autosave
++ * switch and the tab strip are the app's, and a preview is not a place where they belong. The
++ * shell is a two-row grid (`auto minmax(0,1fr)`), so dropping the header gives the body its row.
++ */
++body.read-mode .excel-header {
++  display: none !important;
++}
++
+ .excel-header {
+   position: relative;
+   z-index: 10;
+diff --git a/apps/slides/src/renderer/App.tsx b/apps/slides/src/renderer/App.tsx
+index 5a0afcf7..aa5643d5 100644
+--- a/apps/slides/src/renderer/App.tsx
++++ b/apps/slides/src/renderer/App.tsx
+@@ -3272,6 +3272,25 @@ export function App() {
+         setCurrent,
+         setSelectedIds,
+         clearEditing: () => setEditing(null),
++        // The deck's own find-and-replace, through the same call the page's text editor makes: it
++        // edits the runs in place (so formatting survives) and lands as one history step, which is
++        // what makes the person's undo work on it.
++        replaceText: async (op) => {
++          const result = await window.slidesApi.findReplace({
++            find: op.find,
++            replace: op.replace,
++            slideIndex: op.slideIndex,
++            ...(op.elementId ? { elementId: op.elementId } : {}),
++            firstOnly: true,
++          })
++          if (!result || !result.update) return { count: result?.count ?? 0 }
++          // Same landing as the find-and-replace dialog: the deck answers a partial update and the
++          // page merges it. `setDirty` is what makes the person's save offer appear.
++          const update = result.update
++          setSlides((currentSlides) => mergeSlideUpdate(currentSlides, update))
++          setDirty(true)
++          return { count: result.count }
++        },
+       })
+   })
+ 
+@@ -4706,7 +4725,10 @@ export function App() {
+         </div>
+       )}
+ 
+-      {!askState &&
++      {/* The floating Ask-AI chip on a selection. It starts an AI run, so it follows the same
++          switch as the dock: a host that says "no AI sidebar" is saying it has no AI to ask. */}
++      {aiSidebarEnabled &&
++        !askState &&
+         !editing &&
+         !editingCell &&
+         !cropTarget &&
+diff --git a/apps/slides/src/renderer/control.ts b/apps/slides/src/renderer/control.ts
+index 65021289..23aeca1a 100644
+--- a/apps/slides/src/renderer/control.ts
++++ b/apps/slides/src/renderer/control.ts
+@@ -2,7 +2,29 @@ import type { RenderNode, RenderSlide } from '@genoffice/pptx-render'
+ 
+ /** Request/reply the shell relays from `genoffice open --slide/--el` and `genoffice selection`. */
+ export type ControlRequest =
+-  { cmd: 'goto'; target: { kind: string; slide?: number; el?: string } } | { cmd: 'selection' }
++  | { cmd: 'goto'; target: { kind: string; slide?: number; el?: string } }
++  | { cmd: 'selection' }
++  /**
++   * Replace text on one slide, **and only if it occurs exactly the number of times expected**.
++   *
++   * A slide's anchor is an element id, and a caller that has to name one usually means "this phrase
++   * in this text box". So the replacement goes through the deck's own find-and-replace — which edits
++   * the runs in place, keeping their formatting — scoped to the slide and element the caller names.
++   *
++   * `expectCount` is the fingerprint: "the phrase occurs once here" is a claim the deck can check
++   * before it changes anything. A phrase that now occurs twice, or not at all, is refused rather
++   * than guessed at.
++   */
++  | {
++      cmd: 'replaceText'
++      /** 1-based slide number. */
++      slide: number
++      /** Element (text box) id, from the selection or `slides read`. */
++      elementId?: string
++      find: string
++      replace: string
++      expectCount: number
++    }
+ 
+ export type ControlReply =
+   | { status: 'ok'; result: Record<string, unknown> }
+@@ -13,6 +35,19 @@ export type ControlReply =
+     }
+ 
+ export interface SlidesControlState {
++  /**
++   * The deck's own find-and-replace, scoped to one slide (and element) — the call the page's text
++   * editor makes when a person commits an edit. Answers how many occurrences were replaced.
++   *
++   * The control face is handed this rather than reaching into the deck itself: a replacement has to
++   * be one history step of the editor's, which only the app's own path guarantees.
++   */
++  replaceText?: (op: {
++    slideIndex: number
++    elementId?: string
++    find: string
++    replace: string
++  }) => Promise<{ count: number } | null>
+   slides: RenderSlide[]
+   path: string | null
+   current: number
+@@ -44,8 +79,48 @@ function topLevelNodeFor(slide: RenderSlide, id: string): RenderNode | null {
+   return slide.nodes.find((n) => !n.decoration && contains(n)) ?? null
+ }
+ 
+-export function handleSlidesControl(req: ControlRequest, state: SlidesControlState): ControlReply {
++export async function handleSlidesControl(
++  req: ControlRequest,
++  state: SlidesControlState,
++): Promise<ControlReply> {
+   if (!state.path || state.slides.length === 0) return { status: 'not_ready' }
++
++  if (req.cmd === 'replaceText') {
++    if (!state.replaceText) {
++      return { status: 'error', error: { reason: 'unsupported', message: 'this host cannot replace text' } }
++    }
++    if (!Number.isInteger(req.slide) || req.slide < 1 || req.slide > state.slides.length) {
++      return {
++        status: 'error',
++        error: { reason: 'out_of_range', message: `there is no slide ${req.slide} (1-${state.slides.length})` },
++      }
++    }
++    if (!req.find) {
++      return { status: 'error', error: { reason: 'empty_find', message: 'find cannot be empty' } }
++    }
++    const result = await state.replaceText({
++      slideIndex: req.slide - 1,
++      ...(req.elementId ? { elementId: req.elementId } : {}),
++      find: req.find,
++      replace: req.replace,
++    })
++    if (!result) {
++      return { status: 'error', error: { reason: 'not_ready', message: 'the deck is not open' } }
++    }
++    // The fingerprint is checked against what the deck found, not against what the caller hoped:
++    // a phrase that now occurs twice is a different anchor, and replacing both would be a guess.
++    if (result.count !== req.expectCount) {
++      return {
++        status: 'error',
++        error: {
++          reason: 'stale',
++          message: `"${req.find}" occurs ${result.count} time(s) on slide ${req.slide}, not ${req.expectCount}`,
++          detail: { found: result.count },
++        },
++      }
++    }
++    return { status: 'ok', result: { slide: req.slide, replaced: result.count } }
++  }
+   if (req.cmd === 'selection') {
+     const slide = state.slides[state.current]
+     const selected = state.selectedIds

@@ -17,22 +17,29 @@
  *   CRAFT_IS_PACKAGED          — 'true' for production (default: false)
  *   CRAFT_VERSION              — app version (default: 0.0.0-dev)
  *   CRAFT_DEBUG                — 'true' for debug logging
- *   CRAFT_WEBUI_DIR            — path to built web UI assets (enables web UI on RPC port)
- *   CRAFT_WEBUI_PASSWORD       — optional shorter password for web login (falls back to CRAFT_SERVER_TOKEN)
+ *   CRAFT_WEBUI_DIR            — path to built web UI assets (no bundle → protocol routes only)
+ *   CRAFT_WEBUI_PASSWORD       — Web UI login password (generated and printed when unset)
  *   CRAFT_WEBUI_SECURE_COOKIE  — optional true/false override for the session cookie Secure flag
  *   CRAFT_WEBUI_WS_URL         — optional browser-facing ws:// or wss:// URL returned by /api/config
  *   CRAFT_MESSAGING_WA_WORKER  — absolute path to worker.cjs (default: packages/messaging-whatsapp-worker/dist/worker.cjs)
  *   CRAFT_MESSAGING_NODE_BIN   — Node binary used to spawn the WhatsApp worker (default: node)
  */
 
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
-import { readFileSync, existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+import { createExportDir, storeExport } from '@craft-agent/server-core/services/export-store'
 import { version as packageVersion } from '../package.json'
 import { enableDebug } from '@craft-agent/shared/utils/debug'
+import { getBundledAssetsDir } from '@craft-agent/shared/utils'
 import { bootstrapServer, startHealthHttpServer, generateServerToken } from '@craft-agent/server-core/bootstrap'
-import { validateSession, createWebuiHandler, nodeHttpAdapter } from '@craft-agent/server-core/webui'
+import { validateSession, deriveWebuiSessionKey, createWebuiHandler, nodeHttpAdapter } from '@craft-agent/server-core/webui'
 import type { WebuiHandler } from '@craft-agent/server-core/webui'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
+import { configureOfficePrint, createCliPrint } from './office-print.ts'
+import { createHubExporter } from './office-export.ts'
+import { configureOfficePageCapture, configureOfficeWebShot } from './office-capture.ts'
 import { getWorkspaces } from '@craft-agent/shared/config'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { createMessagingBootstrap, type MessagingBootstrapHandle } from '@craft-agent/messaging-gateway'
@@ -43,11 +50,27 @@ if (process.argv.includes('--generate-token')) {
   process.exit(0)
 }
 import type { WsRpcTlsOptions } from '@craft-agent/server-core/transport'
-import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient } from '@craft-agent/server-core/handlers/rpc'
+import { ServerTokenRegistry, bearerToken } from '@craft-agent/server-core/transport'
+import { pushTyped } from '@craft-agent/server-core/transport'
+import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
+import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient, cleanupProjectFilesWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
 import { initModelRefreshService, setFetcherPlatform } from '@craft-agent/server-core/model-fetchers'
 import { setSearchPlatform, setImageProcessor } from '@craft-agent/server-core/services'
 import type { HandlerDeps } from '@craft-agent/server-core/handlers'
+import {
+  checkDocument,
+  clearRecords,
+  hostRuntime,
+  setOfficeDeliver,
+  officeDeckCall,
+  officePdfCall,
+  officeWorkbookCall,
+  recordDocument,
+  setDocumentWrittenListener,
+  setOfficeRuntime,
+  stopWorkbookHost,
+} from '@craft-agent/office-host'
 
 process.env.CRAFT_IS_PACKAGED ??= 'false'
 
@@ -111,12 +134,19 @@ if (tlsCertPath || tlsKeyPath) {
   }
 }
 
+const serverToken = process.env.CRAFT_SERVER_TOKEN
+
 // Web UI configuration
 const webuiDir = process.env.CRAFT_WEBUI_DIR || undefined
-const webuiEnabled = webuiDir && existsSync(webuiDir)
+// The Web UI is served whenever this process is a hub. Its password is its own credential, but
+// sessions are signed with a key derived from it and CRAFT_SERVER_TOKEN — so changing either one
+// ends browser sessions.
+const webuiPassword = process.env.CRAFT_WEBUI_PASSWORD || generateServerToken()
+// One key for both the HTTP handler and the WebSocket upgrade; empty until a token is present,
+// in which case bootstrap refuses to start anyway.
+const webuiSessionKey = serverToken ? deriveWebuiSessionKey(serverToken, webuiPassword) : ''
 const webuiSecureCookies = parseOptionalBooleanEnv('CRAFT_WEBUI_SECURE_COOKIE', process.env.CRAFT_WEBUI_SECURE_COOKIE)
 const webuiWsUrl = parseOptionalWebSocketUrl('CRAFT_WEBUI_WS_URL', process.env.CRAFT_WEBUI_WS_URL)
-const serverToken = process.env.CRAFT_SERVER_TOKEN
 
 // ---------------------------------------------------------------------------
 // Create WebUI handler early so it can be embedded in the WsRpcServer.
@@ -126,19 +156,39 @@ const serverToken = process.env.CRAFT_SERVER_TOKEN
 
 let webuiHandler: WebuiHandler | null = null
 let webuiNodeHandler: ReturnType<typeof nodeHttpAdapter> | undefined
+/** Filled by bootstrapServer; read by the export endpoint's bearer check in the meantime. */
+const tokens = new ServerTokenRegistry()
 
 // Health check is injected lazily — the session manager isn't ready until
 // after bootstrap completes, but the handler captures the closure.
 let healthCheckFn: (() => { status: string }) | null = null
 
-if (webuiEnabled && serverToken) {
+/**
+ * The HTTP handler exists whenever this process is a hub: it serves the Web UI and the protocol
+ * routes (export downloads). Without a bundle the page is absent but the routes still answer.
+ */
+if (serverToken) {
   const rpcPort = parseInt(process.env.CRAFT_RPC_PORT ?? '9100', 10)
   const rpcProtocol = tls ? 'wss' as const : 'ws' as const
 
   webuiHandler = createWebuiHandler({
-    webuiDir: webuiDir!,
-    secret: serverToken,
-    password: process.env.CRAFT_WEBUI_PASSWORD || undefined,
+    webuiDir,
+    // Served same-origin so the web UI's editor sits behind the session cookie.
+    drawioDir: getBundledAssetsDir('drawio') ?? undefined,
+    // Same arrangement for the office editors: the hub is the only thing that can serve them an
+    // origin, and same-origin is what puts them behind the session cookie.
+    officeDir: getBundledAssetsDir('office') ?? undefined,
+    password: webuiPassword,
+    // The token this hub hands to other machines also logs a browser in, and is half of the
+    // session signing key.
+    serverToken,
+    // Export downloads also accept a hub credential, for a native client that holds no cookie.
+    // A device token is not one: it may answer capability calls and nothing else.
+    authorizeBearer: (header) => {
+      const token = bearerToken(header)
+      const grant = token ? tokens.validate(token) : null
+      return grant !== null && grant.scope !== 'device'
+    },
     secureCookies: webuiSecureCookies,
     publicWsUrl: webuiWsUrl,
     wsProtocol: rpcProtocol,
@@ -165,17 +215,106 @@ let messagingHandle: MessagingBootstrapHandle | null = null
 
 const instance = await (async () => {
   try {
+    /**
+     * Where a produced document file goes on a hub: **to the person who asked for it**.
+     *
+     * The hub's disk is not theirs, and a path it printed would be meaningless. So the bytes are
+     * published to the export scratch (`storeExport`, the same store a design export uses) and the
+     * answer carries a `/api/exports/<id>` id; the frame turns that into a browser download. Several
+     * files (page images) are zipped first — a browser blocks a burst of downloads, and one archive
+     * is what someone exporting nine pages actually wants.
+     */
+    setOfficeDeliver(async (files) => {
+      const dir = createExportDir()
+      const published: Array<{ id: string; name: string; size: number; mime: string }> = []
+      if (files.length === 1) {
+        const file = files[0]!
+        const path = join(dir, file.name)
+        await writeFile(path, file.bytes)
+        published.push(storeExport({ path, name: file.name, mime: file.mime }))
+      } else {
+        const { zipSync } = await import('fflate')
+        const archive = zipSync(
+          Object.fromEntries(files.map((file) => [file.name, file.bytes])),
+          { level: 6 },
+        )
+        const name = `${files[0]!.name.replace(/-[^-]*$/, '')}.zip`
+        const path = join(dir, name)
+        await writeFile(path, archive)
+        published.push(storeExport({ path, name, mime: 'application/zip' }))
+      }
+      return { downloads: published }
+    })
+
+    // Before any host is asked for anything: which binary runs the bundled GenOffice CLI here.
+    // No Electron in this process, so it is Bun itself (or `CRAFT_OFFICE_RUNTIME` when a compiled
+    // single binary is the host and `process.execPath` cannot run a script).
+    setOfficeRuntime(hostRuntime())
+
+    /**
+     * The renderer, when this image carries one.
+     *
+     * `genoffice convert … --to pdf` and `render` are the conversions the engine cannot do alone: it
+     * spawns "the app" as `<GENOFFICE_APP_BIN> --headless-export …` and waits. On a hub that app is
+     * `packages/render-host`'s launcher — a headless Chromium printing the document's own editor —
+     * and only the image knows whether it was staged (`Dockerfile.server` copies it into
+     * `resources/render-host/`).
+     *
+     * Set only when the file is there. Pointing the engine at a binary that *exists but cannot
+     * print* is the one failure mode worth avoiding by construction: measured, a bare Electron in
+     * that slot makes every conversion wait out the engine's 180-second timeout, where a missing
+     * variable answers "app not found" at once and the tool says so in words.
+     */
+    const renderCli = join(
+      process.env.CRAFT_RESOURCES_PATH ?? join(bundledAssetsRoot, 'resources'),
+      'render-host',
+      'craft-headless-export',
+    )
+    if (!process.env.GENOFFICE_APP_BIN && existsSync(renderCli)) {
+      process.env.GENOFFICE_APP_BIN = renderCli
+      // Named separately from `GENOFFICE_APP_BIN`: the engine's variable may point at a GenOffice
+      // install, while this one means "the launcher that also draws diagrams" — the tool reaches it
+      // for `drawio_tool`, which the engine never calls.
+      process.env.CRAFT_RENDER_CLI = renderCli
+      console.log(`  Printing host: ${renderCli}`)
+    } else if (!process.env.GENOFFICE_APP_BIN) {
+      console.log('  Printing host: none (no renderer staged; PDF export will be refused by name)')
+    }
+    /**
+     * The launcher as one value, because three callers want the same answer.
+     *
+     * - the **engine** reads `GENOFFICE_APP_BIN` (set above) and spawns it itself;
+     * - the editors' own **“Export as PDF”** asks by callback (`officePrint()`), so it is installed
+     *   here with `configureOfficePrint`;
+     * - the **UI's two export doors** — `office:exportPdf` and `office:exportPages`, the ones a
+     *   button and a preview call — are answered below by a printer built from the same command,
+     *   one process per export, exactly as the engine does it.
+     *
+     * `existsSync` is the test, not the variable, for the reason above: a binary that exists but
+     * cannot print is the failure this arrangement exists to avoid, and a missing one answers
+     * "no renderer" in words.
+     */
+    const printLauncher =
+      process.env.GENOFFICE_APP_BIN && existsSync(process.env.GENOFFICE_APP_BIN)
+        ? process.env.GENOFFICE_APP_BIN
+        : null
+    configureOfficePrint(printLauncher)
+    // The same launcher, asked for a picture instead of a PDF: `docx_tool render` draws a page the
+    // way a poster does, in the child that owns the browser.
+    configureOfficePageCapture(printLauncher)
+    // `html_tool shot`: the same launcher draws a page — its scripts run, after they paint.
+    configureOfficeWebShot(printLauncher)
+    const hubExport = printLauncher ? createHubExporter(createCliPrint({ command: printLauncher })) : null
+
     return await bootstrapServer<SessionManager, HandlerDeps>({
       bundledAssetsRoot,
       serverVersion: process.env.CRAFT_VERSION ?? packageVersion,
       tls,
-      // When web UI is enabled, accept JWT session cookies on WebSocket upgrade
-      validateSessionCookie: webuiEnabled && serverToken
-        ? async (cookieHeader) => {
-            const session = await validateSession(cookieHeader, serverToken)
-            return session !== null
-          }
-        : undefined,
+      // Session cookies are a Web UI credential, verified with the key derived from this hub's
+      // token and Web UI password.
+      validateSessionCookie: async (cookieHeader) =>
+        (await validateSession(cookieHeader, webuiSessionKey)) !== null,
+      tokenRegistry: tokens,
       // Embed the WebUI HTTP handler on the WS server's port
       httpHandler: webuiNodeHandler,
       applyPlatformToSubsystems: (platform) => {
@@ -224,9 +363,47 @@ const instance = await (async () => {
           platform,
           oauthFlowStore,
           messagingRegistry: messagingHandle.registry,
+
+          // The document editors, hosted here as well as in the app.
+          //
+          // The bundle is served under `/office/` on this origin (`officeDir` above), and what the
+          // editors ask of their host is the same in a browser as in a window: the deck's document
+          // lives on this side, a workbook is parsed by a sidecar process, a pdf is written by the
+          // engine. Those hosts are plain Node (`@craft-agent/office-host`), so a hub runs them —
+          // the one thing it must decide is which binary runs the bundled CLI, which is what
+          // `hostRuntime()` answers here.
+          //
+          // Printing: a hub *does* have it, when the image staged `resources/render-host` — a
+          // headless Chromium the launcher drives, not one this process launches (see
+          // `office-print.ts`). Both doors a UI uses are installed from that same launcher, so
+          // "Export as PDF" and page images answer here as they do in the app.
+          //
+          // When the image carries no renderer, `hubExport` is null and both stay absent — which is
+          // how the handler says "this host cannot print" in words instead of failing obscurely.
+          ...(hubExport
+            ? { officeExportPdf: hubExport.exportPdf, officeExportPages: hubExport.exportPages }
+            : {}),
+          officeDeck: (method, args) => officeDeckCall(method, args),
+          officeWorkbook: (method, args) => officeWorkbookCall(method, args),
+          officePdf: (method, args) => officePdfCall(method, args),
+          officeDisk: {
+            record: (path, bytes) => recordDocument(path, bytes),
+            check: (path) => checkDocument(path),
+          },
+          // The hub has a data folder of its own too, so a restart of the server does not make the
+          // first visitor pay a parse of every transcript (see `creations/cache-file.ts`).
+          creationsIndex: {
+            dir: (workspaceRootPath: string) =>
+              join(CONFIG_DIR, 'creations-index', createHash('sha1').update(workspaceRootPath).digest('hex').slice(0, 12)),
+          },
         }
       },
-      registerAllRpcHandlers: registerCoreRpcHandlers,
+      // Same announcement as the app's: a save by the office hosts reaches every client, so a view
+      // showing that file can say it is looking at an older copy.
+      registerAllRpcHandlers: (server, deps, serverCtx) => {
+        setDocumentWrittenListener((path) => pushTyped(server, RPC_CHANNELS.office.FILE_WRITTEN, { to: 'all' }, path))
+        return registerCoreRpcHandlers(server, deps, serverCtx)
+      },
       setSessionEventSink: (sessionManager, sink) => {
         if (!messagingHandle) {
           // createHandlerDeps always runs before setSessionEventSink, but be
@@ -246,7 +423,10 @@ const instance = await (async () => {
           sessionManager.cleanup()
         }
       },
-      cleanupClientResources: cleanupSessionFileWatchForClient,
+      cleanupClientResources: (clientId) => {
+        cleanupSessionFileWatchForClient(clientId)
+        cleanupProjectFilesWatchForClient(clientId)
+      },
     })
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
@@ -266,9 +446,7 @@ if (messagingHandle !== null && !messagingDisabled) {
   const handle: MessagingBootstrapHandle = messagingHandle
   handle.setPublisher(instance.wsServer.push.bind(instance.wsServer))
   try {
-    const localWorkspaceIds = getWorkspaces()
-      .filter((ws) => !ws.remoteServer)
-      .map((ws) => ws.id)
+    const localWorkspaceIds = getWorkspaces().map((ws) => ws.id)
     await handle.initializeWorkspaces(localWorkspaceIds)
   } catch (error) {
     console.error('[messaging] Workspace initialization failed:', error)
@@ -313,34 +491,34 @@ const healthServer = await startHealthHttpServer({
 const serverProto = instance.protocol === 'wss' ? 'https' : 'http'
 console.log(`CRAFT_SERVER_URL=${instance.protocol}://${instance.host}:${instance.port}`)
 console.log(`CRAFT_SERVER_TOKEN=${instance.token}`)
-if (webuiHandler) {
+if (webuiDir && webuiHandler) {
   console.log(`CRAFT_WEBUI_URL=${serverProto}://0.0.0.0:${instance.port}`)
-}
-
-// Block binding to a non-localhost address without TLS — tokens would be sent in cleartext.
-// Override with --allow-insecure-bind for explicitly trusted networks.
-const isLocalBind = instance.host === '127.0.0.1' || instance.host === 'localhost' || instance.host === '::1'
-if (!isLocalBind && instance.protocol === 'ws') {
-  if (process.argv.includes('--allow-insecure-bind')) {
-    console.warn(
-      '\n⚠️  WARNING: Server is listening on a network address without TLS.\n' +
-      '   Authentication tokens will be sent in cleartext.\n' +
-      '   Set CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY to enable wss://.\n'
-    )
-  } else {
-    console.error(
-      '\n❌  Refusing to bind to a network address without TLS.\n' +
-      '   Authentication tokens would be sent in cleartext.\n\n' +
-      '   Options:\n' +
-      '     1. Set CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY to enable wss://\n' +
-      '     2. Pass --allow-insecure-bind to override (NOT recommended for production)\n'
-    )
-    await instance.stop()
-    process.exit(1)
+  // Printed only when this process minted it, and it is not the server token: the two are
+  // separate credentials, so logging one never leaks the other.
+  if (!process.env.CRAFT_WEBUI_PASSWORD) {
+    console.log(`CRAFT_WEBUI_PASSWORD=${webuiPassword}`)
   }
 }
 
+// A network bind without TLS sends the token in cleartext. That is a valid setup when the
+// network is trusted (LAN, VPN, SSH tunnel, container network), so warn — the operator decides.
+const isLocalBind = instance.host === '127.0.0.1' || instance.host === 'localhost' || instance.host === '::1'
+if (!isLocalBind && instance.protocol === 'ws') {
+  console.warn(
+    '\n⚠️  WARNING: Server is listening on a network address without TLS.\n' +
+    '   Authentication tokens will be sent in cleartext.\n' +
+    '   Set CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY to enable wss://.\n'
+  )
+}
+
 const shutdown = async () => {
+  // The workbook sidecar is a child process; it must not outlive the hub that started it.
+  try {
+    stopWorkbookHost()
+    clearRecords()
+  } catch (error) {
+    console.error('[office] cleanup failed:', error)
+  }
   webuiHandler?.dispose()
   healthServer?.stop()
   if (messagingHandle) {

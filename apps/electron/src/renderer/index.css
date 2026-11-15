@@ -1,9 +1,15 @@
-@import "tailwindcss" source(none);
+﻿@import "tailwindcss" source(none);
 @plugin "@tailwindcss/typography";
 
 /* Tell Tailwind where to scan for utility classes */
 @source "../renderer/App.tsx";
 @source "../renderer/main.tsx";
+/* The renderer's other entry point, which sits beside `App.tsx` rather than under a
+   folder: `browser-toolbar.tsx` (the browser window's own chrome). It was missing, so
+   the classes only it uses — `-mx-1.5`, `h-5 w-5`, `hover:bg-black/10` before that —
+   were never generated and the chrome drew itself with whatever happened to be shared
+   with the rest of the app. */
+@source "../renderer/*.{ts,tsx}";
 @source "../renderer/components/**/*.{ts,tsx,jsx}";
 @source "../renderer/contexts/**/*.{ts,tsx,jsx}";
 @source "../renderer/hooks/**/*.{ts,tsx,jsx}";
@@ -14,6 +20,31 @@
 @source "../renderer/config/**/*.{ts,tsx,jsx}";
 @source "../../../../packages/ui/src/components/**/*.{ts,tsx,jsx}";
 @source "../../../../packages/ui/src/lib/**/*.{ts,tsx,jsx}";
+
+/*
+ * The code face, shipped with the app.
+ *
+ * `--font-mono` names JetBrains Mono, and the page used to fetch it from Google Fonts. A desktop app
+ * cannot rely on that: on a network where `fonts.googleapis.com` is unreachable the face silently
+ * falls back down the stack to `ui-monospace`, then `monospace` — which on Windows is Courier New,
+ * a *serif* monospace. That is what a source view looked like: serif, and nobody could say why from
+ * the CSS, because the CSS was right. 21 KB per weight, latin, and it is the same file everywhere.
+ */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/jetbrains-mono-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/jetbrains-mono-500.woff2') format('woff2');
+}
 
 /* CSS Custom Highlight API styles are injected at runtime via ChatDisplay.tsx
    to avoid LightningCSS warnings (::highlight is not yet recognized by the optimizer) */
@@ -82,6 +113,12 @@
 
 /* Light Mode */
 :root {
+  /* The scheme this document says it is drawn for. Anything inlined into it that carries
+     `light-dark(...)` — drawio's diagrams do, all over — resolves against this: with no
+     `color-scheme` declared, `light-dark()` is *always* the light value, whatever the OS says.
+     The app's own theme is what an inlined diagram should follow. */
+  color-scheme: light;
+
   /* === 6 BASE COLORS === */
   --background: oklch(0.98 0.003 265);
   --background-elevated: color-mix(in srgb, var(--foreground) 1.5%, var(--background));
@@ -194,9 +231,9 @@
   --step-actions-margin: 2rem;
 
   /* Fonts - System fonts as default, Inter via data-font="inter" */
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-serif: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --font-serif: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Sarasa Mono SC", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Sarasa Mono SC", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
   --font-default: var(--font-sans);
 
   /* Layout */
@@ -227,6 +264,8 @@
      island             400     Annotation island menu surface
      island-popover     410     Popovers/dropdowns opened from island content
      splash             600     Splash screen, workspace creation
+     caption            1000    Window caption buttons (min/max/close). Above every overlay:
+                                a frameless window's own buttons are chrome, never content.
   */
   --z-base: 0;
   --z-local: 10;
@@ -244,11 +283,16 @@
   --z-island: 400;
   --z-island-popover: 410;
   --z-splash: 600;
+  --z-caption: 1000;
 
 }
 
 /* Dark Mode */
 .dark {
+  /* See the note on `:root`: this is the other half of it — a diagram inlined into a dark app
+     resolves its `light-dark(...)` colors dark because this document says it is dark. */
+  color-scheme: dark;
+
   /* === 6 BASE COLORS (must match DEFAULT_THEME.dark in theme.ts) === */
   --background: oklch(0.145 0.015 270);
   --background-elevated: color-mix(in srgb, var(--foreground) 1.5%, var(--background));
@@ -320,6 +364,18 @@ html[data-theme-override]::before {
   pointer-events: none;
 }
 
+/* The browser window's own chrome — the rail and the bar, one document — wears the app surface
+   the way the workspace shell does: half the background colour, so the window's Mica/vibrancy
+   reads through it and both windows are the same grey (the rule above does this for the
+   workspace). The chrome is a document of its own and cannot inherit the workspace's
+   `data-theme-override`, so it states the surface itself — `browser-chrome-surface` is on the
+   chrome's surfaces in `browser-toolbar.tsx`, and the overlay tints the gutter to match
+   (`updateNativeOverlayState`). Without a material behind it this is a flat half-tint, which is
+   why the browser window sets one (`browser-pane-manager.createInstance`). */
+html.browser-chrome .browser-chrome-surface {
+  background: color-mix(in srgb, var(--background) 50%, transparent);
+}
+
 /* Theme Mismatch - Solid background when theme doesn't support current mode
    e.g. dark-only theme in light mode. Uses foreground-10 for subtle contrast. */
 html[data-theme-mismatch]::before {
@@ -386,7 +442,7 @@ html[data-scenic] {
 /* Inter Font - Opt-in via data-font="inter" attribute
    Loaded from Google Fonts in index.html with optical sizing (opsz) axis */
 html[data-font="inter"] {
-  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
   --font-default: var(--font-sans);
   font-optical-sizing: auto;
   font-feature-settings: "cv01", "cv02", "cv03", "cv04", "case";
@@ -398,7 +454,19 @@ html[data-font="inter"] {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-accent: var(--accent);
+  /* `primary` was reached for by several surfaces (the canvas's selection ring, kanban's primary
+     button, a few links) and had no token behind it — so `bg-primary`/`border-primary` resolved to
+     nothing and those controls were drawn in the initial colour instead of the brand's. It is the
+     accent, under the name those components already use. */
+  --color-primary: var(--accent);
+  --color-primary-foreground: white;
   --color-info: var(--info);
+  /* `warning` is the same amber as `info`, under the name the UI actually reaches for — eight
+     components ask for `bg-warning` / `text-warning` / `border-warning` (the pending-invitation
+     dot, the transport banner, a source's needs-auth chip, …) and there was no token behind the
+     name, so those classes were silently nothing: the dot was invisible, not orange. Kept in step
+     with `@craft-agent/ui`'s copy of this palette. */
+  --color-warning: var(--info);
   --color-success: var(--success);
   --color-destructive: var(--destructive);
 
@@ -461,6 +529,7 @@ html[data-font="inter"] {
   --z-index-island: var(--z-island);
   --z-index-island-popover: var(--z-island-popover);
   --z-index-splash: var(--z-splash);
+  --z-index-caption: var(--z-caption);
 
   --shadow-2xs: var(--shadow-2xs);
   --shadow-xs: var(--shadow-xs);
@@ -493,7 +562,11 @@ html[data-font="inter"] {
 
   html, body, #root {
     height: 100%;
-    overflow: hidden;
+    /* `clip`, not `hidden`: `hidden` still makes a scroll container, so a focus move (an
+       iframe taking focus, say) can scroll it — and scrolling an ancestor that clips the
+       whole app reads as the entire UI shifting a couple of pixels. `clip` is not a scroll
+       container at all, so nothing can scroll it, programmatically or otherwise. */
+    overflow: clip;
   }
 
   body {
@@ -1088,6 +1161,46 @@ html.dark[data-scenic] .fullscreen-overlay-background {
   50% { opacity: 0.5; }
 }
 
+/* Tab title shimmer — an accent highlight sweeping through the text while an agent works on the tab.
+   Painted as a second copy of the title over the real one: the base text stays opaque, so a
+   truncated title keeps its ellipsis, and the gradient only adds light where it passes.
+   One pass a second, with the highlight travelling well past both ends of the text — the pause
+   between passes is what reads as breathing — and a half-second opacity pulse on top of it. */
+@keyframes tab-title-sweep {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -100% 0; }
+}
+
+@keyframes tab-title-breathe {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+.tab-title-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    var(--accent) 50%,
+    transparent 70%
+  );
+  background-size: 260% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation:
+    tab-title-sweep 1s linear infinite,
+    tab-title-breathe 0.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-title-shimmer {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: var(--accent);
+  }
+}
+
 /* =============================================================================
    SHAKE ANIMATION
 
@@ -1278,7 +1391,25 @@ html.dark[data-scenic] .fullscreen-overlay-background {
   height: auto !important;
 }
 
-/* PDF text layer (for text selection) */
+/*
+ * PDF text layer (for text selection).
+ *
+ * **The highlight is the browser's own — an opaque band with the run knocked out to white — on
+ * purpose. Do not "fix" it to `color: transparent`.**
+ *
+ * The knockout is drawn from the *text layer's* font, and that is not always the document's: pdf.js
+ * builds its own re-encoded subset, and for a CJK document (Identity-H CID fonts) that re-encode
+ * often fails, so the span falls back to a system face (`"sans-serif", <fontObj.fallbackName>`).
+ * A selected Chinese line therefore changes typeface while it is selected; Latin usually looks
+ * unchanged, because Helvetica/Times have close local neighbours.
+ *
+ * A translucent `::selection` with `color: transparent` does keep the page's own glyphs (measured),
+ * but it also drops the inversion, leaving a pale band where the reader expects a selection.
+ * Decided 2026-11-02: the inverted look is worth the substitution. If both are ever wanted, stop
+ * repainting and invert the page itself instead — a positioned rect with `backdrop-filter:
+ * invert(1)` plus a blue tint, laid over `range.getClientRects()`; measured, the white glyphs then
+ * come out of the canvas in the document's own face.
+ */
 .react-pdf__Page__textContent {
   border: none !important;
 }
@@ -1350,135 +1481,79 @@ html.dark[data-scenic] .fullscreen-overlay-background {
 }
 
 /* ==========================================================================
-   1.3× touch target scaling on mobile (shell ≤ 768px)
-   Formula: round(desktop_value × 1.3)
+   Compact-mode rules.
+   Keyed off the renderer's `data-compact` attribute — the single source of
+   truth is AppShell's `isAutoCompact` — instead of a `@container shell
+   (max-width: 768px)` query. Two separate breakpoints (React on the outer
+   shell's border box, the container query on the panel stack's content box)
+   sat ~15px apart and produced a second reflow when crossing 768; driving the
+   CSS from the same React state leaves exactly one breakpoint.
    ========================================================================== */
-@container shell (max-width: 768px) {
-  /* Panel header buttons: X, share, back chevron.
-     Apple HIG minimum tap target is 44pt; min-width/height enforces the floor
-     even if internal padding alone wouldn't reach it. */
-  .panel-header-btn {
-    padding: 10px;
-    border-radius: 10px;
-    min-width: 44px;
-    min-height: 44px;
-  }
-
-  /* Compact panel header icons: keep desktop icons at their caller-provided
-     size, but make compact-mode icons read clearly inside the 44px target. */
-  [data-compact] .panel-header-btn > svg {
-    width: 24px;
-    height: 24px;
-  }
-
-  /* Session/source/skill list rows (desktop: py-3 = 12px → 16px) */
-  .entity-row-btn {
-    padding-top: 16px;
-    padding-bottom: 16px;
-  }
-
-  /* TopBar icon buttons: +, ?, nav arrows (desktop: 28×28 → 36×36) */
-  .header-icon-btn {
-    width: 36px;
-    height: 36px;
-  }
-
-  /* Input toolbar items: attach, task, workspace pill, model picker (desktop: h-7 = 28px → 36px) */
-  .input-toolbar-btn {
-    height: 36px;
-    min-width: 36px;
-  }
-
-  /* Send button (desktop: 28×28 → 36×36) */
-  .send-btn {
-    width: 36px;
-    height: 36px;
-  }
-
-  /* Settings form controls: 44px minimum height + 16px font.
-     The 16px font-size prevents iOS Safari from auto-zooming into the field
-     on focus (it triggers below 16px). Compact-only override so desktop stays
-     at the original tighter sizing. */
-  [data-layout="settings-row"] [data-slot="select-trigger"],
-  [data-layout="settings-row"] [data-slot="input"],
-  [data-layout="settings-row"] [data-slot="textarea"] {
-    min-height: 44px;
-    font-size: 16px;
-  }
-
-  /* Hover-reveal opt-in for touch.
-     Components that use `opacity-0 group-hover:opacity-100` (more menus,
-     row deletes, etc.) become invisible on touch — hover never fires.
-     Adding `data-touch-reveal="true"` opts the element into always-visible
-     in compact. Desktop keeps the hover-reveal behavior unchanged.
-     `!important` is necessary to beat Tailwind's `opacity-0` utility. */
-  [data-touch-reveal="true"] {
-    opacity: 1 !important;
-  }
-
-  /* Bottom safe area for iOS home indicator + FAB clearance.
-     Sessions list keeps a 72px buffer (FAB is ~56px + bottom inset 16px)
-     so the last row never sits underneath the floating action button.
-     Other list roles (sources/skills/automations) only need the iOS
-     safe-area inset since they don't have a FAB. */
-  [data-list-role] {
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-  [data-list-role="sessions"] {
-    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-  }
-
-  /* Top safe area: keep the navigator's first row clear of the iOS notch
-     when the app runs as a PWA / mobile webui. Desktop builds report 0px
-     for the inset so this is a no-op there. */
-  [data-panel-role="navigator"] {
-    padding-top: env(safe-area-inset-top, 0px);
-  }
-
-  /* Workspace pill chevron: 12px is hard to read at narrow widths,
-     bump to 16px so the dropdown affordance is clearly tappable. */
-  [data-workspace-switcher="topbar"] [data-slot="chevron"] {
-    width: 16px;
-    height: 16px;
-  }
+[data-compact] .entity-row-btn {
+  padding-top: 16px;
+  padding-bottom: 16px;
 }
 
-/* TopBar lives outside the shell container, so the workspace pill chevron
-   needs a viewport-media equivalent for the topbar variant specifically. */
-@media (max-width: 768px) {
-  /* TopBar lives outside the shell container, so mirror the compact 36px
-     button target here instead of relying only on @container shell rules. */
-  .header-icon-btn {
-    width: 36px;
-    height: 36px;
-    border-radius: 8px;
-  }
+/* Settings form controls: 44px minimum height + 16px font.
+   The 16px font-size prevents iOS Safari from auto-zooming into the field
+   on focus (it triggers below 16px). Compact-only so desktop stays tighter. */
+[data-compact] [data-layout="settings-row"] [data-slot="select-trigger"],
+[data-compact] [data-layout="settings-row"] [data-slot="input"],
+[data-compact] [data-layout="settings-row"] [data-slot="textarea"] {
+  min-height: 44px;
+  font-size: 16px;
+}
 
-  [data-workspace-switcher="topbar"] [data-slot="chevron"] {
-    width: 16px;
-    height: 16px;
-  }
+/* Hover-reveal opt-in for touch.
+   Components that use `opacity-0 group-hover:opacity-100` (more menus,
+   row deletes, etc.) become invisible on touch — hover never fires.
+   Adding `data-touch-reveal="true"` opts the element into always-visible
+   in compact. Desktop keeps the hover-reveal behavior unchanged.
+   `!important` is necessary to beat Tailwind's `opacity-0` utility. */
+[data-compact] [data-touch-reveal="true"] {
+  opacity: 1 !important;
+}
+
+/* Bottom safe area for iOS home indicator + FAB clearance.
+   Sessions list keeps a 72px buffer (FAB is ~56px + bottom inset 16px)
+   so the last row never sits underneath the floating action button.
+   Other list roles (sources/skills/automations) only need the iOS
+   safe-area inset since they don't have a FAB. */
+[data-compact] [data-list-role] {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+[data-compact] [data-list-role="sessions"] {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+}
+
+/* Top safe area: keep the navigator's first row clear of the iOS notch
+   when the app runs as a PWA / mobile webui. Desktop builds report 0px
+   for the inset so this is a no-op there. */
+[data-panel-role="navigator"][data-compact] {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* The compact navigator is the surface the detail card slides over, not a card
+   itself — and while the detail is up it is off-screen to the left, so its
+   shadow-middle ring (and its scenic-mode ::before twin) was painting a second
+   hairline across most of the width, over the card that is actually on screen.
+   Its own outline is dropped; the detail panel keeps its ring, which is what
+   makes its rounded top corners read as a card (the desktop panels are inset
+   rounded cards in the same way). The scenic glass itself is left alone — only
+   this outline goes. */
+[data-panel-role="navigator"][data-compact] {
+  box-shadow: none;
+}
+[data-panel-role="navigator"][data-compact]::before {
+  content: none;
 }
 
 /* ==========================================================================
-   TopBar height — bumps to 56px on narrow viewports so it matches the larger
-   touch targets and feels less cramped on mobile. The TopBar uses position:
-   fixed so the App content area reads the same variable for its padding-top.
+   TopBar height. The TopBar uses position: fixed so the App content area
+   reads the same variable for its padding-top.
    ========================================================================== */
 :root {
   --topbar-height: 48px;
-}
-@media (max-width: 768px) {
-  :root {
-    --topbar-height: 56px;
-  }
-
-  /* Bump TopBar icons from 18px → 20px in compact mode. Kept tight inside the
-     36×36 button so it doesn't dominate the bar. */
-  .header-icon-btn svg {
-    width: 20px;
-    height: 20px;
-  }
 }
 
 /* TurnCard action buttons (Copy, Markdown) — outside @container/shell,
@@ -1487,3 +1562,18 @@ html.dark[data-scenic] .fullscreen-overlay-background {
   min-height: 31px;
   padding: 6px 8px;
 }
+
+/* ==========================================================================
+   Canvas: a selected wire flows. The dash pattern is already on the path;
+   moving the offset is what makes a connection read as carrying something.
+   ========================================================================== */
+@keyframes canvas-edge-flow {
+  to {
+    stroke-dashoffset: -40;
+  }
+}
+.canvas-edge-flow {
+  stroke-dasharray: 10 14;
+  animation: canvas-edge-flow 1.1s linear infinite;
+}
+

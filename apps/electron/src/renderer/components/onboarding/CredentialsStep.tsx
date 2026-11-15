@@ -12,6 +12,7 @@ import type { ApiSetupMethod } from "./APISetupStep"
 import { StepFormLayout, BackButton, ContinueButton } from "./primitives"
 import {
   ApiKeyInput,
+  type ApiKeyInitialValues,
   type ApiKeyStatus,
   type ApiKeySubmitData,
   OAuthConnect,
@@ -35,14 +36,7 @@ interface CredentialsStepProps {
   // Device flow (Copilot)
   copilotDeviceCode?: { userCode: string; verificationUri: string }
   // Edit mode (pre-fill existing connection values)
-  editInitialValues?: {
-    apiKey?: string
-    baseUrl?: string
-    connectionDefaultModel?: string
-    activePreset?: string
-    models?: string[]
-    customApi?: CustomEndpointApi
-  }
+  editInitialValues?: ApiKeyInitialValues
 }
 
 export function CredentialsStep({
@@ -270,7 +264,8 @@ export function CredentialsStep({
     editInitialValues?.activePreset ?? '',
     editInitialValues?.baseUrl ?? '',
     editInitialValues?.connectionDefaultModel ?? '',
-    (editInitialValues?.models ?? []).join('|'),
+    editInitialValues?.fastModel ?? '',
+    (editInitialValues?.models ?? []).map(m => typeof m === 'string' ? m : m.id).join('|'),
     editInitialValues?.customApi ?? '',
   ].join('::')
 

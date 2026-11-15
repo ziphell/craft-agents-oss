@@ -30,11 +30,22 @@ export {
   SessionViewer,
   TurnCard,
   TurnCardActionsMenu,
+  TurnRail,
+  buildTurnRailItems,
+  buildTurnRailItemsFromQuestions,
+  ScrollToBottomButton,
+  type ScrollToBottomButtonProps,
   ResponseCard,
   UserMessageBubble,
   SystemMessage,
   FileTypeIcon,
   getFileTypeLabel,
+  MentionIcon,
+  mentionIconSvg,
+  mentionIconComponent,
+  mentionIconKindFor,
+  fileMentionIconKind,
+  type MentionIconKind,
   asRecord,
   getAnnotationNoteText,
   getAnnotationFollowUpState,
@@ -50,6 +61,10 @@ export {
   type SessionViewerMode,
   type TurnCardProps,
   type TurnCardActionsMenuProps,
+  type OpenAnnotationRequest,
+  type TurnRailProps,
+  type TurnRailItem,
+  type TurnRailQuestion,
   type ResponseCardProps,
   type UserMessageBubbleProps,
   type SystemMessageProps,
@@ -83,10 +98,31 @@ export {
   type MarkdownEngine,
   type MarkdownDatatableBlockProps,
   type MarkdownSpreadsheetBlockProps,
+  type DisablablePreviewBlock,
+  resolveDocumentPath,
+  documentDir,
   type MarkdownImageBlockProps,
   type ImageCardStackProps,
   type ImageCardStackItem,
+  MarkdownEditorPane,
+  preprocessLinks,
+  type MarkdownEditorPaneProps,
+  SourceText,
+  type SourceTextProps,
 } from './components/markdown'
+export { SourceFilePane, type SourceFilePaneProps } from './components/editors/SourceFilePane'
+
+// drawio — the diagram frames, the file-bound editor, and the origin they need
+export {
+  DrawioViewer,
+  DrawioEditorFrame,
+  DrawioEditorPane,
+  DrawioOverlay,
+  useDrawioOrigin,
+  type DrawioOrigin,
+  type DrawioEditorPaneProps,
+  type DrawioOverlayProps,
+} from './components/drawio'
 
 // UI primitives
 export {
@@ -148,6 +184,8 @@ export {
   TooltipProvider,
 } from './components/tooltip'
 
+export { useReleaseStaleInteraction } from './hooks/useReleaseStaleInteraction'
+
 // Code viewer components
 export {
   ShikiCodeViewer,
@@ -188,6 +226,8 @@ export {
   // Base overlay components
   FullscreenOverlayBase,
   FullscreenOverlayBaseHeader,
+  requestWindowControlsHidden,
+  releaseWindowControlsHidden,
   PreviewOverlay,
   ContentFrame,
   CopyButton,
@@ -206,8 +246,10 @@ export {
   JSONPreviewOverlay,
   DataTableOverlay,
   DocumentFormattedMarkdownOverlay,
+  MarkdownFileOverlay,
   ImagePreviewOverlay,
   PDFPreviewOverlay,
+  HTMLPreviewOverlay,
   detectLanguage,
   detectLanguageFromPath,
   type CodePreviewOverlayProps,
@@ -219,15 +261,35 @@ export {
   type JSONPreviewOverlayProps,
   type DataTableOverlayProps,
   type DocumentFormattedMarkdownOverlayProps,
+  type MarkdownFileOverlayProps,
   type ImagePreviewOverlayProps,
   type PDFPreviewOverlayProps,
+  type HTMLPreviewOverlayProps,
   ActivityCardsOverlay,
   type ActivityCardsOverlayProps,
 } from './components/overlay'
 
+// office — the vendored document editors, hosted in a frame (see shared/office)
+export { OfficeFrame, type OfficeFrameProps, type OfficeFrameFile, type OfficeFrameLabels } from './components/office/OfficeFrame'
+export { OfficePreviewOverlay, type OfficePreviewOverlayProps } from './components/office/OfficePreviewOverlay'
+export {
+  applyOfficeEdit,
+  hasOfficeEditTarget,
+  registerOfficeEditTarget,
+  type OfficeEditTarget,
+} from './components/office/office-edits'
+
+// Saving on request — the editors' answer to "the agent is about to read this file"
+export {
+  flushDocument,
+  registerDocumentFlusher,
+  clearDocumentFlushers,
+} from './components/editors/document-flush'
+
 // File classification (for link interceptor)
 export {
   classifyFile,
+  officeAppFor,
   type FilePreviewType,
   type FileClassification,
 } from './lib/file-classification'
@@ -280,6 +342,10 @@ export {
 // Turn utilities (pure functions)
 export * from './components/chat/turn-utils'
 
+// Scroll position (pure functions) — one "at the bottom" judgement for the
+// sticky-follow behaviour and the return-to-bottom button
+export * from './components/chat/scroll-position'
+
 // Icons
 export {
   Icon_Folder,
@@ -287,3 +353,33 @@ export {
   Icon_Inbox,
   type IconProps,
 } from './components/icons'
+export {
+  layoutMarkdown,
+  blockTexts,
+  commonAffixes,
+  spliceBlocks,
+  spliceRange,
+  planLanding,
+  landingTarget,
+  type MarkdownChunk,
+  type MarkdownLayout,
+  type Landing,
+  type SavePlan,
+} from './components/editors/markdown-blocks'
+export { landMarkdown, documentBlocks, type LandResult } from './components/editors/markdown-land'
+export {
+  buildBlockTable,
+  planLandingFromTable,
+  planSaveFromTable,
+  type BlockBridge,
+  type BlockRow,
+  type BlockTable,
+} from './components/editors/block-table'
+export {
+  parseDocText,
+  serializeDocText,
+  frontmatterInner,
+  buildFrontmatterRaw,
+  type DocEnvelope,
+} from './components/editors/markdown-envelope'
+export { bridgeOf, saveBlocks, blockMarkdown, type SaveResult, type EditedRanges } from './components/editors/markdown-save'

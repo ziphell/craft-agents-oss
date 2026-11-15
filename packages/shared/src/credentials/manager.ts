@@ -371,6 +371,53 @@ export class CredentialManager {
     return this.delete({ type: 'decision_api_key', name: provider });
   }
 
+  // ============================================================
+  // Search Service Credentials (e.g. DeepSeek search)
+  // ============================================================
+
+  /**
+   * Get the API key stored for a search service (`search_api_key::{service}`).
+   * The active model connection's key is read via getLlmApiKey instead.
+   */
+  async getSearchApiKey(service: string): Promise<string | null> {
+    const cred = await this.get({ type: 'search_api_key', name: service });
+    return cred?.value || null;
+  }
+
+  /** Store the API key for a search service. */
+  async setSearchApiKey(service: string, apiKey: string): Promise<void> {
+    await this.set({ type: 'search_api_key', name: service }, { value: apiKey });
+  }
+
+  /** Delete the API key for a search service. Returns true if one was removed. */
+  async deleteSearchApiKey(service: string): Promise<boolean> {
+    return this.delete({ type: 'search_api_key', name: service });
+  }
+
+  // ============================================================
+  // Page-Fetching Service Credentials (e.g. DeepSeek fetch)
+  // ============================================================
+
+  /**
+   * Get the API key stored for a page-fetching service
+   * (`fetch_api_key::{service}`). Kept apart from the search key on purpose:
+   * either can be used without the other.
+   */
+  async getFetchApiKey(service: string): Promise<string | null> {
+    const cred = await this.get({ type: 'fetch_api_key', name: service });
+    return cred?.value || null;
+  }
+
+  /** Store the API key for a page-fetching service. */
+  async setFetchApiKey(service: string, apiKey: string): Promise<void> {
+    await this.set({ type: 'fetch_api_key', name: service }, { value: apiKey });
+  }
+
+  /** Delete the API key for a page-fetching service. Returns true if one was removed. */
+  async deleteFetchApiKey(service: string): Promise<boolean> {
+    return this.delete({ type: 'fetch_api_key', name: service });
+  }
+
   /**
    * Get OAuth token for an LLM connection.
    * @param connectionSlug - The connection slug

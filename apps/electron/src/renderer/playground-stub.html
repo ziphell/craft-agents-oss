@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Playground (electronAPI stub)</title>
+</head>
+<body>
+  <script>
+    // Temporary verification harness: the playground normally runs inside Electron,
+    // where the preload provides window.electronAPI. The stub answers any call
+    // with something that is callable, dereferenceable and awaitable, which is
+    // enough to let the components mount in a plain browser tab.
+    const plain = () =>
+      new Proxy(function () {}, {
+        get: (t, p) => {
+          if (p === 'then' || p === 'catch' || p === 'finally' || p === 'toJSON') return undefined
+          if (p === Symbol.toPrimitive) return () => 'stub'
+          if (p === 'toString') return () => 'stub'
+          if (p === 'valueOf') return () => 0
+          return plain()
+        },
+        apply: () => plain(),
+        construct: () => plain(),
+      })
+
+    const chain = () =>
+      new Proxy(function () {}, {
+        get: (t, p) => {
+          if (p === 'then')
+            return (fn) => {
+              try { fn && fn(plain()) } catch (e) { console.error(e) }
+              return chain()
+            }
+          if (p === 'catch') return () => chain()
+          if (p === 'finally') return (fn) => { fn && fn(); return chain() }
+          if (p === 'toJSON') return undefined
+          if (p === Symbol.toPrimitive) return () => 'stub'
+          if (p === 'toString') return () => 'stub'
+          if (p === 'valueOf') return () => 0
+          return chain()
+        },
+        apply: () => chain(),
+        construct: () => chain(),
+      })
+
+    window.electronAPI = chain()
+  </script>
+  <div id="root"></div>
+  <script type="module" src="./playground.tsx"></script>
+</body>
+</html>

@@ -6,7 +6,10 @@
  * - File watcher for auto-refresh when files change
  * - Click to preview in-app, double-click to open
  * - Right-click context menu with "Open" / "Show in {file manager}" actions
- * - Persisted expanded folder state per session
+ * - Persisted expanded folder state per source
+ *
+ * The same view renders a project folder's files (`projectFolder`) — the session info panel
+ * uses it for the project files tab — through the identical tree, minus the session watcher.
  *
  * Styling matches LeftSidebar patterns:
  * - Chevron hidden by default, shown on hover
@@ -17,6 +20,7 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
+import { useAtomValue } from 'jotai'
 import { AnimatePresence, motion, type Variants } from 'motion/react'
 import { File, Folder, FolderOpen, FileText, Image, FileCode, ChevronRight, ExternalLink } from 'lucide-react'
 import {
@@ -30,6 +34,7 @@ import { cn } from '@/lib/utils'
 import * as storage from '@/lib/local-storage'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { getFileManagerName } from '@/lib/platform'
+import { windowIsRemoteAtom } from '@/atoms/window-mode'
 import { restoreSessionFileWatch } from './session-files-watch'
 
 /**
@@ -75,6 +80,16 @@ export interface SessionFilesSectionProps {
   sessionFolderPath?: string
   /** Hide section header when embedded inside compact containers (e.g. popovers) */
   hideHeader?: boolean
+  /**
+   * When set, lists this project's own folder instead of a session folder. The tree, icons
+   * and header actions are the same; only the data source and title differ.
+   */
+  projectFolder?: {
+    workspaceId: string
+    projectSlug: string
+    /** Absolute project folder path, for the header action */
+    folderPath?: string
+  }
 }
 
 /**
@@ -150,8 +165,19 @@ const WEB_PREVIEWABLE_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico',
 ])
 
-/** True when running in web UI (browser) rather than Electron. */
-const isWebMode = window.electronAPI.getRuntimeEnvironment() === 'web'
+/**
+ * True when running in web UI (browser) rather than Electron.
+ *
+ * A *function* rather than a module-level constant on purpose. Reading `window.electronAPI` while a
+ * module is being evaluated makes the file depend on something having been installed before it —
+ * true in the app, where a preload sets it up, and false anywhere the module is merely imported into
+ * a page that installs it later. That is how the *built* playground died on load (`TypeError: Cannot
+ * read properties of undefined (reading 'getRuntimeEnvironment')`): this module landed in a chunk
+ * that ran before the mock.
+ */
+function isWebMode(): boolean {
+  return window.electronAPI?.getRuntimeEnvironment?.() === 'web'
+}
 
 /**
  * Constructs a thumbnail:// protocol URL for a given file path.
@@ -184,12 +210,13 @@ const FileThumbnail = memo(function FileThumbnail({ file }: { file: SessionFile 
   }, [file.path])
 
   const ext = file.name.split('.').pop()?.toLowerCase() || ''
-  const previewableSet = isWebMode ? WEB_PREVIEWABLE_EXTENSIONS : PREVIEWABLE_EXTENSIONS
+  const web = isWebMode()
+  const previewableSet = web ? WEB_PREVIEWABLE_EXTENSIONS : PREVIEWABLE_EXTENSIONS
   const canPreview = previewableSet.has(ext)
 
   // Web mode: load a small preview via RPC as a base64 data URL
   useEffect(() => {
-    if (!isWebMode || !canPreview || failed) return
+    if (!web || !canPreview || failed) return
     let cancelled = false
     window.electronAPI.readFilePreviewDataUrl(file.path, 64).then((url) => {
       if (!cancelled) setDataUrl(url)
@@ -204,7 +231,7 @@ const FileThumbnail = memo(function FileThumbnail({ file }: { file: SessionFile 
     return getFileIcon(file)
   }
 
-  const imgSrc = isWebMode ? dataUrl : getThumbnailUrl(file.path)
+  const imgSrc = web ? dataUrl : getThumbnailUrl(file.path)
 
   return (
     <>
@@ -243,6 +270,8 @@ interface FileTreeItemProps {
   onFileClick: (file: SessionFile) => void
   onFileDoubleClick: (file: SessionFile) => void
   onRevealInFileManager: (path: string) => void
+  /** Whether this machine can reveal these files (false in a remote window — they are the hub's). */
+  canRevealLocally: boolean
   /** Whether this item is inside an expanded folder (for stagger animation) */
   isNested?: boolean
 }
@@ -262,6 +291,7 @@ function FileTreeItem({
   onFileClick,
   onFileDoubleClick,
   onRevealInFileManager,
+  canRevealLocally,
   isNested,
 }: FileTreeItemProps) {
   const { t } = useTranslation()
@@ -355,13 +385,15 @@ function FileTreeItem({
               {t("chat.openFile")}
             </StyledContextMenuItem>
           )}
-          {/* Show in file manager */}
-          <StyledContextMenuItem
-            onSelect={() => onRevealInFileManager(file.path)}
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-            {t("chat.showInFileManager", { fileManager: fileManagerName })}
-          </StyledContextMenuItem>
+          {/* Show in file manager — only where the files are on this machine */}
+          {canRevealLocally && (
+            <StyledContextMenuItem
+              onSelect={() => onRevealInFileManager(file.path)}
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              {t("chat.showInFileManager", { fileManager: fileManagerName })}
+            </StyledContextMenuItem>
+          )}
         </StyledContextMenuContent>
       </ContextMenu>
       {/* Expandable children with framer-motion animation - matches LeftSidebar exactly */}
@@ -399,6 +431,7 @@ function FileTreeItem({
                         onFileClick={onFileClick}
                         onFileDoubleClick={onFileDoubleClick}
                         onRevealInFileManager={onRevealInFileManager}
+                        canRevealLocally={canRevealLocally}
                         isNested={true}
                       />
                     </motion.div>
@@ -418,23 +451,32 @@ function FileTreeItem({
 }
 
 /**
- * Section displaying session files as a tree
+ * Section displaying a session's (or a project's) files as a tree
  */
-export function SessionFilesSection({ sessionId, className, sessionFolderPath, hideHeader = false }: SessionFilesSectionProps) {
+export function SessionFilesSection({ sessionId, className, sessionFolderPath, hideHeader = false, projectFolder }: SessionFilesSectionProps) {
   const { t } = useTranslation()
+  const isProject = !!projectFolder
+  const projectWorkspaceId = projectFolder?.workspaceId
+  const projectSlug = projectFolder?.projectSlug
+  // The identity of the listed tree: a session id, or a namespaced project key. Used for the
+  // early-return guard and for persisting the expanded folders.
+  const sourceId = isProject ? `project:${projectWorkspaceId}:${projectSlug}` : sessionId
+  const folderPath = isProject ? projectFolder?.folderPath : sessionFolderPath
+  const headerLabel = isProject ? t('chat.projectFiles') : t('chat.sessionFiles')
+  const emptyLabel = isProject ? t('chat.projectFilesEmpty') : t('chat.sessionFilesEmpty')
   const [files, setFiles] = useState<SessionFile[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
   const [hasSavedExpandedState, setHasSavedExpandedState] = useState(false)
   const mountedRef = useRef(true)
 
-  // Load expanded paths from storage when session changes.
+  // Load expanded paths from storage when the source changes.
   // If no value exists yet, we default to "expand all" after files load.
   useEffect(() => {
-    if (sessionId) {
-      const raw = storage.getRaw(storage.KEYS.sessionFilesExpandedFolders, sessionId)
+    if (sourceId) {
+      const raw = storage.getRaw(storage.KEYS.sessionFilesExpandedFolders, sourceId)
       if (raw !== null) {
-        const saved = storage.get<string[]>(storage.KEYS.sessionFilesExpandedFolders, [], sessionId)
+        const saved = storage.get<string[]>(storage.KEYS.sessionFilesExpandedFolders, [], sourceId)
         setExpandedPaths(new Set(saved))
         setHasSavedExpandedState(true)
       } else {
@@ -445,31 +487,33 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
       setExpandedPaths(new Set())
       setHasSavedExpandedState(false)
     }
-  }, [sessionId])
+  }, [sourceId])
 
   // Save expanded paths to storage when they change
   const saveExpandedPaths = useCallback((paths: Set<string>) => {
-    if (sessionId) {
-      storage.set(storage.KEYS.sessionFilesExpandedFolders, Array.from(paths), sessionId)
+    if (sourceId) {
+      storage.set(storage.KEYS.sessionFilesExpandedFolders, Array.from(paths), sourceId)
     }
-  }, [sessionId])
+  }, [sourceId])
 
   // Load files
   const loadFiles = useCallback(async () => {
-    if (!sessionId) {
+    if (!sourceId) {
       setFiles([])
       return
     }
 
     setIsLoading(true)
     try {
-      const sessionFiles = await window.electronAPI.getSessionFiles(sessionId)
+      const nextFiles = isProject && projectWorkspaceId && projectSlug
+        ? await window.electronAPI.getProjectFiles(projectWorkspaceId, projectSlug)
+        : await window.electronAPI.getSessionFiles(sessionId!)
       if (mountedRef.current) {
-        setFiles(sessionFiles)
+        setFiles(nextFiles)
 
         // Default behavior: expand the entire folder tree when there's no saved state yet.
         if (!hasSavedExpandedState) {
-          const allDirectoryPaths = new Set(collectDirectoryPaths(sessionFiles))
+          const allDirectoryPaths = new Set(collectDirectoryPaths(nextFiles))
           if (allDirectoryPaths.size > 0) {
             setExpandedPaths(allDirectoryPaths)
             saveExpandedPaths(allDirectoryPaths)
@@ -478,7 +522,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
         }
       }
     } catch (error) {
-      console.error('Failed to load session files:', error)
+      console.error('Failed to load files:', error)
       if (mountedRef.current) {
         setFiles([])
       }
@@ -487,7 +531,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
         setIsLoading(false)
       }
     }
-  }, [sessionId, hasSavedExpandedState, saveExpandedPaths])
+  }, [sourceId, isProject, projectWorkspaceId, projectSlug, sessionId, hasSavedExpandedState, saveExpandedPaths])
 
   // Initial load and file watcher setup
   useEffect(() => {
@@ -527,31 +571,14 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
   // instead of always opening in the file manager / default app.
   const { onOpenFile } = useAppShellContext()
   const fileManagerName = getFileManagerName()
+  // A remote window's files are on the hub: nothing here can be revealed or opened locally.
+  const canRevealLocally = !useAtomValue(windowIsRemoteAtom)
 
   // Reveal a file/folder in the system file manager
   const handleRevealInFileManager = useCallback((path: string) => {
+    if (!canRevealLocally) return
     window.electronAPI.showInFolder(path)
-  }, [])
-
-  // Handle file click — preview in-app if possible, open directory in file manager
-  const handleFileClick = useCallback((file: SessionFile) => {
-    if (file.type === 'directory') {
-      // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
-      window.electronAPI.openFile(file.path)
-    } else {
-      onOpenFile(file.path)
-    }
-  }, [onOpenFile])
-
-  // Handle double-click — same as single click (interceptor decides preview vs external)
-  const handleFileDoubleClick = useCallback((file: SessionFile) => {
-    if (file.type === 'directory') {
-      // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
-      window.electronAPI.openFile(file.path)
-    } else {
-      onOpenFile(file.path)
-    }
-  }, [onOpenFile])
+  }, [canRevealLocally])
 
   // Toggle folder expanded state
   const handleToggleExpand = useCallback((path: string) => {
@@ -567,7 +594,36 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
     })
   }, [saveExpandedPaths])
 
-  if (!sessionId) {
+  // Handle file click — preview in-app if possible; a folder opens in the file manager locally,
+  // and expands in place when the files are on the server (there is nothing local to open).
+  const handleFileClick = useCallback((file: SessionFile) => {
+    if (file.type === 'directory') {
+      if (!canRevealLocally) {
+        handleToggleExpand(file.path)
+        return
+      }
+      // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
+      window.electronAPI.openFile(file.path)
+    } else {
+      onOpenFile(file.path)
+    }
+  }, [onOpenFile, canRevealLocally, handleToggleExpand])
+
+  // Handle double-click — same as single click (interceptor decides preview vs external)
+  const handleFileDoubleClick = useCallback((file: SessionFile) => {
+    if (file.type === 'directory') {
+      if (!canRevealLocally) {
+        handleToggleExpand(file.path)
+        return
+      }
+      // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
+      window.electronAPI.openFile(file.path)
+    } else {
+      onOpenFile(file.path)
+    }
+  }, [onOpenFile, canRevealLocally, handleToggleExpand])
+
+  if (!sourceId) {
     return null
   }
 
@@ -576,11 +632,12 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
       {/* Header - matches sidebar styling with select-none, extra top padding for visual balance */}
       {!hideHeader && (
         <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0 select-none">
-          <span className="text-xs font-medium text-muted-foreground">{t("chat.sessionFiles")}</span>
-          {sessionFolderPath && (
+          <span className="text-xs font-medium text-muted-foreground">{headerLabel}</span>
+          {canRevealLocally && folderPath && (
             <button
               type="button"
-              onClick={() => window.electronAPI.showInFolder(sessionFolderPath)}
+              // eslint-disable-next-line craft-links/no-direct-file-open -- directories can't be previewed in-app
+              onClick={() => window.electronAPI.openFile(folderPath)}
               className="text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
             >
               {t("chat.viewInFileManager", { fileManager: fileManagerName })}
@@ -595,7 +652,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
         {files.length === 0 ? (
           <div className="px-4 text-muted-foreground select-none">
             <p className="text-xs">
-              {isLoading ? t('chat.sessionFilesLoading') : t('chat.sessionFilesEmpty')}
+              {isLoading ? t('chat.sessionFilesLoading') : emptyLabel}
             </p>
           </div>
         ) : (
@@ -611,6 +668,7 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
                 onFileClick={handleFileClick}
                 onFileDoubleClick={handleFileDoubleClick}
                 onRevealInFileManager={handleRevealInFileManager}
+                canRevealLocally={canRevealLocally}
               />
             ))}
           </nav>

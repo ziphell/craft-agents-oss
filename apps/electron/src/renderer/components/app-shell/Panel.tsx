@@ -48,9 +48,12 @@ export function Panel({
     <div
       className={cn(
         // Base styles shared by all panels
-        // Note: No rounded corners here - parent container handles clipping via overflow-hidden
+        // Note: No rounded corners here - parent container handles clipping
         // Note: No background color here - panel-specific CSS classes handle backgrounds
-        'h-full flex flex-col min-w-0 overflow-hidden',
+        // `overflow-clip`, not `overflow-hidden`: this top-level container is only ever
+        // clipping, and `hidden` would leave it scrollable — a focus move could then scroll
+        // it and shift the whole layout by a pixel or two (see `index.css`).
+        'h-full flex flex-col min-w-0 overflow-clip',
         // Variant-specific styles
         variant === 'grow' && 'flex-1',
         variant === 'shrink' && 'shrink-0',

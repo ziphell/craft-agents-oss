@@ -12,8 +12,21 @@ const baseCompat: LlmConnection = {
   baseUrl: 'http://127.0.0.1:1234/v1',
   defaultModel: 'gemma',
   piAuthProvider: 'openai',
-  customEndpoint: { api: 'openai-completions', supportsImages: true },
-  models: [{ id: 'gemma', supportsImages: true } as never],
+  customEndpoint: { api: 'openai-completions' },
+  models: [{ id: 'gemma', supportsImages: true }],
+}
+
+/** A built-in Pi provider: the SDK owns the catalog, the connection lists ids. */
+const baseBuiltIn: LlmConnection = {
+  slug: 'pi-api-key',
+  name: 'Craft Agents Backend (API Key)',
+  providerType: 'pi',
+  authType: 'api_key',
+  createdAt: 1,
+  baseUrl: 'https://api.deepseek.com',
+  defaultModel: 'pi/deepseek-v4-flash',
+  piAuthProvider: 'deepseek',
+  models: ['pi/deepseek-v4-pro', 'pi/deepseek-v4-flash'],
 }
 
 function sig(connection: LlmConnection) {
@@ -48,7 +61,7 @@ describe('buildBackendRuntimeSignature', () => {
     const enabled = sig(baseCompat)
     const disabled = sig({
       ...baseCompat,
-      models: [{ id: 'gemma', supportsImages: false } as never],
+      models: [{ id: 'gemma', supportsImages: false }],
     })
 
     expect(disabled).not.toBe(enabled)
@@ -57,13 +70,37 @@ describe('buildBackendRuntimeSignature', () => {
   it('ignores non-runtime metadata such as lastUsedAt', () => {
     expect(sig({ ...baseCompat, lastUsedAt: 1 })).toBe(sig({ ...baseCompat, lastUsedAt: 2 }))
   })
+
+  // A built-in provider's catalog belongs to the SDK, but the connection's model
+  // entries still carry what the user stated about those models, and
+  // `resolvePiModel` applies it — so a change there has to refresh live sessions.
+  it('changes when a built-in provider model parameter changes', () => {
+    const withOverride = sig({
+      ...baseBuiltIn,
+      models: ['pi/deepseek-v4-pro', { id: 'pi/deepseek-v4-flash', supportsImages: true }],
+    })
+
+    expect(withOverride).not.toBe(sig(baseBuiltIn))
+  })
+
+  it('ignores id-only churn on a built-in provider', () => {
+    // `automaticallySyncedFromProvider` connections get their whole catalog
+    // written to `models[]` on every refresh; the ids alone change nothing for a
+    // built-in provider (unlike a custom endpoint, where they are its model set).
+    const resynced = sig({
+      ...baseBuiltIn,
+      models: [...(baseBuiltIn.models ?? []), 'pi/deepseek-v4-flash-vision-exp'],
+    })
+
+    expect(resynced).toBe(sig(baseBuiltIn))
+  })
 })
 
 describe('filterAttachmentsForModelInput', () => {
   it('omits images for pi_compat text-only models while preserving other attachments', () => {
     const result = filterAttachmentsForModelInput(
       [imageAttachment, textAttachment],
-      { ...baseCompat, models: [{ id: 'gemma', supportsImages: false } as never] },
+      { ...baseCompat, models: [{ id: 'gemma', supportsImages: false }] },
       'gemma',
     )
 
@@ -78,14 +115,53 @@ describe('filterAttachmentsForModelInput', () => {
     expect(result.attachments).toEqual([imageAttachment])
   })
 
-  it('treats explicit supportsImages=false as overriding endpoint-level true', () => {
+  it('keeps images when the model entry does not declare image support (defaults to capable)', () => {
     const result = filterAttachmentsForModelInput(
       [imageAttachment],
-      { ...baseCompat, customEndpoint: { api: 'openai-completions', supportsImages: true }, models: [{ id: 'gemma', supportsImages: false } as never] },
+      { ...baseCompat, models: ['gemma'] },
       'gemma',
+    )
+
+    expect(result.omittedImages).toHaveLength(0)
+    expect(result.attachments).toEqual([imageAttachment])
+  })
+
+  it('honours an explicit supportsImages: false on a built-in connection too', () => {
+    const result = filterAttachmentsForModelInput(
+      [imageAttachment],
+      {
+        slug: 'anthropic', name: 'Anthropic', providerType: 'anthropic', authType: 'api_key',
+        models: [{ id: 'claude-haiku', supportsImages: false }],
+        createdAt: 1,
+      },
+      'claude-haiku',
     )
 
     expect(result.omittedImages).toEqual([imageAttachment])
     expect(result.attachments).toBeUndefined()
+  })
+
+  it('keeps a path shell for images when a vision model can read them', () => {
+    const stored: FileAttachment = {
+      ...imageAttachment,
+      storedPath: '/session/attachments/image.png',
+      thumbnailBase64: 'thumb',
+    }
+    const result = filterAttachmentsForModelInput(
+      [stored, textAttachment],
+      { ...baseCompat, visionModel: 'qwen-vl', models: [{ id: 'gemma', supportsImages: false }, { id: 'qwen-vl', supportsImages: true }] },
+      'gemma',
+    )
+
+    // Still omitted from the model payload (no pixels sent)...
+    expect(result.omittedImages.map(a => a.name)).toEqual(['image.png'])
+    // ...but a path shell survives so the agent can hand the file to call_llm.
+    expect(result.attachments?.map(a => a.name)).toEqual(['image.png', 'note.txt'])
+    const shell = result.attachments!.find(a => a.name === 'image.png')!
+    expect(shell.type).toBe('image')
+    expect(shell.base64).toBeUndefined()
+    expect(shell.thumbnailBase64).toBeUndefined()
+    expect(shell.path).toBe('/tmp/image.png')
+    expect(shell.storedPath).toBe('/session/attachments/image.png')
   })
 })

@@ -163,6 +163,9 @@ export async function handleSourceTest(
       lastTestedAt: Date.now(),
       connectionStatus,
       connectionError,
+      // A mailbox that just accepted the login is authenticated; there is no
+      // separate OAuth step to wait for.
+      ...(source.type === 'email' && connectionStatus === 'connected' ? { isAuthenticated: true } : {}),
       // Fold enabled flip into the same save — one write, not two.
       ...(willFlipEnabled ? { enabled: true } : {}),
     };
@@ -418,12 +421,55 @@ async function testConnection(
     success = result.success;
     hasError = result.hasError;
     error = result.error;
+  } else if (source.type === 'email') {
+    const result = await testEmailConnection(ctx, source);
+    lines.push(...result.lines);
+    success = result.success;
+    hasError = result.hasError;
+    error = result.error;
   } else {
     lines.push('ℹ No connection test available for this source type');
     success = true;
   }
 
   return { lines, success, hasError, error };
+}
+
+async function testEmailConnection(
+  ctx: SessionToolContext,
+  source: SourceConfig
+): Promise<{ lines: string[]; success: boolean; hasError: boolean; error?: string }> {
+  const lines: string[] = [];
+
+  if (!source.email?.address) {
+    return { lines: ['✗ No mailbox address configured'], success: false, hasError: true, error: 'No address' };
+  }
+
+  lines.push(`ℹ Mailbox: ${source.email.address}`);
+
+  if (!ctx.testEmailSource) {
+    return {
+      lines: [...lines, 'ℹ No mailbox test available in this backend — config looks complete'],
+      success: true,
+      hasError: false,
+    };
+  }
+
+  try {
+    const result = await ctx.testEmailSource(source);
+    if (result.success) {
+      lines.push('✓ IMAP and SMTP login succeeded');
+      return { lines, success: true, hasError: false };
+    }
+    const message = result.error || 'Connection failed';
+    lines.push(`✗ ${message}`);
+    if (result.hint) lines.push(`  ${result.hint}`);
+    return { lines, success: false, hasError: true, error: message };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    lines.push(`✗ ${message}`);
+    return { lines, success: false, hasError: true, error: message };
+  }
 }
 
 async function testApiConnection(

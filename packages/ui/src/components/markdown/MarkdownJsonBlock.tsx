@@ -178,7 +178,7 @@ export function MarkdownJsonBlock({ code, className }: MarkdownJsonBlockProps) {
             collapsed={2}
             enableClipboard={true}
             displayDataTypes={false}
-            shortenTextAfterLength={100}
+            shortenTextAfterLength={0}
           >
             {/* Custom copy icon — same as JSONPreviewOverlay */}
             <JsonView.Copied

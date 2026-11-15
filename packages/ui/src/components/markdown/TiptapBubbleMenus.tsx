@@ -106,10 +106,10 @@ function TextFormattingMenu({ editor }: { editor: Editor }) {
 }
 
 // ============================================================================
-// Code block edit bubble menu — edit popover for mermaid / latex blocks
+// Code block edit bubble menu — edit popover for mermaid / mind map / latex blocks
 // ============================================================================
 
-const VISUAL_LANGUAGES = new Set(['mermaid', 'latex', 'math', 'tex', 'katex'])
+const VISUAL_LANGUAGES = new Set(['mermaid', 'mindmap', 'latex', 'math', 'tex', 'katex'])
 
 function getEditableBlockMeta(editor: Editor): { label: string; code: string; update: (next: string) => void } | null {
   const { selection } = editor.state
@@ -128,12 +128,36 @@ function getEditableBlockMeta(editor: Editor): { label: string; code: string; up
       }
     }
 
+    if (node.type.name === 'mindmapBlock') {
+      return {
+        label: 'Mind map',
+        code: String(node.attrs.code ?? ''),
+        update: (next) => {
+          editor.chain().focus().setNodeSelection(pos).updateAttributes('mindmapBlock', { code: next }).run()
+        },
+      }
+    }
+
     if (node.type.name === 'latexBlock') {
       return {
         label: 'LaTeX',
         code: String(node.attrs.code ?? ''),
         update: (next) => {
           editor.chain().focus().setNodeSelection(pos).updateAttributes('latexBlock', { code: next }).run()
+        },
+      }
+    }
+
+    // A preview block is drawn by its own component, so the fence — the file it names, the rows
+    // it holds — has no place on screen to be edited. Its language is the label rather than a
+    // word for the family, because the fence is what is being edited: `drawio-preview` says what
+    // it is, "preview" does not.
+    if (node.type.name === 'previewBlock') {
+      return {
+        label: String(node.attrs.lang ?? 'preview'),
+        code: String(node.attrs.code ?? ''),
+        update: (next) => {
+          editor.chain().focus().setNodeSelection(pos).updateAttributes('previewBlock', { code: next }).run()
         },
       }
     }
@@ -150,7 +174,7 @@ function getEditableBlockMeta(editor: Editor): { label: string; code: string; up
     const lang = (node.attrs.language as string | undefined)?.toLowerCase() ?? ''
     if (!VISUAL_LANGUAGES.has(lang)) return null
 
-    const label = lang === 'mermaid' ? 'Mermaid' : 'LaTeX'
+    const label = lang === 'mermaid' ? 'Mermaid' : lang === 'mindmap' ? 'Mind map' : 'LaTeX'
     const pos = $from.before(depth)
 
     return {
@@ -439,7 +463,7 @@ export function TiptapBubbleMenus({ editor }: { editor: Editor }) {
     if (!(selection instanceof NodeSelection)) return null
 
     const name = selection.node.type.name
-    if (name !== 'mermaidBlock' && name !== 'latexBlock') return null
+    if (name !== 'mermaidBlock' && name !== 'mindmapBlock' && name !== 'latexBlock') return null
 
     const getRect = () => {
       // Preferred path: edit button bounds inside selected node DOM.
@@ -488,7 +512,7 @@ export function TiptapBubbleMenus({ editor }: { editor: Editor }) {
         <TextFormattingMenu editor={editor} />
       </BubbleMenu>
 
-      {/* Rich block edit — shows for selected Mermaid/LaTeX rich blocks (and legacy codeBlock fallback). */}
+      {/* Rich block edit — shows for selected Mermaid/Mind map/LaTeX rich blocks (and legacy codeBlock fallback). */}
       <BubbleMenu
         editor={editor}
         pluginKey="richBlockEdit"
@@ -496,7 +520,7 @@ export function TiptapBubbleMenus({ editor }: { editor: Editor }) {
         shouldShow={({ state, editor: e }) => {
           if (state.selection instanceof NodeSelection) {
             const name = state.selection.node.type.name
-            if (name === 'mermaidBlock' || name === 'latexBlock') return true
+            if (name === 'mermaidBlock' || name === 'mindmapBlock' || name === 'latexBlock') return true
           }
 
           if (!e.isActive('codeBlock')) return false

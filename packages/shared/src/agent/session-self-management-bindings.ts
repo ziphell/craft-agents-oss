@@ -2,7 +2,7 @@
  * Session Self-Management Bindings
  *
  * Attaches the session-scoped tool properties (session management, tasks,
- * messaging, pages, decide) to a SessionToolContext using
+ * messaging, tweaks, decide) to a SessionToolContext using
  * Object.defineProperty with non-memoized lazy getters. Each access resolves
  * the callback from the session-scoped tool callback registry at call time,
  * so late merges and callback replacements are immediately visible without
@@ -26,7 +26,8 @@ import { getSessionScopedToolCallbacks } from './session-scoped-tool-callback-re
  * Attach session self-management bindings to a SessionToolContext.
  *
  * Defines lazy getters for the session-management callbacks (labels, status,
- * archive, list/info, resolve helpers), messaging, createTask, and pages.
+ * archive, list/info, resolve helpers), messaging, createTask, tweaks,
+ * and decide.
  *
  * @param context - The SessionToolContext to augment (mutated in place)
  * @param sessionId - The session ID for registry lookup and getSessionInfo defaulting
@@ -113,27 +114,6 @@ export function attachSessionSelfManagementBindings(
     enumerable: true,
   });
 
-  // Messaging gateway bindings
-  Object.defineProperty(context, 'getMessagingBindings', {
-    get() {
-      const fn = getSessionScopedToolCallbacks(sessionId)?.getMessagingBindingsFn;
-      if (!fn) return undefined;
-      return (sid: string) => fn(sid ?? sessionId);
-    },
-    configurable: true,
-    enumerable: true,
-  });
-
-  Object.defineProperty(context, 'unbindMessagingChannel', {
-    get() {
-      const fn = getSessionScopedToolCallbacks(sessionId)?.unbindMessagingChannelFn;
-      if (!fn) return undefined;
-      return (sid: string, platform?: string) => fn(sid ?? sessionId, platform);
-    },
-    configurable: true,
-    enumerable: true,
-  });
-
   Object.defineProperty(context, 'createTask', {
     get() {
       return getSessionScopedToolCallbacks(sessionId)?.createTaskFn;
@@ -142,9 +122,17 @@ export function attachSessionSelfManagementBindings(
     enumerable: true,
   });
 
-  Object.defineProperty(context, 'pages', {
+  Object.defineProperty(context, 'tweaks', {
     get() {
-      return getSessionScopedToolCallbacks(sessionId)?.pages;
+      return getSessionScopedToolCallbacks(sessionId)?.tweaks;
+    },
+    configurable: true,
+    enumerable: true,
+  });
+
+  Object.defineProperty(context, 'decide', {
+    get() {
+      return getSessionScopedToolCallbacks(sessionId)?.decide;
     },
     configurable: true,
     enumerable: true,
@@ -164,6 +152,16 @@ export function attachSessionSelfManagementBindings(
       const fn = getSessionScopedToolCallbacks(sessionId)?.getSessionInfoFn;
       if (!fn) return undefined;
       return (sid?: string) => fn(sid ?? sessionId);
+    },
+    configurable: true,
+    enumerable: true,
+  });
+
+  // A background job settles long after the tool call returned, so this is resolved at *call*
+  // time by the closure the tool hands the render host — not read once when the context is built.
+  Object.defineProperty(context, 'notifyBackgroundResult', {
+    get() {
+      return getSessionScopedToolCallbacks(sessionId)?.notifyBackgroundResultFn;
     },
     configurable: true,
     enumerable: true,

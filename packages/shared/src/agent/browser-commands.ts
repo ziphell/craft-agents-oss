@@ -1,0 +1,2454 @@
+/**
+ * `browser_tool`'s commands.
+ *
+ * The window's own surface: pages, refs, input, screenshots, console, network, tabs. Every command
+ * here drives the shared browser window and nothing else; the other doors' commands live in their
+ * own `*-commands.ts` files, and the CLI all of them read their command line with is `command-cli.ts`.
+ *
+ * This door's own runtime lives here too, because only this door has it: batching (the other door
+ * takes one command per call), `evaluate --file`, and the waiting a command does for its page.
+ * This file imports `command-cli.ts` and nothing else of ours except types — `command-cli.ts` does
+ * not import it back, which is what keeps the CLI free of either door.
+ */
+
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { writePdfBytes, writeScreenshotBytes } from './screenshot-file.ts';
+import type {
+  BrowserConsoleArgs,
+  BrowserDownloadsArgs,
+  BrowserFetchedResource,
+  BrowserLifecycleActionResult,
+  BrowserNetworkArgs,
+  BrowserPaneFns,
+  BrowserScreenshotRegionArgs,
+  BrowserWaitArgs,
+} from './browser-pane.ts';
+import { describeWork, type BrowserTabSummary } from '../protocol/dto.ts';
+import { getSessionPath } from '../sessions/storage.ts';
+import {
+  buildWebSnapshot,
+  findMarkdownImages,
+  renderWebSnapshotNote,
+  rewriteMarkdownImages,
+  snapshotImageFileName,
+} from '../sources/web-snapshot.ts';
+import { snapshotAssetsDirName } from '../sources/types.ts';
+import { basename, dirname, join } from 'node:path';
+import {
+  type BrowserCommandImage,
+  type BrowserCommandResult,
+  type BrowserPageMetrics,
+  type ToolCommandArgs,
+  type ToolCommandContext,
+  createCommandRunner,
+  formatBytes,
+  getPageMetrics,
+  requiredDurationOption,
+  resolveLocalPath,
+  tokenizeCommand,
+} from './command-cli.ts';
+
+// ============================================================================
+// This door's runtime
+// ============================================================================
+
+/**
+ * The sentence appended to a result that leaves tabs behind.
+ *
+ * Here rather than in the tool adapters because two doors hand browser work to an agent now —
+ * `browser_tool` and `device_tool`'s nested `browser` — and the advice is the same either way.
+ */
+export const BROWSER_RELEASE_HINT = '\n\nWhen you are done using the browser, hand the page back with "tab-show <id> --handover" — it makes that tab the window\'s shown tab and drops your overlay and hold — and say so in your reply (the window is not raised for them). Or close the tabs you opened with "tab-close <id>".';
+
+/**
+ * The sidecar the recorder writes beside a film: `<…>.mp4` → `<…>.events.jsonl`.
+ *
+ * Same rule as `recording-sidecar.ts` (the writer), repeated here because this is the door that
+ * has to name both files — the shared package cannot import a main-process module. A recording
+ * without a sidecar is still a recording; the line says where it would be.
+ */
+function sidecarPathFor(recordingFile: string): string {
+  return recordingFile.replace(/\.[^./\\]+$/, '.events.jsonl');
+}
+
+
+const NAVIGATION_COMMANDS = new Set([
+  'navigate',
+  'click',
+  'back',
+  'forward',
+  // A reload rebuilds the document, so every ref collected before it is stale — the same
+  // reason the others are here.
+  'reload',
+]);
+
+/**
+ * Split a batch into its commands, honouring quotes.
+ *
+ * Only this door batches: a batch exists so that one *action* made of several steps — fill a
+ * form, then click submit — is one call, and the string mode is what the browser guide tells
+ * the agent to write.
+ */
+export function splitBatchCommands(input: string): string[] {
+  const commands: string[] = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i]!;
+
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      current += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      current += ch;
+      continue;
+    }
+
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      current += ch;
+      continue;
+    }
+
+    if (ch === ';' && !inSingle && !inDouble) {
+      const trimmed = current.trim();
+      if (trimmed.length > 0) commands.push(trimmed);
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (escaped) {
+    current += '\\';
+  }
+
+  if (inSingle || inDouble) {
+    throw new Error('Parse error: unclosed quote in the command.');
+  }
+
+  const trimmed = current.trim();
+  if (trimmed.length > 0) commands.push(trimmed);
+  return commands;
+}
+
+/**
+ * Run a batch in order, stopping after a command that may have changed the page.
+ *
+ * Every command in the batch goes through the same single-command runner as a lone one, so a batch
+ * is a sequence of ordinary commands and not a second dialect.
+ */
+export async function executeBatchCommands(args: {
+  commands: string[];
+  fns: BrowserPaneFns;
+  sessionId: string;
+  platform?: NodeJS.Platform;
+  /** Where a relative `--file` path is counted from (the workspace root). */
+  workspaceRootPath?: string;
+}): Promise<BrowserCommandResult> {
+  const outputs: string[] = [];
+  let lastImage: BrowserCommandImage | undefined;
+  let appendReleaseHint = false;
+
+  for (let i = 0; i < args.commands.length; i++) {
+    const command = args.commands[i]!;
+    const result = await runOneCommand({ ...args, command });
+
+    outputs.push(result.output);
+    if (result.image) lastImage = result.image;
+    if (result.appendReleaseHint) appendReleaseHint = true;
+
+    const batchCmd = tokenizeCommand(command)[0]?.toLowerCase();
+    if (batchCmd && NAVIGATION_COMMANDS.has(batchCmd) && i < args.commands.length - 1) {
+      outputs.push(`(stopped batch after "${batchCmd}" — page may have changed, re-snapshot before continuing)`);
+      break;
+    }
+  }
+
+  return {
+    output: outputs.join('\n'),
+    appendReleaseHint,
+    image: lastImage,
+  };
+}
+
+/**
+ * The expression a command was given, exactly as it was typed.
+ *
+ * `parts` cannot answer this. It is the shell's reading of the line, and a shell takes the quotes
+ * off a value — right for `fill @e3 "two words"`, wrong for a **program**: `document.title + ' | '
+ * + location.href` arrived as `document.title + | + location.href`, threw, and was reported as
+ * "script failed to execute", which reads like the page had failed rather than the command.
+ * Measured across this workspace's sessions: 39 of the 45 `evaluate` failures had quotes in the
+ * expression, and the array form of the same script always worked.
+ *
+ * `ctx.rawCommand` is the line with `--tab`/`--profile` cut out and nothing else touched, so what
+ * is left after the command word is the expression: whitespace runs, semicolons and string
+ * literals included.
+ */
+function rawExpression(ctx: ToolCommandContext): string {
+  const raw = ctx.rawCommand.trim();
+  const wordEnd = raw.search(/\s/);
+  if (wordEnd === -1) return '';
+  return stripOuterQuotes(raw.slice(wordEnd).trim());
+}
+
+/**
+ * One layer of quotes, when the quotes wrap the whole expression.
+ *
+ * Both spellings have to keep working: `evaluate document.title + ' | ' + location.href` (quotes
+ * are string literals, part of the program) and `evaluate "document.title + ';' + location.href"`
+ * (the quotes are the shell's, there to protect the semicolon from batching). The wrapping is the
+ * only layer that is not the program's, and it is only a wrapping when the same quote does not
+ * appear again inside unescaped — `"a" + "b"` is two literals side by side, not a wrapper.
+ */
+function stripOuterQuotes(text: string): string {
+  const quote = text[0];
+  if ((quote !== '"' && quote !== "'") || text.length < 2 || text[text.length - 1] !== quote) return text;
+  const inner = text.slice(1, -1);
+  const repeats = quote === '"' ? /(^|[^\\])"/ : /(^|[^\\])'/;
+  return repeats.test(inner) ? text : inner;
+}
+
+/**
+ * A failed navigation, said in a way the caller can act on.
+ *
+ * Chromium's own word for it is `ERR_CONNECTION_REFUSED (-102) loading 'https://…'` and nothing
+ * else — no tab, no address, no next step. What an agent needs from a failure is whether the
+ * address is wrong or the tab is, because the second is fixed by asking again and the first is
+ * not.
+ */
+function navigateFailure(error: unknown, url: string, tabId?: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = /\b(ERR_[A-Z0-9_]+)\b/.exec(message)?.[1];
+  const lines = [
+    `navigate failed: ${message}`,
+    `Address asked for: ${url}`,
+    `Tab: ${tabId ?? 'yours (the one your commands work from)'}`,
+  ];
+  if (code === 'ERR_INVALID_URL' || code === 'ERR_UNSAFE_PORT' || code === 'ERR_DISALLOWED_URL_SCHEME') {
+    lines.push(
+      'That is the address rather than the page — a URL, not a path, and not a port chromium refuses. Fix it and run it again.',
+    );
+  } else {
+    lines.push(
+      'The tab keeps that address and shows its own error page, so the same command again is the retry ("reload" does it too). ' +
+        'A failure here is not a dead tab — do not open a new one to get out of it.',
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Run the script, and say which script when it throws.
+ *
+ * Electron's only word for a throwing script is "Script failed to execute, this normally means an
+ * error was thrown" — no message, no line, nothing to correct. The script as the page received it
+ * is the missing half, so it is quoted back (trimmed to something a reader can scan).
+ */
+async function evaluateInPage(fns: BrowserPaneFns, expression: string): Promise<unknown> {
+  try {
+    return await fns.evaluate(expression);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const shown = expression.length > 400 ? `${expression.slice(0, 400)}…` : expression;
+    throw new Error(
+      `evaluate failed: ${message}\n` +
+      `\nThe script that ran was:\n${shown}\n` +
+      '\nIf that is not what you meant to run, pass it as an array — ["evaluate", "<js>"] — or write it to a file and use --file.',
+    );
+  }
+}
+
+/**
+ * How large a script `evaluate --file` will read.
+ *
+ * A file this big is a mistake rather than a page test, and evaluating it would put a
+ * megabyte of somebody's source through CDP to no purpose — so the ceiling is refused
+ * with the size named, instead of silently shipping it.
+ */
+const MAX_EVALUATE_FILE_BYTES = 256 * 1024;
+
+/**
+ * Read the script `evaluate --file` names, and say which file it came from.
+ *
+ * The flag exists so the source never has to enter the command: the model writes the
+ * script once (with the Write tool) and injects it by path, instead of spelling the
+ * same code out a second time — which costs the conversation twice, and escapes the
+ * code through a command string on the way.
+ */
+export function readEvaluateFile(filePath: string, workspaceRootPath?: string): { source: string; path: string } {
+  const absolute = resolveLocalPath(filePath, workspaceRootPath);
+
+  if (!existsSync(absolute)) {
+    throw new Error(`evaluate --file: no such file: ${absolute}`);
+  }
+
+  const stats = statSync(absolute);
+  if (stats.isDirectory()) {
+    throw new Error(`evaluate --file: ${absolute} is a directory, not a script`);
+  }
+  if (stats.size > MAX_EVALUATE_FILE_BYTES) {
+    throw new Error(
+      `evaluate --file: ${absolute} is ${Math.round(stats.size / 1024)} KB, over the ` +
+      `${MAX_EVALUATE_FILE_BYTES / 1024} KB ceiling. Split the script, or inject the part that is in question.`,
+    );
+  }
+
+  // A byte-order mark ahead of the first statement is a syntax error in a page, and an
+  // editor that writes one is not a reason for the script to fail there.
+  const raw = readFileSync(absolute, 'utf8');
+  const source = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+  if (!source.trim()) {
+    throw new Error(`evaluate --file: ${absolute} is empty`);
+  }
+
+  return { source, path: absolute };
+}
+
+/**
+ * What one `read --save --images` may pull down, so a gallery page cannot run away with the capture.
+ * Counted here rather than in the page: the ceiling is about what lands on disk.
+ */
+const MAX_SNAPSHOT_IMAGES = 100;
+const MAX_SNAPSHOT_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_SNAPSHOT_IMAGE_TOTAL_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Fetch one image **in the page**, through `evaluate`.
+ *
+ * In the page and not in this process: an image behind the same login as the article is only
+ * reachable with the window's cookies, which an out-of-process fetch does not carry — the same
+ * reason the article itself is read through the window rather than fetched. The url travels as a
+ * JSON literal rather than interpolated into the script, so nothing in a url can become a statement.
+ *
+ * It is tried first because it is the request the page itself would make — its referrer, its
+ * origin — and some hosts serve an image only to that. It cannot be the only way: the browser
+ * refuses to let script *read* a cross-origin response that carries no CORS header, which is
+ * where `fetchResource` takes over.
+ */
+async function fetchImageInPage(fns: BrowserPaneFns, url: string): Promise<BrowserFetchedResource> {
+  const megabytes = Math.round(MAX_SNAPSHOT_IMAGE_BYTES / 1048576);
+  const expression = `(async () => {
+    try {
+      const response = await fetch(${JSON.stringify(url)}, { credentials: 'include' });
+      if (!response.ok) return { ok: false, error: 'HTTP ' + response.status };
+      const blob = await response.blob();
+      if (blob.size > ${MAX_SNAPSHOT_IMAGE_BYTES}) return { ok: false, error: 'over ${megabytes} MB' };
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      return { ok: true, base64: btoa(binary), mimeType: blob.type || '' };
+    } catch (error) {
+      const message = String((error && error.message) || error);
+      // A displayed image failing to fetch is almost always the browser refusing to *read* a
+      // cross-origin response (no CORS header), not a broken url — "Failed to fetch" alone would
+      // send the reader looking for the wrong thing.
+      return { ok: false, error: message === 'Failed to fetch' ? 'cross-origin, not readable here' : message };
+    }
+  })()`;
+
+  const answer = (await fns.evaluate(expression)) as BrowserFetchedResource | null;
+  if (!answer || typeof answer !== 'object' || typeof (answer as { ok?: unknown }).ok !== 'boolean') {
+    return { ok: false, error: 'the page gave no answer' };
+  }
+  return answer;
+}
+
+/**
+ * A refusal is an answer, not an exception.
+ *
+ * A door can throw for reasons that are about the door rather than about the image — the tab went
+ * away, the far side refused the whole capability — and none of them should take a capture down
+ * over one picture.
+ */
+async function refusalOr(
+  run: () => Promise<BrowserFetchedResource>,
+): Promise<BrowserFetchedResource> {
+  try {
+    return await run();
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * One image, by whichever door can actually reach it.
+ *
+ * The page first — the request the page itself would make, with its referrer and its origin, which
+ * some hosts require. Then the window's session, which is not bound by the page's CORS and so reads
+ * an image the page displayed but script could not. That second door is the more capable one, so
+ * **its** answer is the one reported: `HTTP 403` is the real reason, where the page could only say
+ * that it was not allowed to look.
+ */
+async function fetchImage(
+  fns: BrowserPaneFns,
+  url: string,
+  referrer: string | undefined,
+): Promise<BrowserFetchedResource> {
+  const viaPage = await refusalOr(() => fetchImageInPage(fns, url));
+  if (viaPage.ok) return viaPage;
+
+  return refusalOr(() =>
+    fns.fetchResource(url, {
+      ...(referrer ? { referrer } : {}),
+      maxBytes: MAX_SNAPSHOT_IMAGE_BYTES,
+    }),
+  );
+}
+
+/**
+ * Wait for a reader's page to stop moving, and say so when it does not.
+ *
+ * A navigation in flight leaves the previous document in the tab until the new one commits, so a
+ * read taken now would describe the old page under the new address. The timeout is reported rather
+ * than hidden: the answer names the document it is actually about.
+ */
+async function loadingNote(fns: BrowserPaneFns, action: string): Promise<string[]> {
+  if (!fns.waitForIdle) return [];
+  const settled = await fns.waitForIdle(5_000).catch(() => true);
+  return settled
+    ? []
+    : [`Status: still loading — this is the document that was on screen when ${action}.`];
+}
+
+/**
+ * The tab a command acts on: the one it names with `--tab`, or this conversation's cursor.
+ *
+ * Read from the tab list rather than the page: a tab already reports its own address and
+ * title, so asking the document would be a second, slower answer to the same question.
+ */
+async function tabThisCommandActsOn(
+  fns: BrowserPaneFns,
+  ctx: Pick<ToolCommandContext, 'tabId' | 'sessionId'>,
+): Promise<BrowserTabSummary | undefined> {
+  const tabs = await fns.listTabs().catch(() => []);
+  return ctx.tabId
+    ? tabs.find((tab) => tab.id === ctx.tabId)
+    : tabs.find((tab) => tab.cursorOf.includes(ctx.sessionId));
+}
+
+/**
+ * A reader must not read the built-in error page.
+ *
+ * When a navigation fails, the tab keeps the failed address and shows a page **we** wrote in
+ * place of the document that never arrived. Reading that page would describe our own copy —
+ * the last thing the caller asked about — so the failure is stated instead. The tab is found
+ * the same way the command targets one: by its `--tab`, or by this conversation's cursor.
+ */
+async function refuseFailedDocument(fns: BrowserPaneFns, ctx: ToolCommandContext): Promise<void> {
+  const target = await tabThisCommandActsOn(fns, ctx);
+  if (!target?.error) return;
+  const http = target.error.status ? ` (HTTP ${target.error.status})` : '';
+  // A crash is not a failed load: the address may be perfectly good, and the page is gone because
+  // the process drawing it died. Saying so is what stops a reader from concluding the site refused
+  // it — and the way back is the same either way.
+  if (target.crashed) {
+    throw new Error(
+      `Tab ${target.id} has no page to read: the process behind it ended ` +
+        `(${target.crashed.reason}, exit ${target.crashed.exitCode}) while it was on ${target.error.url}. Nothing was read. ` +
+        'Nothing is wrong with the address — "reload" loads it again, or "navigate" somewhere else, then run this command again.',
+    );
+  }
+  throw new Error(
+    `This tab is showing the built-in error page: ${target.error.url} failed to load — ` +
+      `${target.error.code}${http}. Nothing was read. Retry or navigate elsewhere, then run this command again.`,
+  );
+}
+
+/**
+ * Keep a note's images beside it and point the note at them.
+ *
+ * An image that could not be kept **keeps its remote url** — a capture is not improved by turning a
+ * working link into a hole — and the count is reported so the capture says what it is worth.
+ */
+async function localizeSnapshotImages(args: {
+  note: string;
+  notePath: string;
+  pageUrl: string;
+  fns: BrowserPaneFns;
+}): Promise<{
+  note: string;
+  dirName: string | null;
+  saved: number;
+  left: Array<{ url: string; reason: string }>;
+}> {
+  const urls = findMarkdownImages(args.note);
+  if (urls.length === 0) return { note: args.note, dirName: null, saved: 0, left: [] };
+
+  const dirName = snapshotAssetsDirName(basename(args.notePath));
+  const dir = join(dirname(args.notePath), dirName);
+  const replacements = new Map<string, string>();
+  const left: Array<{ url: string; reason: string }> = [];
+  let totalBytes = 0;
+
+  for (const url of urls) {
+    if (replacements.size >= MAX_SNAPSHOT_IMAGES) {
+      left.push({ url, reason: `over ${MAX_SNAPSHOT_IMAGES} images` });
+      continue;
+    }
+    if (totalBytes >= MAX_SNAPSHOT_IMAGE_TOTAL_BYTES) {
+      left.push({ url, reason: 'over the capture budget' });
+      continue;
+    }
+
+    const fetched = await fetchImage(args.fns, url, args.pageUrl);
+    if (!fetched.ok) {
+      left.push({ url, reason: fetched.error });
+      continue;
+    }
+
+    const bytes = Buffer.from(fetched.base64, 'base64');
+    totalBytes += bytes.byteLength;
+    const fileName = snapshotImageFileName(url, bytes, fetched.mimeType);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, fileName), bytes);
+    replacements.set(url, `${dirName}/${fileName}`);
+  }
+
+  return {
+    note: rewriteMarkdownImages(args.note, replacements),
+    dirName: replacements.size > 0 ? dirName : null,
+    saved: replacements.size,
+    left,
+  };
+}
+
+/** The reasons images were left as links, counted — one URL each would be a wall. */
+function summarizeImageFailures(left: Array<{ url: string; reason: string }>): string {
+  const counts = new Map<string, number>();
+  for (const item of left) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  return Array.from(counts.entries())
+    .map(([reason, count]) => (count > 1 ? `${reason} ×${count}` : reason))
+    .join(', ');
+}
+
+/**
+ * One browser command, once the command line has been read.
+ *
+ * The three things this door says about itself: its help, its command table, and what an unknown
+ * command means — a browser command we do not have (`browser_tool status` reads perfectly
+ * plausible, and is not one of ours).
+ */
+const runOneCommand = createCommandRunner({
+  help: getBrowserToolHelp,
+  run: runBrowserCommand,
+  unknownCommand: (cmd) => `Unknown browser_tool command "${cmd}". Use "--help" to see supported commands.`,
+});
+
+/**
+ * Run a `browser_tool` command: a batch when the string holds several, one otherwise.
+ *
+ * Batching is this door's alone. It exists so that one *action* made of several steps — filling a
+ * form, then clicking submit — is one call, and it stops after a command that may have changed the
+ * page, since every ref collected before it is stale.
+ */
+export async function executeBrowserToolCommand(args: ToolCommandArgs): Promise<BrowserCommandResult> {
+  if (Array.isArray(args.command)) {
+    if (args.command.length === 0) {
+      throw new Error('Missing command. Use "--help" to see supported browser_tool commands.');
+    }
+    return runOneCommand(args);
+  }
+
+  const trimmed = args.command.trim();
+  if (!trimmed) {
+    throw new Error('Missing command. Use "--help" to see supported browser_tool commands.');
+  }
+
+  const commands = splitBatchCommands(trimmed);
+  if (commands.length > 1) {
+    return executeBatchCommands({ ...args, commands });
+  }
+
+  return runOneCommand(args);
+}
+
+export function getBrowserToolHelp(): string {
+  return [
+    'browser_tool command help',
+    '',
+    'Usage:',
+    '  --help',
+    '  navigate <url>                                 go here in your tab; with none, one is made for you (safe to repeat)',
+    '  snapshot',
+    '  read [--save <path> [--images]]                read this page as an article (markdown + stated facts); --save keeps it in a file, and --images (with --save) also keeps its images beside it',
+    '  find <query>                                   search elements by keyword (matches role, name, value, description)',
+    '  click <ref> [none|navigation|network-idle] [timeoutMs]',
+    '  click-at <x> <y>                               click at pixel coordinates (canvas elements)',
+    '  drag <x1> <y1> <x2> <y2>                      drag from (x1,y1) to (x2,y2)',
+    '  fill <ref> <value>',
+    '  type <text>                                    type into focused element (no ref needed)',
+    '  select <ref> <value> [--assert-text <text>] [--assert-value <value>] [--timeout <ms>]',
+    '  upload <ref> <path> [path2...]                 attach local file(s) to a file input',
+    '  set-clipboard <text>                           write text to page clipboard',
+    '  get-clipboard                                  read clipboard text content',
+    '  paste <text>                                   set clipboard + trigger Ctrl/Cmd+V',
+    '  screenshot [--annotated|-a] [--png] [--out <dir|file>]',
+    '                                                 capture screenshot (JPEG default, --png for lossless); --out writes it there and answers with the path instead of the image',
+    '  screenshot-region <x> <y> <width> <height> [--png] [--force] [--out <dir|file>]',
+    '  screenshot-region --ref <@eN> [--padding <px>] [--png] [--force] [--out <dir|file>]',
+    '  screenshot-region --selector <css-selector> [--padding <px>] [--png] [--force] [--out <dir|file>]',
+    '  pdf --out <dir|file> [--landscape] [--ranges <pages>]',
+    '                                                 print the whole page to a PDF (not the viewport); the reply names the file',
+    '                                                 shots are CSS pixels; a large image may be rescaled before the model sees it, so shrink the shot (viewport-resize) if coordinates are off',
+    '  console [limit] [level]',
+    '  viewport-resize <width> <height>                  size a tab\'s view; the window follows only when that tab is the one on screen',
+    '  network [limit] [status]',
+    '  wait <selector|text|url|network-idle> <value?> [timeoutMs]',
+    '  key <key> [modifiers]',
+    '  downloads [list|wait] [limit|timeoutMs]',
+    '  scroll <up|down|left|right> [amount]',
+    '  back',
+    '  forward',
+    '  reload                                         reload this page (returns at once; the next reader waits up to 5s)',
+    '  evaluate <expression>                          run JS in the page; the expression is taken exactly as typed',
+    '  evaluate --file <path>                         run a script from disk (the source stays in the file)',
+    '  pick [--timeout <ms>]                          ask the user to click an element; returns a stable selector',
+    '  tabs                                           the tabs of this workspace: what each one is, whose task it is in, who is working on it',
+    '  profiles                                       the browser profiles: name and id, for --profile',
+    '  tab-new <url>                                  add a tab to this window, behind the person\'s',
+    '  tab-select <id>                                make a tab the one you work from (the window shows what it showed)',
+    '  tab-show <id> [--handover]                     make a tab the one the window shows (it is not raised); --handover also drops your overlay and hold so they can use it',
+    '  tab-assign <id> <session>                      hand one of your own tabs to a conversation you spawned',
+    '  record-start --tab <id> --ttl <dur> [--wait]   record a tab for at most <dur>, then stop on its own',
+    '  record-stop --tab <id>                         end a recording early',
+    '  tab-close <id>                                 close a tab of your task (the last one closes the window)',
+    '',
+    'There is one browser window per workspace and **profile**, used by every conversation working in',
+    'that profile and by the user, for any task: "tab-new" adds a tab to the window you are working in',
+    'rather than making a second one, and a profile with no window gets one when a tab is first opened.',
+    'The window itself is nobody\'s to close; the tabs in your task are — "tab-close <id>" does that.',
+    '"tab-show <id>" makes a tab the one the window shows, without raising the window — say so in your',
+    'reply if they should look. Add "--handover" when they are meant to take over: that drops your overlay',
+    'and hold, so the page is theirs to use until your next command takes it back.',
+    '',
+    'This is the window\'s own surface: pages, refs, input, screenshots, console, network, tabs.',
+    '',
+    'The window is one and its tabs are many, so every command can name the tab it acts on:',
+    '"--tab <id>" ("tabs" lists them). Without one it acts on **your** tab — the tab you have been',
+    'working from ("tabs" marks it "your tab"). With none yet, **"navigate <url>" gives you one** —',
+    'a new tab behind the person\'s, or, when this command is what opens the window, the tab it was born',
+    'with — and every other command says so and',
+    'names the ways out: name one ("--tab <id>", "tab-select <id>"), or open one ("tab-new <url>").',
+    'That is deliberate: the person switching tabs does not move your commands, and the tab they happen to',
+    'be looking at never decides where yours land. Naming a tab makes it yours and stays behind whatever the',
+    'person is reading — they share the window, and your work does not need their eyes on it.',
+    '"tab-show <id>" is the one command that makes a tab the window\'s shown tab; the window is not raised,',
+    'so the reply is what tells them. "--handover" on it is how you let them use the page.',
+    'A tab is yours to work on when it belongs to your task — the tabs you opened, the ones assigned to you,',
+    'plus the ones opened from them — or when it is nobody\'s work: a tab the person opened, which you may',
+    'take over. That includes a tab another conversation works from: the tab is the person\'s, and whoever',
+    'they are talking to works there (a command of theirs does not move because you are in it — each',
+    'conversation keeps its own tab). Another conversation\'s own tab is refused, whatever it holds: sessions',
+    'running in parallel (a parent and the children it spawned) each work in their own tab, and',
+    '"tab-assign <id> <session>" is how a parent hands one of its own over.',
+    'While you work on a tab it is **held** — the person cannot click or type there, and another',
+    'conversation\'s command that names it is refused until your turn ends (or the person clicks the lock in',
+    'the tab rail to let go of it). Other conversations hold their own tabs at the same time.',
+    'A session spawned by another one takes no tab of its own choosing and does not move what the person',
+    'sees: it works in the tab it was given ("tab-assign"), or opens one with "tab-new".',
+    '',
+    'Every command can also name the **profile** it works in: "--profile <name-or-id>" ("profiles" lists them).',
+    'Without it, a command uses the profile this conversation is set to (its own pick, then its project\'s',
+    'default, then the workspace default, then Default) — it does not fall back to Default while another one',
+    'is selected. "navigate" and "tab-new" open that profile\'s window when it is not up; the other commands',
+    'say there is no window instead of opening one. Two profiles',
+    'can be driven at once by naming one on the commands meant for it, and an unknown name is refused',
+    'rather than mapped to Default. A tab id is unique inside its window, so two profiles can both have a',
+    '"tab-1"; "--profile" says which one a "--tab" names.',
+    'The one place quoting differs, and it is worth knowing: "evaluate" takes everything after the command',
+    'word **verbatim** (minus "--tab"/"--profile"), because it is source code — quotes inside it are part',
+    'of the program, not the shell\'s. Every other command reads its arguments with shell quoting, so a value',
+    'with spaces needs its quotes. A semicolon, a brace or a quote in an expression is safest as an array:',
+    '  ["evaluate", "document.querySelectorAll(\'a\').length"]',
+    'Full rules and examples: docs/browser-tools.md.',
+    '',
+    'Batching (string mode, semicolon-separated, stops after navigation commands):',
+    '  fill @e1 user@example.com; fill @e2 password123; click @e3',
+    '',
+    'Array mode (JSON array input, no batch splitting/tokenization):',
+    '  ["evaluate", "var x = 1; var y = 2; x + y"]',
+    '  ["paste", "Name\\tAge\\nAlice\\t30"]',
+    '',
+    'Examples:',
+    '  navigate https://example.com',
+    '  read --save notes/my-page.md',
+    '  read --save notes/my-page.md --images',
+    '  click @e12',
+    '  click-at 350 200',
+    '  drag 100 200 300 400',
+    '  fill @e5 user@example.com',
+    '  type Hello World',
+    '  upload @e3 /path/to/file.pdf',
+    '  set-clipboard Name\\tAge\\nAlice\\t30',
+    '  get-clipboard',
+    '  paste Name\\tAge\\nAlice\\t30',
+    '  scroll down 800',
+    '  evaluate document.title',
+    '  evaluate --file scripts/probe.js',
+    '  pick',
+    '  tabs                                            (which tabs the window has, and which is on screen)',
+    '  snapshot --tab tab-3                            (act on a named tab, wherever the window is)',
+    '  tab-show tab-3                                  (make it the tab the window shows)',
+    '  tab-show tab-3 --handover                       (make it the shown tab and let them use it)',
+    '  tab-assign tab-3 260915-brave-fox               (hand a tab to a child session you spawned)',
+    '  tab-close tab-3                                 (close one tab; the last one closes the window)',
+    '  screenshot --annotated',
+    '  screenshot --png',
+    '  screenshot-region --ref @e9 --padding 12',
+    '  pdf --out report.pdf --ranges 1-3',
+    '  screenshot-region --selector div[data-testid="chart"]',
+    '  console 100 warn',
+    '  viewport-resize 1280 720',
+    '  network 50 failed',
+    '  wait network-idle 8000',
+    '  key Enter',
+    '  downloads wait 15000',
+  ].join('\n');
+}
+
+function formatNodeLine(
+  node: {
+    ref: string;
+    role: string;
+    name: string;
+    value?: string;
+    description?: string;
+    focused?: boolean;
+    checked?: boolean;
+    disabled?: boolean;
+  },
+  options?: { includeState?: boolean },
+): string {
+  let line = `  ${node.ref} [${node.role}] "${node.name}"`;
+  if (node.value !== undefined) line += ` value="${node.value}"`;
+  if (options?.includeState !== false) {
+    if (node.focused) line += ' (focused)';
+    if (node.checked) line += ' (checked)';
+    if (node.disabled) line += ' (disabled)';
+  }
+  if (node.description) line += ` — ${node.description}`;
+  return line;
+}
+
+function formatPercent(numerator: number, denominator: number): string {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return '0.0%';
+  return `${((numerator / denominator) * 100).toFixed(1)}%`;
+}
+
+function shortText(text: string, max = 160): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max - 1)}…`;
+}
+
+function statusBucket(status: number): '2xx' | '3xx' | '4xx' | '5xx' | 'other' {
+  if (status >= 200 && status < 300) return '2xx';
+  if (status >= 300 && status < 400) return '3xx';
+  if (status >= 400 && status < 500) return '4xx';
+  if (status >= 500 && status < 600) return '5xx';
+  return 'other';
+}
+
+function describeActive(metrics: BrowserPageMetrics | null): string {
+  if (!metrics) return 'unknown';
+  const tag = metrics.activeElementTag || 'unknown';
+  const id = metrics.activeElementId ? `#${metrics.activeElementId}` : '';
+  const role = metrics.activeElementRole ? ` role=${metrics.activeElementRole}` : '';
+  const name = metrics.activeElementName ? ` "${shortText(metrics.activeElementName, 60)}"` : '';
+  return `${tag}${id}${role}${name}`;
+}
+
+const ACTIONABLE_AX_ROLES = new Set([
+  'button',
+  'link',
+  'textbox',
+  'searchbox',
+  'combobox',
+  'checkbox',
+  'radio',
+  'switch',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'tab',
+  'option',
+  'slider',
+  'spinbutton',
+  'listbox',
+]);
+
+function countActionableNodes(nodes: Array<{ role: string; disabled?: boolean }>): number {
+  return nodes.filter((node) => ACTIONABLE_AX_ROLES.has((node.role || '').toLowerCase()) && !node.disabled).length;
+}
+
+interface ParsedSelectCommand {
+  ref: string;
+  value: string;
+  assertText?: string;
+  assertValue?: string;
+  timeoutMs: number;
+}
+
+function parseSelectCommand(parts: string[]): ParsedSelectCommand {
+  const ref = parts[1];
+  if (!ref) throw new Error('select requires ref and value. Example: select @e3 optionValue');
+
+  const tokens = parts.slice(2);
+  const valueTokens: string[] = [];
+  let assertText: string | undefined;
+  let assertValue: string | undefined;
+  let timeoutMs = 2000;
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (token === '--assert-text') {
+      const next = tokens[i + 1];
+      if (!next) throw new Error('select --assert-text requires a value. Example: select @e3 CNAME --assert-text Target');
+      assertText = next;
+      i += 1;
+      continue;
+    }
+    if (token === '--assert-value') {
+      const next = tokens[i + 1];
+      if (!next) throw new Error('select --assert-value requires a value. Example: select @e3 CNAME --assert-value CNAME');
+      assertValue = next;
+      i += 1;
+      continue;
+    }
+    if (token === '--timeout') {
+      const next = tokens[i + 1];
+      if (!next) throw new Error('select --timeout requires milliseconds. Example: select @e3 CNAME --timeout 3000');
+      const parsed = Number(next);
+      if (Number.isNaN(parsed)) throw new Error(`Invalid select timeout "${next}". Expected a number.`);
+      timeoutMs = Math.max(100, parsed);
+      i += 1;
+      continue;
+    }
+    valueTokens.push(token);
+  }
+
+  const value = valueTokens.join(' ').trim();
+  if (!value) throw new Error('select requires ref and value. Example: select @e3 optionValue');
+
+  return { ref, value, assertText, assertValue, timeoutMs };
+}
+
+function includesNormalized(haystack: string | undefined, needle: string): boolean {
+  const h = (haystack ?? '').trim().toLowerCase();
+  const n = needle.trim().toLowerCase();
+  if (!h || !n) return false;
+  return h.includes(n);
+}
+
+async function verifySelectResult(args: {
+  fns: BrowserPaneFns;
+  ref: string;
+  selectedValue: string;
+  assertText?: string;
+  assertValue?: string;
+  timeoutMs: number;
+}): Promise<{
+  selectedRefMatched: boolean;
+  assertTextMatched: boolean;
+  assertValueMatched: boolean;
+  elapsedMs: number;
+}> {
+  const { fns, ref, selectedValue, assertText, assertValue, timeoutMs } = args;
+  const started = Date.now();
+  const pollMs = 120;
+
+  let selectedRefMatched = false;
+  let assertTextMatched = false;
+  let assertValueMatched = false;
+
+  while (Date.now() - started <= timeoutMs) {
+    const snapshot = await fns.snapshot();
+    const selectedNode = snapshot.nodes.find((n) => n.ref === ref);
+
+    selectedRefMatched = !!selectedNode
+      && (
+        includesNormalized(selectedNode.value, selectedValue)
+        || includesNormalized(selectedNode.name, selectedValue)
+      );
+
+    if (assertText) {
+      assertTextMatched = snapshot.nodes.some((n) =>
+        includesNormalized(n.name, assertText)
+        || includesNormalized(n.value, assertText)
+        || includesNormalized(n.description, assertText)
+      );
+    } else {
+      assertTextMatched = true;
+    }
+
+    if (assertValue) {
+      const selectedNodeMatches = !!selectedNode
+        && (
+          includesNormalized(selectedNode.value, assertValue)
+          || includesNormalized(selectedNode.name, assertValue)
+          || includesNormalized(selectedNode.description, assertValue)
+        );
+
+      const anyNodeMatches = snapshot.nodes.some((n) =>
+        includesNormalized(n.value, assertValue)
+        || includesNormalized(n.name, assertValue)
+        || includesNormalized(n.description, assertValue)
+      );
+
+      assertValueMatched = selectedNodeMatches || anyNodeMatches;
+    } else {
+      assertValueMatched = true;
+    }
+
+    const strongMatch = selectedRefMatched || assertValueMatched;
+    const assertionsOk = assertTextMatched && assertValueMatched;
+    if (strongMatch && assertionsOk) {
+      break;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+
+  return {
+    selectedRefMatched,
+    assertTextMatched,
+    assertValueMatched,
+    elapsedMs: Date.now() - started,
+  };
+}
+
+/**
+ * The value of a path-taking flag (`--out`, `--save`).
+ *
+ * Read without consuming: commands that parse only flags can leave it in place, and the ones that
+ * also read positionals use `takePathOption` so a path is never mistaken for a coordinate or for
+ * part of a selector.
+ */
+function optionValue(tokens: string[], flag: string, what: string): string | undefined {
+  const index = tokens.indexOf(flag);
+  if (index === -1) return undefined;
+  const value = tokens[index + 1];
+  if (!value || value.startsWith('--')) throw new Error(`${flag} needs ${what}.`);
+  return value;
+}
+
+function pathOption(tokens: string[], flag: string): string | undefined {
+  return optionValue(tokens, flag, 'a directory or file path');
+}
+
+/** The same, taking the flag and its value out of the list. */
+function takePathOption(tokens: string[], flag: string): string | undefined {
+  const value = pathOption(tokens, flag);
+  if (value === undefined) return undefined;
+  tokens.splice(tokens.indexOf(flag), 2);
+  return value;
+}
+
+export async function runBrowserCommand(ctx: ToolCommandContext): Promise<BrowserCommandResult | null> {
+  const { fns, parts, cmd } = ctx;
+  // Only file-taking commands (`read --save`, `evaluate --file`) and the record commands
+  // read these; tab targeting is settled by the host before the command runs.
+  const { sessionId, workspaceRootPath } = ctx;
+
+  if (cmd === 'navigate') {
+    const url = parts.slice(1).join(' ').trim();
+    if (!url) throw new Error('navigate requires a URL. Example: navigate https://example.com');
+
+    const started = Date.now();
+    let result: Awaited<ReturnType<typeof fns.navigate>>;
+    try {
+      result = await fns.navigate(url, ctx.tabId);
+    } catch (error) {
+      throw new Error(navigateFailure(error, url, ctx.tabId));
+    }
+    const elapsedMs = Date.now() - started;
+    const after = await getPageMetrics(fns);
+    const failed = await fns.getNetworkLogs({ limit: 200, status: 'failed' });
+
+    // Check for security challenge after navigation
+    const challenge = await fns.detectChallenge();
+    if (challenge.detected) {
+      await fns.releaseControl();
+      return {
+        output: [
+          `Security verification detected (${challenge.provider}).`,
+          `Signals: ${challenge.signals.join(', ')}`,
+          `URL: ${result.url}`,
+          `Tab: ${result.tabId}`,
+          ...(result.profileName ? [`Profile: ${result.profileName}`] : []),
+          ...(result.note ? [`Note: ${result.note}`] : []),
+          '',
+          'I have let go of the page — tell the person to open the browser and complete the verification check (the window is not raised for them).',
+          'After verification, run "snapshot" to continue.',
+        ].join('\n'),
+        appendReleaseHint: false,
+      };
+    }
+
+    const lines = [
+      `Navigated to: ${result.url}`,
+      `Tab: ${result.tabId}`,
+      // Named only when several profiles are open: the reply then says which window the tab
+      // landed in, and the other one is a `--profile` away.
+      ...(result.profileName ? [`Profile: ${result.profileName}`] : []),
+      ...(result.note ? [`Note: ${result.note}`] : []),
+      `Title: ${result.title}`,
+      `Elapsed: ${elapsedMs}ms`,
+      `Recent failed requests: ${failed.length}`,
+    ];
+    if (after) {
+      lines.push(`Viewport: ${after.viewportWidth}x${after.viewportHeight}, scroll=(${after.scrollX}, ${after.scrollY})`);
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'snapshot') {
+    // A snapshot taken mid-navigation would describe the previous document.
+    const status = await loadingNote(fns, 'the snapshot was taken');
+    await refuseFailedDocument(fns, ctx);
+    const snapshot = await fns.snapshot();
+    const roles = new Map<string, number>();
+    let focusedRef: string | null = null;
+    let disabledCount = 0;
+    for (const node of snapshot.nodes) {
+      roles.set(node.role, (roles.get(node.role) ?? 0) + 1);
+      if (node.focused && !focusedRef) focusedRef = node.ref;
+      if (node.disabled) disabledCount += 1;
+    }
+
+    const roleSummary = Array.from(roles.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([role, count]) => `${role}:${count}`)
+      .join(', ');
+
+    const lines: string[] = [
+      `URL: ${snapshot.url}`,
+      `Title: ${snapshot.title}`,
+      `Elements: ${snapshot.nodes.length}${roleSummary ? ` (${roleSummary})` : ''}`,
+      `Focused ref: ${focusedRef ?? 'none'}, disabled: ${disabledCount}`,
+      ...status,
+      '',
+      `Elements (${snapshot.nodes.length}):`,
+    ];
+    for (const node of snapshot.nodes) {
+      lines.push(formatNodeLine(node));
+    }
+
+    const actionableCount = countActionableNodes(snapshot.nodes);
+    const nearEmpty = snapshot.nodes.length === 0 || actionableCount <= 2;
+
+    if (nearEmpty) {
+      // Check if sparse/empty snapshot is caused by a security challenge
+      const challenge = await fns.detectChallenge();
+      if (challenge.detected) {
+        await fns.releaseControl();
+
+        // Auto-take screenshot for visual confirmation
+        let screenshotImage: BrowserCommandImage | undefined;
+        try {
+          const screenshotResult = await fns.screenshot({ format: 'jpeg' });
+          const buf = screenshotResult.imageBuffer;
+          if (buf && buf.length > 0) {
+            screenshotImage = {
+              data: buf.toString('base64'),
+              mimeType: 'image/jpeg',
+              sizeBytes: buf.length,
+            };
+          }
+        } catch {
+          // Screenshot failure shouldn't block the challenge warning
+        }
+
+        const challengeLines = [
+          `Security verification detected (${challenge.provider}).`,
+          `Signals: ${challenge.signals.join(', ')}`,
+          `URL: ${snapshot.url}`,
+          ...status,
+          '',
+          `Detected only ${actionableCount} actionable element(s) out of ${snapshot.nodes.length} accessibility nodes.`,
+          'This is consistent with a security challenge page blocking normal interaction.',
+          'I have let go of the page — tell the person to open the browser and complete the verification check (the window is not raised for them).',
+          'After verification, run "snapshot" to continue.',
+        ];
+
+        return {
+          output: challengeLines.join('\n'),
+          appendReleaseHint: false,
+          image: screenshotImage,
+        };
+      }
+
+      if (snapshot.nodes.length === 0) {
+        lines.push('');
+        lines.push('No accessibility elements were detected on this view.');
+        lines.push('This can happen on canvas-heavy/custom UIs. Try: evaluate <js>, click-at <x> <y>, type <text>, screenshot --annotated.');
+      } else {
+        // Said plainly, because the alternative is what this reply used to be: a sparse page accused
+        // of being a security challenge, and the tree the caller asked for withheld.
+        lines.push('');
+        lines.push(
+          `Only ${actionableCount} actionable element(s) here — a thin page (text, a canvas, one field), not a challenge.`,
+        );
+      }
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'read') {
+    // Read the page that is loaded *now* — an article as markdown plus whatever the page states
+    // about itself. Nothing navigates: "navigate" put the page there, and the window is already
+    // showing it.
+    //
+    // `--save` writes the note; `--images` is the opt-in for the article's images. A page can
+    // reference a whole gallery, and the file is what was asked for, so downloading a page's media
+    // is never implied by keeping its text.
+    const withImages = parts.includes('--images');
+    const args = parts.slice(1).filter((part) => part !== '--images');
+
+    const saveAt = args.indexOf('--save');
+    let savePath: string | null = null;
+    if (saveAt !== -1) {
+      const requested = args[saveAt + 1]?.trim();
+      if (!requested || requested.startsWith('--')) {
+        throw new Error('--save needs a path. Example: read --save notes/my-page.md');
+      }
+      savePath = resolveLocalPath(requested, ctx.workspaceRootPath);
+    }
+
+    const extra = [...args];
+    if (saveAt !== -1) extra.splice(saveAt, 2);
+    if (extra.length > 0) {
+      throw new Error(
+        `read takes no arguments besides "--save <path>" and "--images" ("${extra.join(' ')}" would be ignored).`,
+      );
+    }
+    if (withImages && !savePath) {
+      throw new Error('--images only applies with --save: images are written beside the saved note.');
+    }
+
+    // Wait out an in-flight navigation: the webContents still holds the previous
+    // document until the new one commits, and reading now would describe the old page
+    // under the new address.
+    const status = await loadingNote(fns, 'the read started');
+    await refuseFailedDocument(fns, ctx);
+
+    // One round trip, so the HTML and the address it was read at are the same moment of the same
+    // tab. The expression is wrapped in parens to be an expression rather than a statement.
+    const page = await fns.evaluate(
+      '({ html: document.documentElement.outerHTML, url: location.href })',
+    );
+    const html = (page as { html?: unknown } | null)?.html;
+    if (typeof html !== 'string' || html.length === 0) {
+      throw new Error('read: this tab has no HTML to read — navigate to a page first.');
+    }
+    const rawUrl = (page as { url?: unknown }).url;
+    const url = typeof rawUrl === 'string' && rawUrl.length > 0 ? rawUrl : 'about:blank';
+
+    const snapshot = await buildWebSnapshot({ html, url });
+    const note = renderWebSnapshotNote(snapshot);
+
+    const summary = [
+      `Read: ${snapshot.title || '(untitled)'}`,
+      `URL: ${url}`,
+      `Words: ${snapshot.meta.wordCount ?? 'unknown'}${snapshot.meta.author ? ` · Author: ${snapshot.meta.author}` : ''}`,
+      ...status,
+    ];
+
+    if (savePath) {
+      if (withImages) {
+        // The article's images are rewritten in place (a relative path is left alone — only
+        // `http(s)` is localized), so the note points at the copies that were kept.
+        const localized = await localizeSnapshotImages({ note, notePath: savePath, pageUrl: url, fns });
+        mkdirSync(dirname(savePath), { recursive: true });
+        writeFileSync(savePath, localized.note, 'utf8');
+        summary.push(
+          `Saved: ${savePath} (${formatBytes(new TextEncoder().encode(localized.note).length)})`,
+        );
+        if (localized.dirName) {
+          summary.push(`Images: ${localized.saved} saved to ${localized.dirName}/`);
+        }
+        if (localized.left.length > 0) {
+          summary.push(
+            `Images left as links (${localized.left.length}): ${summarizeImageFailures(localized.left)}`,
+          );
+        }
+      } else {
+        mkdirSync(dirname(savePath), { recursive: true });
+        writeFileSync(savePath, note, 'utf8');
+        summary.push(`Saved: ${savePath} (${formatBytes(new TextEncoder().encode(note).length)})`);
+        // Said only when the note actually points at pictures: a page without any has nothing to
+        // offer the flag, and a line about images would be noise.
+        const linkedImages = findMarkdownImages(note);
+        if (linkedImages.length > 0) {
+          summary.push(
+            `Images: ${linkedImages.length} left as links (pass --images to keep them beside the note)`,
+          );
+        }
+      }
+      return { output: summary.join('\n'), appendReleaseHint: true };
+    }
+
+    // A reply is not a file: without --save the note is capped, and the cap is stated so the
+    // agent knows to reach for --save rather than assume it read the whole page.
+    const limit = 40_000;
+    const body = note.length > limit
+      ? `${note.slice(0, limit)}\n... (truncated — ${note.length - limit} more chars; use --save to keep the whole snapshot)`
+      : note;
+    return { output: [...summary, '', body].join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'find') {
+    const query = parts.slice(1).join(' ').trim();
+    if (!query) throw new Error('find requires a search query. Example: find login button');
+
+    // A find taken mid-navigation would search the previous document.
+    const status = await loadingNote(fns, 'the search ran');
+    await refuseFailedDocument(fns, ctx);
+    const snapshot = await fns.snapshot();
+    const queryLower = query.toLowerCase();
+    const keywords = queryLower.split(/\s+/).filter(Boolean);
+
+    const scored = snapshot.nodes
+      .map((node) => {
+        const haystack = [node.role, node.name, node.value, node.description]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (!keywords.every((kw) => haystack.includes(kw))) return null;
+        let score = 0;
+        for (const kw of keywords) {
+          if ((node.name ?? '').toLowerCase().includes(kw)) score += 3;
+          if ((node.role ?? '').toLowerCase().includes(kw)) score += 2;
+          if ((node.value ?? '').toLowerCase().includes(kw)) score += 1;
+          if ((node.description ?? '').toLowerCase().includes(kw)) score += 1;
+        }
+        return { node, score };
+      })
+      .filter((x): x is { node: typeof snapshot.nodes[number]; score: number } => !!x)
+      .sort((a, b) => b.score - a.score);
+
+    if (scored.length === 0) {
+      return {
+        output: [
+          `No elements found matching "${query}" (searched ${snapshot.nodes.length} elements).`,
+          ...status,
+          'Try a broader search or run "snapshot" to see all elements.',
+        ].join('\n'),
+        appendReleaseHint: true,
+      };
+    }
+
+    const lines: string[] = [
+      `Found ${scored.length} element(s) matching "${query}" from ${snapshot.nodes.length} scanned elements:`,
+    ];
+    for (const { node, score } of scored.slice(0, 20)) {
+      lines.push(`${formatNodeLine(node, { includeState: false })} (score=${score})`);
+    }
+    if (scored.length > 20) {
+      lines.push(`  ... and ${scored.length - 20} more. Narrow your search.`);
+    }
+    lines.push(...status);
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'click') {
+    const ref = parts[1];
+    if (!ref) throw new Error('click requires a ref. Example: click @e1');
+    const waitForRaw = parts[2] as 'none' | 'navigation' | 'network-idle' | undefined;
+    const timeoutRaw = parts[3];
+    const waitFor = waitForRaw && ['none', 'navigation', 'network-idle'].includes(waitForRaw)
+      ? waitForRaw
+      : undefined;
+    if (waitForRaw && !waitFor) {
+      throw new Error('click waitFor must be one of: none, navigation, network-idle');
+    }
+    const timeoutMs = timeoutRaw ? Number(timeoutRaw) : undefined;
+    if (timeoutRaw && Number.isNaN(timeoutMs)) {
+      throw new Error(`Invalid click timeout "${timeoutRaw}". Expected a number.`);
+    }
+
+    const before = await getPageMetrics(fns);
+    const started = Date.now();
+    await fns.click(ref, { waitFor, timeoutMs });
+    const elapsedMs = Date.now() - started;
+    const after = await getPageMetrics(fns);
+
+    const urlChanged = before && after ? before.url !== after.url : false;
+
+    // Check challenge after click regardless of URL change (same-URL challenges are common)
+    const challenge = await fns.detectChallenge();
+    if (challenge.detected) {
+      await fns.releaseControl();
+      return {
+        output: [
+          `Clicked element ${ref} — security challenge detected (${challenge.provider}).`,
+          `URL changed: ${urlChanged}`,
+          `Signals: ${challenge.signals.join(', ')}`,
+          '',
+          'I have let go of the page — tell the person to open the browser and complete the verification check (the window is not raised for them).',
+          'After verification, run "snapshot" to continue.',
+        ].join('\n'),
+        appendReleaseHint: false,
+      };
+    }
+
+    const lines = [
+      `Clicked element ${ref}${waitFor ? ` (waitFor=${waitFor})` : ''}`,
+      `Elapsed: ${elapsedMs}ms`,
+      `URL changed: ${urlChanged}`,
+      `Active element: ${describeActive(after)}`,
+    ];
+    if (before && after) {
+      lines.push(`Scroll Y: ${Math.round(before.scrollY)} → ${Math.round(after.scrollY)}`);
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'click-at') {
+    const xRaw = parts[1];
+    const yRaw = parts[2];
+    if (!xRaw || !yRaw) throw new Error('click-at requires x and y coordinates. Example: click-at 350 200');
+    const x = Number(xRaw);
+    const y = Number(yRaw);
+    if (Number.isNaN(x) || Number.isNaN(y)) {
+      throw new Error('click-at coordinates must be numbers. Example: click-at 350 200');
+    }
+
+    const before = await getPageMetrics(fns);
+    const started = Date.now();
+    await fns.clickAt(x, y);
+    const elapsedMs = Date.now() - started;
+    const after = await getPageMetrics(fns);
+
+    const lines = [
+      `Clicked at coordinates (${x}, ${y})`,
+      `Elapsed: ${elapsedMs}ms`,
+      `Within viewport: ${before ? x >= 0 && y >= 0 && x <= before.viewportWidth && y <= before.viewportHeight : 'unknown'}`,
+      `Active element: ${describeActive(after)}`,
+    ];
+    if (before && after) {
+      lines.push(`Scroll Y: ${Math.round(before.scrollY)} → ${Math.round(after.scrollY)}`);
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'drag') {
+    const x1Raw = parts[1];
+    const y1Raw = parts[2];
+    const x2Raw = parts[3];
+    const y2Raw = parts[4];
+    if (!x1Raw || !y1Raw || !x2Raw || !y2Raw) {
+      throw new Error('drag requires 4 coordinates: x1 y1 x2 y2. Example: drag 100 200 300 400');
+    }
+    const x1 = Number(x1Raw);
+    const y1 = Number(y1Raw);
+    const x2 = Number(x2Raw);
+    const y2 = Number(y2Raw);
+    if (Number.isNaN(x1) || Number.isNaN(y1) || Number.isNaN(x2) || Number.isNaN(y2)) {
+      throw new Error('drag coordinates must be numbers. Example: drag 100 200 300 400');
+    }
+
+    const before = await getPageMetrics(fns);
+    const started = Date.now();
+    await fns.drag(x1, y1, x2, y2);
+    const elapsedMs = Date.now() - started;
+    const after = await getPageMetrics(fns);
+
+    const distance = Math.round(Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2));
+    const lines = [
+      `Dragged from (${x1}, ${y1}) to (${x2}, ${y2})`,
+      `Distance: ${distance}px`,
+      `Elapsed: ${elapsedMs}ms`,
+      `Active element: ${describeActive(after)}`,
+    ];
+    if (before && after) {
+      lines.push(`Scroll Y: ${Math.round(before.scrollY)} → ${Math.round(after.scrollY)}`);
+    }
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'fill') {
+    const ref = parts[1];
+    const value = parts.slice(2).join(' ');
+    if (!ref || value === undefined) throw new Error('fill requires ref and value. Example: fill @e5 hello world');
+
+    const before = await getPageMetrics(fns);
+    await fns.fill(ref, value);
+    const after = await getPageMetrics(fns);
+
+    return {
+      output: [
+        `Filled element ${ref} with "${value}"`,
+        `Value length: ${value.length} characters`,
+        `Active element before: ${describeActive(before)}`,
+        `Active element after: ${describeActive(after)}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'type') {
+    const text = parts.slice(1).join(' ');
+    if (!text) throw new Error('type requires text. Example: type Hello World');
+
+    const before = await getPageMetrics(fns);
+    await fns.type(text);
+    const after = await getPageMetrics(fns);
+
+    return {
+      output: [
+        `Typed ${text.length} characters into focused element`,
+        `Active element before: ${describeActive(before)}`,
+        `Active element after: ${describeActive(after)}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'select') {
+    const parsed = parseSelectCommand(parts);
+    const { ref, value, assertText, assertValue, timeoutMs } = parsed;
+
+    await fns.select(ref, value);
+    const after = await getPageMetrics(fns);
+    const verification = await verifySelectResult({
+      fns,
+      ref,
+      selectedValue: value,
+      assertText,
+      assertValue,
+      timeoutMs,
+    });
+
+    const warnings: string[] = [];
+    if (!verification.selectedRefMatched) {
+      warnings.push('selected control did not reflect requested value in accessibility snapshot');
+    }
+    if (assertText && !verification.assertTextMatched) {
+      warnings.push(`assert-text did not match: "${assertText}"`);
+    }
+    if (assertValue && !verification.assertValueMatched) {
+      warnings.push(`assert-value did not match: "${assertValue}"`);
+    }
+
+    const verificationStatus = warnings.length === 0 ? 'verified' : 'warning';
+
+    return {
+      output: [
+        `Selected "${value}" in element ${ref} (${verificationStatus})`,
+        `Verification: selectedRefMatched=${verification.selectedRefMatched}, assertTextMatched=${verification.assertTextMatched}, assertValueMatched=${verification.assertValueMatched}`,
+        `Verification time: ${verification.elapsedMs}ms (timeout=${timeoutMs}ms)`,
+        ...(warnings.length > 0
+          ? [
+            `Warning: select interaction succeeded but effective form state could not be fully verified.`,
+            ...warnings.map((warning) => `- ${warning}`),
+            'Tip: retry with --assert-text and/or --assert-value targeting downstream field changes.',
+          ]
+          : []),
+        `Value length: ${value.length} characters`,
+        `Active element after: ${describeActive(after)}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'upload') {
+    const ref = parts[1];
+    const filePaths = parts.slice(2);
+    if (!ref || filePaths.length === 0) {
+      throw new Error('upload requires ref and file path(s). Example: upload @e3 /path/to/file.pdf');
+    }
+
+    await fns.upload(ref, filePaths);
+    const after = await getPageMetrics(fns);
+    const fileList = filePaths.length === 1
+      ? filePaths[0]
+      : `${filePaths.length} files:\n${filePaths.map((p) => `  - ${p}`).join('\n')}`;
+
+    return {
+      output: [
+        `Uploaded ${fileList} to element ${ref}`,
+        `Active element after: ${describeActive(after)}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'set-clipboard') {
+    const text = parts.slice(1).join(' ');
+    if (!text) throw new Error('set-clipboard requires text. Example: set-clipboard Hello World');
+    await fns.setClipboard(text);
+
+    const lineCount = text.length === 0 ? 0 : text.split(/\r?\n/).length;
+    const tabCount = (text.match(/\t/g) ?? []).length;
+
+    return {
+      output: [
+        `Clipboard set (${text.length} characters)`,
+        `Lines: ${lineCount}, tabs: ${tabCount}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'get-clipboard') {
+    const text = await fns.getClipboard();
+    if (!text) {
+      return { output: '(empty clipboard)', appendReleaseHint: true };
+    }
+
+    const lineCount = text.split(/\r?\n/).length;
+    const tabCount = (text.match(/\t/g) ?? []).length;
+    const preview = text.length > 800 ? `${text.slice(0, 800)}\n... (truncated preview)` : text;
+
+    return {
+      output: [
+        `Clipboard content (${text.length} chars, ${lineCount} lines, ${tabCount} tabs):`,
+        preview,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'paste') {
+    const text = parts.slice(1).join(' ');
+    if (!text) throw new Error('paste requires text. Example: paste Hello World');
+    await fns.setClipboard(text);
+    const platform = ctx.platform ?? process.platform;
+    const isMac = platform === 'darwin';
+    await fns.sendKey({ key: 'v', modifiers: [isMac ? 'meta' : 'control'] });
+
+    const lineCount = text.length === 0 ? 0 : text.split(/\r?\n/).length;
+    const tabCount = (text.match(/\t/g) ?? []).length;
+
+    return {
+      output: [
+        `Pasted ${text.length} characters`,
+        `Shortcut used: ${isMac ? 'Cmd+V' : 'Ctrl+V'}`,
+        `Lines: ${lineCount}, tabs: ${tabCount}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'screenshot') {
+    const annotate = parts.includes('--annotated') || parts.includes('-a');
+    const usePng = parts.includes('--png');
+    const format = usePng ? 'png' as const : 'jpeg' as const;
+    const outRef = pathOption(parts, '--out');
+
+    // Capture what the address is about, not the document it replaced.
+    const status = await loadingNote(fns, 'the screenshot was taken');
+    await refuseFailedDocument(fns, ctx);
+    const started = Date.now();
+    const result = await fns.screenshot({ annotate, format });
+    const elapsedMs = Date.now() - started;
+    const buf = result.imageBuffer;
+    const base64 = buf.toString('base64');
+    if (!buf || buf.length === 0 || !base64) {
+      throw new Error('Screenshot capture returned empty image data. Try waiting for page load (browser_tool wait network-idle), then retry browser_tool screenshot.');
+    }
+
+    const ext = result.imageFormat === 'jpeg' ? 'JPG' : 'PNG';
+    const mimeType = result.imageFormat === 'jpeg' ? 'image/jpeg' as const : 'image/png' as const;
+    const savedAt = outRef ? writeScreenshotBytes(buf, mimeType, outRef, workspaceRootPath) : null;
+    const lines = [
+      annotate
+        ? `Annotated screenshot captured (${formatBytes(buf.length)} ${ext}) — element refs (@eN) are overlaid on interactive elements`
+        : `Screenshot captured (${formatBytes(buf.length)} ${ext})`,
+      `Capture time: ${elapsedMs}ms`,
+      ...status,
+    ];
+    if (result.imageWidth && result.imageHeight) {
+      lines.push(`Image: ${result.imageWidth}x${result.imageHeight} CSS px`);
+    }
+    const metadata = result.metadata as Record<string, unknown> | undefined;
+    const viewport = metadata?.viewport as { width?: number; height?: number; dpr?: number } | undefined;
+    if (viewport?.width && viewport?.height) {
+      lines.push(`Viewport: ${viewport.width}x${viewport.height} @ DPR ${viewport.dpr ?? 1}`);
+    }
+    const targets = (metadata?.targets as Array<unknown> | undefined)?.length;
+    if (typeof targets === 'number') {
+      lines.push(`Annotated targets: ${targets}`);
+    }
+    if (result.metadata) {
+      lines.push('', 'Metadata:', JSON.stringify(result.metadata, null, 2));
+    }
+
+    if (savedAt) {
+      // `--out` is **either/or**: the file is the answer, and the reply names it instead of carrying
+      // a second copy of the same pixels. One owner, one answer — see screenshot-file.ts.
+      lines.push(`Saved: ${savedAt}`)
+      return { output: lines.join('\n'), appendReleaseHint: true };
+    }
+
+    return {
+      output: lines.join('\n'),
+      appendReleaseHint: true,
+      image: {
+        data: base64,
+        mimeType,
+        sizeBytes: buf.length,
+      },
+    };
+  }
+
+  if (cmd === 'pdf') {
+    // A PDF is a document, not a picture of one: it covers the whole page (not the viewport) and
+    // exists only as a file, so `--out` is not optional — a base64 blob in a reply would be a
+    // capture nobody can open.
+    const outRef = pathOption(parts, '--out');
+    if (!outRef) {
+      throw new Error('pdf needs --out <dir|file>: the document is written there and the reply names it.');
+    }
+    const landscape = parts.includes('--landscape');
+    const pageRanges = optionValue(parts, '--ranges', 'page numbers, e.g. 1-3');
+
+    // Print what the address is about, not the document it replaced.
+    const status = await loadingNote(fns, 'the page was printed');
+    await refuseFailedDocument(fns, ctx);
+    const started = Date.now();
+    const printed = await fns.printPdf({
+      ...(landscape ? { landscape: true } : {}),
+      ...(pageRanges ? { pageRanges } : {}),
+    });
+    const elapsedMs = Date.now() - started;
+    const file = writePdfBytes(printed.pdf, outRef, workspaceRootPath);
+
+    return {
+      output: [
+        `Printed: ${file} (${formatBytes(printed.bytes)}, ${elapsedMs}ms)`,
+        `Layout: ${landscape ? 'landscape' : 'portrait'}${pageRanges ? ` · pages ${pageRanges}` : ''} · background printed`,
+        ...status,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'screenshot-region') {
+    const rest = parts.slice(1);
+    if (rest.length === 0) {
+      throw new Error('screenshot-region requires either coordinates, --ref, or --selector.');
+    }
+
+    const usePng = rest.includes('--png');
+    const format = usePng ? 'png' as const : 'jpeg' as const;
+    // `--out` is pulled out first: what follows it is a path, and the region parser would otherwise
+    // read it as a coordinate or as part of a `--selector` value.
+    const outRef = takePathOption(rest, '--out');
+    // A shot is all or nothing: a region bigger than the page has painted is an error, not a quiet
+    // crop — an image missing part of what was asked for is a wrong answer. `--force` takes the
+    // incomplete image anyway, and the result says what was missing.
+    const force = rest.includes('--force');
+    const filteredRest = rest.filter((t) => t !== '--png' && t !== '--force');
+
+    const parsePadding = (tokens: string[]) => {
+      const idx = tokens.findIndex((t) => t === '--padding');
+      if (idx === -1) return { padding: undefined as number | undefined, cleaned: tokens };
+      const raw = tokens[idx + 1];
+      if (!raw) throw new Error('Missing value for --padding');
+      const padding = Number(raw);
+      if (Number.isNaN(padding)) throw new Error(`Invalid padding "${raw}". Expected a number.`);
+      const cleaned = [...tokens.slice(0, idx), ...tokens.slice(idx + 2)];
+      return { padding, cleaned };
+    };
+
+    const { padding, cleaned } = parsePadding(filteredRest);
+
+    let screenshotArgs: BrowserScreenshotRegionArgs;
+    let targetDescription = '';
+    if (cleaned[0] === '--ref') {
+      const ref = cleaned[1];
+      if (!ref) throw new Error('screenshot-region --ref requires a ref value.');
+      screenshotArgs = { ref, padding, format };
+      targetDescription = `ref ${ref}`;
+    } else if (cleaned[0] === '--selector') {
+      const selector = cleaned.slice(1).join(' ').trim();
+      if (!selector) throw new Error('screenshot-region --selector requires a CSS selector value.');
+      screenshotArgs = { selector, padding, format };
+      targetDescription = `selector ${selector}`;
+    } else {
+      if (cleaned.length < 4) {
+        throw new Error('screenshot-region coordinates require: x y width height');
+      }
+      const [xRaw, yRaw, widthRaw, heightRaw] = cleaned;
+      const x = Number(xRaw);
+      const y = Number(yRaw);
+      const width = Number(widthRaw);
+      const height = Number(heightRaw);
+      if ([x, y, width, height].some((n) => Number.isNaN(n))) {
+        throw new Error('screenshot-region coordinates must be numbers.');
+      }
+      screenshotArgs = { x, y, width, height, padding, format };
+      targetDescription = `box (${x}, ${y}, ${width}x${height})`;
+    }
+
+    // Capture what the address is about, not the document it replaced.
+    const status = await loadingNote(fns, 'the screenshot was taken');
+    await refuseFailedDocument(fns, ctx);
+    const started = Date.now();
+    screenshotArgs.force = force;
+    const result = await fns.screenshotRegion(screenshotArgs);
+    const elapsedMs = Date.now() - started;
+    const buf = result.imageBuffer;
+    const base64 = buf.toString('base64');
+    if (!buf || buf.length === 0 || !base64) {
+      throw new Error('Region screenshot capture returned empty image data. Try adjusting the region/selector or waiting for page load, then retry browser_tool screenshot-region.');
+    }
+
+    const ext = result.imageFormat === 'jpeg' ? 'JPG' : 'PNG';
+    const mimeType = result.imageFormat === 'jpeg' ? 'image/jpeg' as const : 'image/png' as const;
+    const savedAt = outRef ? writeScreenshotBytes(buf, mimeType, outRef, workspaceRootPath) : null;
+    const lines = [
+      `Region screenshot captured (${formatBytes(buf.length)} ${ext})`,
+      `Target: ${targetDescription}${typeof padding === 'number' ? `, padding=${padding}` : ''}`,
+      `Capture time: ${elapsedMs}ms`,
+      ...status,
+    ];
+    if (result.imageWidth && result.imageHeight) {
+      lines.push(`Image: ${result.imageWidth}x${result.imageHeight} CSS px`);
+    }
+    if (result.metadata) {
+      lines.push('', 'Metadata:', JSON.stringify(result.metadata, null, 2));
+    }
+
+    if (savedAt) {
+      lines.push(`Saved: ${savedAt}`)
+      return { output: lines.join('\n'), appendReleaseHint: true };
+    }
+
+    return {
+      output: lines.join('\n'),
+      appendReleaseHint: true,
+      image: {
+        data: base64,
+        mimeType,
+        sizeBytes: buf.length,
+      },
+    };
+  }
+
+  if (cmd === 'console') {
+    const limitRaw = parts[1];
+    const levelRaw = parts[2];
+    const limit = limitRaw ? Number(limitRaw) : undefined;
+    if (limitRaw && Number.isNaN(limit)) {
+      throw new Error(`Invalid console limit "${limitRaw}". Expected a number.`);
+    }
+    const level = (levelRaw ?? 'all') as NonNullable<BrowserConsoleArgs['level']>;
+    if (!['all', 'log', 'info', 'warn', 'error'].includes(level)) {
+      throw new Error(`Invalid console level "${String(levelRaw)}". Use one of: all, log, info, warn, error.`);
+    }
+
+    const entries = await fns.getConsoleLogs({ limit, level });
+    const levelCounts = entries.reduce<Record<string, number>>((acc, entry) => {
+      acc[entry.level] = (acc[entry.level] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    const lines: string[] = [
+      `Console entries (${entries.length}) for level=${level}: log=${levelCounts.log ?? 0}, info=${levelCounts.info ?? 0}, warn=${levelCounts.warn ?? 0}, error=${levelCounts.error ?? 0}`,
+    ];
+
+    if (entries.length > 0) {
+      lines.push(`Range: ${new Date(entries[0]!.timestamp).toISOString()} → ${new Date(entries[entries.length - 1]!.timestamp).toISOString()}`);
+    }
+
+    for (const entry of entries) {
+      lines.push(`[${new Date(entry.timestamp).toISOString()}] [${entry.level}] ${entry.message}`);
+    }
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'viewport-resize') {
+    const widthRaw = parts[1];
+    const heightRaw = parts[2];
+    if (!widthRaw || !heightRaw) throw new Error('viewport-resize requires width and height. Example: viewport-resize 1280 720');
+    const width = Number(widthRaw);
+    const height = Number(heightRaw);
+    if (Number.isNaN(width) || Number.isNaN(height)) {
+      throw new Error('viewport-resize width and height must be numbers.');
+    }
+
+    const resized = await fns.resizeViewport({ width, height });
+    const clamped = resized.width !== width || resized.height !== height;
+
+    // The size is the view's, so the reply is about the view. Whether the person's window moved with
+    // it is visible from `tabs` (which tab is on screen) — and it had to, when it is this one.
+    return {
+      output: [
+        `Your tab's viewport is now ${resized.width}x${resized.height}`,
+        `Requested: ${width}x${height}${clamped ? ' (adjusted by platform constraints)' : ''}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'network') {
+    const limitRaw = parts[1];
+    const statusRaw = parts[2] as BrowserNetworkArgs['status'] | undefined;
+    const limit = limitRaw ? Number(limitRaw) : undefined;
+    if (limitRaw && Number.isNaN(limit)) {
+      throw new Error(`Invalid network limit "${limitRaw}". Expected a number.`);
+    }
+    const status = statusRaw ?? 'all';
+    if (!['all', 'failed', '2xx', '3xx', '4xx', '5xx'].includes(status)) {
+      throw new Error(`Invalid network status "${String(statusRaw)}". Use one of: all, failed, 2xx, 3xx, 4xx, 5xx.`);
+    }
+    const entries = await fns.getNetworkLogs({ limit, status });
+    const buckets = { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0, other: 0 };
+    const hostCounts = new Map<string, number>();
+
+    for (const entry of entries) {
+      buckets[statusBucket(entry.status)] += 1;
+      try {
+        const host = new URL(entry.url).hostname;
+        hostCounts.set(host, (hostCounts.get(host) ?? 0) + 1);
+      } catch {
+        // ignore malformed urls
+      }
+    }
+
+    const failed = buckets['4xx'] + buckets['5xx'] + buckets.other;
+    const topHosts = Array.from(hostCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([host, count]) => `${host}(${count})`)
+      .join(', ');
+
+    const lines: string[] = [
+      `Network entries (${entries.length}) for status=${status}: 2xx=${buckets['2xx']} 3xx=${buckets['3xx']} 4xx=${buckets['4xx']} 5xx=${buckets['5xx']} other=${buckets.other}`,
+      `Failed ratio: ${formatPercent(failed, entries.length || 1)}${topHosts ? `, top hosts: ${topHosts}` : ''}`,
+    ];
+
+    for (const entry of entries) {
+      lines.push(`[${new Date(entry.timestamp).toISOString()}] ${entry.method} ${entry.status} ${entry.resourceType} ${entry.url}`);
+    }
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'wait') {
+    const kind = parts[1] as BrowserWaitArgs['kind'] | undefined;
+    if (!kind || !['selector', 'text', 'url', 'network-idle'].includes(kind)) {
+      throw new Error('wait requires kind: selector|text|url|network-idle');
+    }
+
+    let value: string | undefined;
+    let timeoutMs: number | undefined;
+    if (kind === 'network-idle') {
+      const timeoutRaw = parts[2];
+      timeoutMs = timeoutRaw ? Number(timeoutRaw) : undefined;
+      if (timeoutRaw && Number.isNaN(timeoutMs)) {
+        throw new Error(`Invalid wait timeout "${timeoutRaw}". Expected a number.`);
+      }
+    } else {
+      value = parts[2];
+      if (!value) throw new Error(`wait ${kind} requires a value.`);
+      const timeoutRaw = parts[3];
+      timeoutMs = timeoutRaw ? Number(timeoutRaw) : undefined;
+      if (timeoutRaw && Number.isNaN(timeoutMs)) {
+        throw new Error(`Invalid wait timeout "${timeoutRaw}". Expected a number.`);
+      }
+    }
+
+    const started = Date.now();
+    const result = await fns.waitFor({ kind, value, timeoutMs });
+    const totalElapsed = Date.now() - started;
+
+    return {
+      output: [
+        `Wait succeeded (${result.kind}) in ${result.elapsedMs}ms — ${result.detail}`,
+        `Configured timeout: ${timeoutMs ?? 'default'}, wall time: ${totalElapsed}ms`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'key') {
+    const key = parts[1];
+    if (!key) throw new Error('key requires key value. Example: key Enter');
+    const modifiers = (parts[2] ? parts[2].split('+') : []) as Array<'shift' | 'control' | 'alt' | 'meta'>;
+    for (const m of modifiers) {
+      if (!['shift', 'control', 'alt', 'meta'].includes(m)) {
+        throw new Error(`Invalid key modifier "${m}". Use shift|control|alt|meta`);
+      }
+    }
+
+    const before = await getPageMetrics(fns);
+    await fns.sendKey({ key, modifiers });
+    const after = await getPageMetrics(fns);
+
+    return {
+      output: [
+        `Key sent: ${key}${modifiers.length ? ` (${modifiers.join('+')})` : ''}`,
+        `Active element before: ${describeActive(before)}`,
+        `Active element after: ${describeActive(after)}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'downloads') {
+    const actionRaw = parts[1] as BrowserDownloadsArgs['action'] | undefined;
+    const action = actionRaw && ['list', 'wait'].includes(actionRaw) ? actionRaw : 'list';
+    const valueRaw = parts[2];
+    const valueNum = valueRaw ? Number(valueRaw) : undefined;
+    if (valueRaw && Number.isNaN(valueNum)) {
+      throw new Error(`Invalid downloads numeric value "${valueRaw}".`);
+    }
+
+    const entries = await fns.getDownloads({
+      action,
+      ...(action === 'wait' ? { timeoutMs: valueNum } : { limit: valueNum }),
+    });
+
+    const states = entries.reduce<Record<string, number>>((acc, entry) => {
+      acc[entry.state] = (acc[entry.state] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    const lines: string[] = [
+      `Downloads (${entries.length}) action=${action}: started=${states.started ?? 0}, completed=${states.completed ?? 0}, interrupted=${states.interrupted ?? 0}, cancelled=${states.cancelled ?? 0}`,
+    ];
+
+    for (const entry of entries) {
+      const savePathSuffix = entry.savePath ? ` -> ${entry.savePath}` : '';
+      lines.push(
+        `[${new Date(entry.timestamp).toISOString()}] [${entry.state}] ${entry.filename} (${formatBytes(entry.bytesReceived)}/${formatBytes(entry.totalBytes)})${savePathSuffix}`,
+      );
+    }
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'scroll') {
+    const direction = parts[1] as 'up' | 'down' | 'left' | 'right' | undefined;
+    const amountRaw = parts[2];
+    if (!direction || !['up', 'down', 'left', 'right'].includes(direction)) {
+      throw new Error('scroll requires direction up|down|left|right. Example: scroll down 800');
+    }
+    const amount = amountRaw ? Number(amountRaw) : undefined;
+    if (amountRaw && Number.isNaN(amount)) {
+      throw new Error(`Invalid scroll amount "${amountRaw}". Expected a number.`);
+    }
+
+    const requested = amount ?? 500;
+    const before = await getPageMetrics(fns);
+    await fns.scroll(direction, amount);
+    const after = await getPageMetrics(fns);
+
+    if (!before || !after) {
+      return { output: `Scrolled ${direction} by ${requested}px`, appendReleaseHint: true };
+    }
+
+    const axis = direction === 'left' || direction === 'right' ? 'x' : 'y';
+    const beforePos = axis === 'x' ? before.scrollX : before.scrollY;
+    const afterPos = axis === 'x' ? after.scrollX : after.scrollY;
+    const delta = Math.round(afterPos - beforePos);
+    const max = axis === 'x' ? after.maxScrollX : after.maxScrollY;
+    const progress = max > 0 ? `${((afterPos / max) * 100).toFixed(1)}%` : '0.0%';
+    const atEdge = axis === 'x'
+      ? (after.scrollX <= 0 || after.scrollX >= after.maxScrollX)
+      : (after.scrollY <= 0 || after.scrollY >= after.maxScrollY);
+
+    const lines = [
+      `Scrolled ${direction} by ${requested}px (actual ${delta >= 0 ? '+' : ''}${delta}px)`,
+      `${axis.toUpperCase()}: ${Math.round(beforePos)} → ${Math.round(afterPos)} / ${Math.round(max)} (${progress})`,
+      `Viewport: ${after.viewportWidth}x${after.viewportHeight}, document: ${after.documentWidth}x${after.documentHeight}`,
+      `Reached edge: ${atEdge}`,
+    ];
+
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'back') {
+    const beforeTab = await tabThisCommandActsOn(fns, ctx);
+    await fns.goBack();
+    // Going back starts a load nothing waits for. Reading the page here could describe the
+    // document being left, so wait for the tab to settle — and say so when it does not.
+    const status = await loadingNote(fns, 'the back navigation was reported');
+    const afterTab = status.length > 0 ? undefined : await tabThisCommandActsOn(fns, ctx);
+
+    const lines = ['Navigated back'];
+    if (beforeTab && afterTab) {
+      lines.push(`URL: ${beforeTab.url} → ${afterTab.url}`);
+      lines.push(`Title: ${beforeTab.title || '(untitled)'} → ${afterTab.title || '(untitled)'}`);
+    }
+    lines.push(...status);
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'forward') {
+    const beforeTab = await tabThisCommandActsOn(fns, ctx);
+    await fns.goForward();
+    // Same as `back`: the new document is loading, and the old one is what is still on screen.
+    const status = await loadingNote(fns, 'the forward navigation was reported');
+    const afterTab = status.length > 0 ? undefined : await tabThisCommandActsOn(fns, ctx);
+
+    const lines = ['Navigated forward'];
+    if (beforeTab && afterTab) {
+      lines.push(`URL: ${beforeTab.url} → ${afterTab.url}`);
+      lines.push(`Title: ${beforeTab.title || '(untitled)'} → ${afterTab.title || '(untitled)'}`);
+    }
+    lines.push(...status);
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'reload') {
+    // Measured before rather than after, and deliberately: the browser's own reload is
+    // fire-and-forget (nothing waits for a document to load), so reading the page here
+    // would answer with the old one or with a half-loaded one, and reporting either as
+    // "the page now" would be wrong. What the caller does next is `wait`, which is said.
+    const beforeTab = await tabThisCommandActsOn(fns, ctx);
+    await fns.reload();
+
+    const lines = ['Reloading this page'];
+    if (beforeTab?.url) lines.push(`URL: ${beforeTab.url}`);
+    lines.push(
+      'Nothing waits for it to load — before reading the page, "wait network-idle <ms>" or ' +
+      '"wait <selector|text|url> <value> <ms>". Every @eN ref from before is stale: re-"snapshot".',
+    );
+    return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'evaluate') {
+    // A page that failed to load, or whose process ended, has nothing for a script to run
+    // against: without this the answer is "script failed to execute", which names neither the
+    // page nor the reason (`refuseFailedDocument` says both).
+    await refuseFailedDocument(fns, ctx);
+    // The script may be named instead of spelled out: a file the model already wrote is
+    // injected by path, so the same source is not generated a second time inside the
+    // command (see readEvaluateFile).
+    const fileAt = parts.indexOf('--file');
+    let expression: string;
+    let from: string | null = null;
+
+    if (fileAt === -1) {
+      expression = rawExpression(ctx);
+      if (!expression) throw new Error('evaluate requires an expression. Example: evaluate document.title');
+    } else {
+      const filePath = parts[fileAt + 1]?.trim();
+      if (!filePath || filePath.startsWith('--')) {
+        throw new Error(
+          '--file needs a path. Example: evaluate --file scripts/probe.js',
+        );
+      }
+      const rest = [...parts.slice(1, fileAt), ...parts.slice(fileAt + 2)];
+      if (rest.length > 0) {
+        throw new Error(
+          `evaluate takes either an expression or "--file <path>", not both ("${rest.join(' ')}" would be ignored). ` +
+          'Put the whole script in the file, or drop --file.',
+        );
+      }
+      const read = readEvaluateFile(filePath, ctx.workspaceRootPath);
+      expression = read.source;
+      from = read.path;
+    }
+
+    const result = await evaluateInPage(fns, expression);
+    const type = Array.isArray(result) ? 'array' : (result === null ? 'null' : typeof result);
+
+    let rendered: string;
+    if (typeof result === 'string') {
+      rendered = result;
+    } else {
+      try {
+        rendered = JSON.stringify(result, null, 2);
+      } catch {
+        rendered = String(result);
+      }
+    }
+
+    const wasTruncated = rendered.length > 6000;
+    if (wasTruncated) {
+      rendered = `${rendered.slice(0, 6000)}\n... (truncated)`;
+    }
+
+    return {
+      output: [
+        ...(from ? [`Ran ${from} (${expression.length} chars, nothing registered — "reload" drops it)`] : []),
+        `Evaluate result type: ${type}`,
+        rendered,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'pick') {
+    const timeoutIdx = parts.indexOf('--timeout');
+    const rawTimeout = timeoutIdx >= 0 ? Number(parts[timeoutIdx + 1]) : NaN;
+    const options = Number.isFinite(rawTimeout) && rawTimeout > 0 ? { timeoutMs: rawTimeout } : undefined;
+
+    const picked = await fns.pick(options);
+    if (!picked) {
+      return {
+        output: 'Pick cancelled or timed out — no element was selected.',
+        appendReleaseHint: true,
+      };
+    }
+
+    return {
+      output: [
+        'Picked element:',
+        `  Selector: ${picked.selector}`,
+        `  Tag: ${picked.tag || '(unknown)'}`,
+        `  Text: ${picked.text || '(empty)'}`,
+        `  Rect: x=${picked.rect.x} y=${picked.rect.y} w=${picked.rect.width} h=${picked.rect.height}`,
+      ].join('\n'),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'profiles') {
+    if (!fns.listProfiles) {
+      return {
+        output: 'This browser host has no profile registry, so "--profile" cannot be used here.',
+        appendReleaseHint: false,
+      };
+    }
+
+    const profiles = await fns.listProfiles();
+    const lines = [
+      `Browser profiles (${profiles.length}): each is a window of its own, with its own cookies and logins.`,
+      '',
+      ...profiles.map((profile) => `  ${profile.name}  (${profile.id})`),
+      '',
+      'Name one with "--profile <name-or-id>" on any command. Without it, a command uses the profile this',
+      'conversation is set to (its own pick, then its project\'s default, then the workspace default, then',
+      'Default), so one conversation can work in two profiles at once.',
+    ];
+
+    return { output: lines.join('\n'), appendReleaseHint: false };
+  }
+
+  if (cmd === 'tabs') {
+    const tabs = await fns.listTabs();
+    if (tabs.length === 0) {
+      return {
+        output: 'No browser window is open for this workspace yet, so there are no tabs to list. "navigate <url>" or "tab-new <url>" opens one.',
+        appendReleaseHint: false,
+      };
+    }
+
+    // One workspace holds one window per profile, so a tab list can span several profiles. A tab
+    // id is only unique inside its window, and the list has to say which window each belongs to
+    // for "--tab" to be usable at all when two profiles both hold a "tab-1".
+    const windowIds = [...new Set(tabs.map((tab) => tab.instanceId).filter((id): id is string => !!id))];
+    const spansWindows = windowIds.length > 1;
+
+    const lines = spansWindows
+      ? [
+          `These ${tabs.length} tabs are in ${windowIds.length} browser windows (one per profile). "*" marks the one on screen;`,
+          '"--tab <id>" names one for any command, and a tab id is unique inside its window — two profiles can both have',
+          'a "tab-1", so name the profile with "--profile <name>" when it matters ("profiles" lists them).',
+        ]
+      : [
+          `This window has ${tabs.length} tab${tabs.length === 1 ? '' : 's'}. "*" marks the one on screen;`,
+          '"--tab <id>" names one for any command — which targets it without moving the window, since the',
+          'person reading another tab is not in your way. "tab-show <id>" shows one to them.',
+        ];
+
+    let lastInstanceId: string | undefined;
+    for (const tab of tabs) {
+      if (spansWindows && tab.instanceId && tab.instanceId !== lastInstanceId) {
+        lastInstanceId = tab.instanceId;
+        lines.push('');
+        lines.push(`  ${tab.profileName ?? 'Browser'}  (${tab.instanceId})`);
+      }
+      lines.push('');
+      lines.push(`  ${tab.active ? '*' : ' '} ${tab.id}  ${tab.title.trim() || tab.url || '(untitled)'}`);
+      lines.push(`      url:        ${tab.url || 'about:blank'}${tab.isLoading ? '  (loading)' : ''}`);
+      // The address is where the tab was sent; a page that did not arrive is a fact
+      // about that address, and the document (when it is not the address) is what is
+      // actually on screen — the previous page. Our error page is not reported as a
+      // document; `failed` is what says why it is there.
+      // A crash is a failure with a cause, and the cause is the part a reader can act on. Said in
+      // place of `failed:` rather than as well: "ERR_RENDERER_CRASHED" adds nothing to the
+      // sentence, and this is the line that has to be read.
+      if (tab.crashed) {
+        lines.push(
+          `      crashed:    the page's own process ended (${tab.crashed.reason}, exit ${tab.crashed.exitCode}) — "reload" or "navigate" brings it back`,
+        );
+      } else if (tab.error) {
+        lines.push(
+          `      failed:     ${tab.error.code}${tab.error.status ? ` (HTTP ${tab.error.status})` : ''}`,
+        );
+      }
+      if (tab.documentUrl) {
+        lines.push(`      document:   ${tab.documentUrl}`);
+      }
+      // Whose tab it is, and who is on it — two different questions, and the second
+      // one is the answer to "is somebody mid-work here".
+      if (tab.disposition) {
+        // How it got here, when the browser asked for it. Worth saying on a shared
+        // window: a popup played as a tab has no `window.opener`, so anything on it
+        // waiting for a `postMessage` from the tab that opened it waits forever.
+        lines.push(
+          `      opened as:  ${tab.disposition === 'popup' ? 'a popup (no window.opener here)' : 'a link that wanted its own window'}`,
+        );
+      }
+      lines.push(
+        `      belongs to: ${tab.belongsTo
+          ? tab.belongsTo.kind === 'task'
+            ? `${describeWork(tab.belongsTo)} (opened by ${tab.belongsTo.sessionId})`
+            : `agent (${tab.belongsTo.sessionId})`
+          : 'a person'}`,
+      );
+      lines.push(
+        `      driven by:  ${tab.drivenBy
+          ? `${tab.drivenBy}${tab.drivenBy === ctx.sessionId ? ' (you)' : ''}`
+          : 'nobody right now'}`,
+      );
+      // Held right now, as opposed to merely driven: while this is up, the tab is the
+      // lock's — a person cannot click or type there, and a command that names it from
+      // anybody else is refused. Said out loud because it is the one state where the
+      // tab is not yours to act on even though it may be yours to work in.
+      if (tab.lockedBy) {
+        lines.push(
+          `      locked:     ${tab.lockedBy}${tab.lockedBy === ctx.sessionId ? ' (you)' : ''} is working on it, so it is held until that turn ends`,
+        );
+      }
+      // Where this conversation's unnamed commands go. Worth stating because it is *not*
+      // "the tab on screen": the person clicking around moves their own view, and this
+      // tab stays where it is.
+      if (tab.cursorOf.includes(ctx.sessionId)) {
+        lines.push('      your tab:  yes — a command that names no tab acts here');
+      }
+    }
+
+    // Said out loud when it is missing. The absence of a `your tab` line is otherwise
+    // indistinguishable from this output simply not being about you, and "which tab do I act on"
+    // is not a question to leave the reader guessing at: it is where the next command goes.
+    if (!tabs.some((tab) => tab.cursorOf.includes(ctx.sessionId))) {
+      lines.push(
+        '',
+        'No tab here is one you work from, so a command that names no tab has nowhere to go. "navigate <url>"',
+        'takes a tab for you; or name one ("--tab <id>", "tab-select <id>") or open one ("tab-new <url>").',
+        'The tab on screen is not chosen for you.',
+      )
+    }
+
+    lines.push(
+      '',
+      'Everything above "belongs to" is what the tab itself reports. "belongs to" and "driven by" are',
+      'not: one is the work the tab is part of — your own tabs, a task\'s node\'s tab, or a person\'s.',
+      'Tabs of *your* work (the same task, when you are part of one) are the ones you may close; a tab',
+      'of a task you are not working on is not yours. The other is who is working on it at this moment (a',
+      'lease, released when a turn ends). "locked" is the lease enforced: while it is up, that tab takes',
+      'no input from anybody else. "your tab" is where your own unnamed commands land — it survives the',
+      'turn, and the person switching tabs does not move it.',
+    );
+
+    return { output: lines.join('\n'), appendReleaseHint: false };
+  }
+
+  if (cmd === 'tab-new') {
+    const url = parts.slice(1).join(' ').trim();
+    if (!url) {
+      // A tab exists to hold a page: a blank one of your own is what `navigate` takes for you,
+      // and there is no state a conversation wants an empty tab in (`tab-new` with no address
+      // used to leave one behind beside the window's own).
+      throw new Error('tab-new needs a URL. Example: tab-new https://example.com');
+    }
+
+    // Behind whatever the person is reading. A window nobody has seen yet gives this tab its
+    // birth tab (so a fresh window is one tab, not two); a window the person has seen always
+    // gets one more tab — a blank tab that was already there may be theirs.
+    const tabId = await fns.createTab({ url, activate: false });
+    return {
+      output: [
+        `Tab: ${tabId}`,
+        `Opened a new tab in the browser window for this profile, on ${url} — behind whatever the person is reading, since the window is shared. "tab-show ${tabId}" brings it up for them; "tabs" lists the others.`,
+      ].join('\n'),
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'tab-show') {
+    const rest = parts.slice(1)
+    // Showing a tab is not by itself handing it over: the person can look at a page the
+    // conversation is still working in, and the hold goes on protecting it. `--handover` is
+    // the other request — "you take it from here" — and only then does the overlay go away.
+    const handover = rest.includes('--handover')
+    const id = rest.find((part) => part !== '--handover')?.trim()
+    if (!id) throw new Error('tab-show needs a tab id. "tabs" lists them. Example: tab-show tab-3 [--handover]');
+
+    const { movedView } = await fns.activateTab(id, { handover });
+    return {
+      output: movedView
+        ? handover
+          ? `Tab ${id} is now the tab the window shows, and the page is theirs to use: your overlay and hold are gone until your next command takes them back. The window was not brought forward — tell the person what you need and that the browser is ready on that tab.`
+          : `Tab ${id} is now the tab the window shows — and the one your unnamed commands act on from here. Your overlay stays up: the page is still held while you work. The window was not brought forward — say so in your reply if they should look.`
+        : `Tab ${id} is now the tab you work from, but the window still shows the person's tab: a session spawned by another one does not move what they are looking at. The conversation that spawned you can point the person at it.`,
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'tab-select') {
+    const id = parts[1]?.trim();
+    if (!id) throw new Error('tab-select needs a tab id. "tabs" lists them. Example: tab-select tab-3');
+
+    // The cursor alone: naming a tab is how a conversation says "this is where I work from", and
+    // this is that act with nothing else attached to it. No page action, and no window move —
+    // `tab-show` is the command that moves what the person sees, and it is a different request.
+    await fns.targetTab(id);
+    return {
+      output:
+        `Tab ${id} is now the tab you work from — a command that names no tab acts here, and stays here ` +
+        'until you name another. The window still shows what it showed; "tab-show <id>" is how a tab is brought ' +
+        'up for the person.',
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'tab-assign') {
+    const tabId = parts[1]?.trim();
+    const targetSessionId = parts[2]?.trim();
+    if (!tabId || !targetSessionId) {
+      throw new Error(
+        'tab-assign needs a tab id and the conversation to hand it to. ' +
+        'Example: tab-assign tab-3 260915-brave-fox — "tabs" lists the tabs, and the ids of the sessions you spawned are in their own reports.',
+      );
+    }
+
+    await fns.assignTab(tabId, targetSessionId);
+    return {
+      output:
+        `Tab ${tabId} is now that conversation's task, and the tab it works from — it can start working there ` +
+        'without naming a tab. You no longer work from it: name another tab ("tab-select <id>" or "--tab <id>") ' +
+        'for your own commands. Hand over one tab per session you want working in parallel: they share this window, ' +
+        'and each works in its own tab.',
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'record-start') {
+    // `--tab` is required, and it is the tab that gets recorded — not the one on screen, and not
+    // whichever the conversation happens to work from when someone later asks for a stop.
+    const tabId = ctx.tabId;
+    if (!tabId) {
+      throw new Error(
+        'record-start needs the tab to record. Example: record-start --tab tab-3 --ttl 30s — "tabs" lists them.',
+      );
+    }
+    const ttlMs = requiredDurationOption(parts, '--ttl', `record-start --tab ${tabId} --ttl 30s`);
+
+    // Recording needs a window that can paint and an encoder behind it. A runtime without them
+    // says so here rather than at the end of a call that looked like it worked.
+    if (!fns.startRecording) {
+      throw new Error('Recording is not available in this runtime.');
+    }
+    // Where a recording lands is a convention, not an option: the conversation's own `records/`,
+    // computed here so there is one place that decides it.
+    if (!workspaceRootPath) {
+      throw new Error(
+        'Recording needs to know where this conversation keeps its files, and this runtime did not say.',
+      );
+    }
+    const dir = join(getSessionPath(workspaceRootPath, sessionId), 'records');
+
+    const result = await fns.startRecording({ tabId, dir, ttlMs, wait: parts.includes('--wait') });
+
+    if (!result.started) {
+      if (result.reason === 'already-recording') {
+        return {
+          output:
+            `Tab ${tabId} is already being recorded into ${result.recording.file} — let it run out, ` +
+            `or stop it with "record-stop --tab ${tabId}".`,
+          appendReleaseHint: false,
+        };
+      }
+      throw new Error(
+        result.reason === 'no-encoder'
+          ? `${result.message} Nothing was recorded.`
+          : `The recording could not start, so nothing was recorded: ${result.message}`,
+      );
+    }
+
+    if (result.finished) {
+      const finished = result.finished;
+      return {
+        output: [
+          `Recorded tab ${tabId} for ${finished.seconds}s — ${formatBytes(finished.bytes)}, at ${finished.file}`,
+          `It ended because: ${finished.reason}.`,
+          `Sidecar beside it: ${sidecarPathFor(finished.file)} — what happened, with ms; read it first.`,
+          `To understand it: recording_tool understand ${finished.file} --prompt "<question>"; a transcript: recording_tool audio ${finished.file} --out words.wav, then asr_tool transcribe words.wav`,
+        ].join('\n'),
+        appendReleaseHint: false,
+      };
+    }
+
+    return {
+      output: [
+        `Recording tab ${tabId} into ${result.recording.file}.`,
+        `It stops on its own after ${Math.round(ttlMs / 1000)}s, or earlier with "record-stop --tab ${tabId}".`,
+        `You do not have to wait for it: keep working, and it is reported when it ends.`,
+        `Sidecar beside it: ${sidecarPathFor(result.recording.file)} — what happened, with ms; read it first.`,
+        `To understand it: recording_tool understand ${result.recording.file} --prompt "<question>"; a transcript: recording_tool audio ${result.recording.file} --out words.wav, then asr_tool transcribe words.wav`,
+      ].join('\n'),
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'record-stop') {
+    const tabId = ctx.tabId;
+    if (!tabId) {
+      throw new Error('record-stop needs the tab it is about. Example: record-stop --tab tab-3');
+    }
+
+    const result = fns.stopRecording
+      ? await fns.stopRecording({ tabId })
+      : ({ stopped: false, reason: 'not-recording' } as const);
+    if (!result.stopped) {
+      return { output: `Tab ${tabId} is not being recorded.`, appendReleaseHint: false };
+    }
+
+    const finished = result.recording;
+    return {
+      output: [
+        `Stopped recording tab ${tabId} — ${finished.seconds}s, ${formatBytes(finished.bytes)}, at ${finished.file}`,
+        `Sidecar beside it: ${sidecarPathFor(finished.file)} — what happened, with ms; read it first.`,
+        `To understand it: recording_tool understand ${finished.file} --prompt "<question>"; a transcript: recording_tool audio ${finished.file} --out words.wav, then asr_tool transcribe words.wav`,
+      ].join('\n'),
+      appendReleaseHint: false,
+    };
+  }
+
+  if (cmd === 'tab-close') {
+    const tabId = parts[1]?.trim();
+    if (!tabId) throw new Error('tab-close needs a tab id. "tabs" lists them. Example: tab-close tab-2');
+
+    const { remaining } = await fns.closeTab(tabId);
+    return {
+      output: remaining > 0
+        ? `Closed tab ${tabId}; ${remaining} tab${remaining === 1 ? '' : 's'} left in the browser window for this profile.`
+        : `Closed tab ${tabId} — it was the window's last tab, so the window went with it.`,
+      appendReleaseHint: false,
+    };
+  }
+
+  return null;
+}

@@ -7,13 +7,17 @@
  *   2. dispatches each as a child session (create + sendMessage), interpolating
  *      `${nodes.<id>.output}` / `${params.<name>}` / `${inputs.<name>}` into the prompt,
  *   3. subscribes to SessionManager's in-process `onSessionComplete` seam,
- *   4. on completion reads the child's final assistant text as the node output,
- *      feeds it to dependents, and reschedules,
+ *   4. on completion reads the child's final assistant text as the node output, plus the
+ *      declared fields it hands back for `${nodes.<id>.output.<field>}`, feeds them to
+ *      dependents, and reschedules,
  *   5. drives child `sessionStatus` + `kanbanColumn` so the board renders the live DAG,
  *   6. persists an append-only run-log under `tasks/<slug>/runs/<runId>/`.
  *
- * v1 executes `kind: 'session'` nodes wired by `depends_on` + `inputs`. Control-flow
- * kinds (route/loop/approval/…) parse but are not yet executed (P4).
+ * v1 executes `kind: 'session'` nodes wired by `depends_on` + `inputs`, the `when:` branch test
+ * (a node whose condition reads false is `skipped`, and skips cascade to its dependents), and
+ * `kind: 'approval'` gates (a node a person answers; the run holds until `resolveApproval`).
+ * The remaining control-flow kinds (route/loop/verify/…) parse but are not yet executed (P4) —
+ * note that a node of any other kind is currently dispatched as a session.
  *
  * The runner depends on a minimal `ConductorSessionHost` interface (which
  * SessionManager structurally satisfies) so it is unit-testable with a mock.
@@ -24,11 +28,17 @@ import {
   type TaskSpec,
   type TaskNode,
   type NodeOutput,
+  type ParsedWhen,
   type RunLogEntry,
   type NodeRunState,
   nodeTitle,
   interpolateRefs,
   materializeDeps,
+  parseWhen,
+  APPROVAL_VERDICT_FIELD,
+  APPROVAL_VERDICTS,
+  buildOutputsContract,
+  parseDeclaredOutputs,
   appendRunLog,
   writeNodeOutput,
   readNodeOutput,
@@ -54,11 +64,51 @@ export interface ConductorSessionHost {
   setKanbanColumn(sessionId: string, column: string | null): Promise<void>;
   /** Records the total DAG node count on the orchestrator session for a stable board progress denominator. */
   setTaskNodeCount(sessionId: string, count: number): Promise<void>;
+  /**
+   * Records how many gate nodes (`kind: approval`) of the active run are waiting on a person.
+   * The board badges the tile with it, and the person is notified on the transition into waiting —
+   * so it must be pushed on change, and cleared when a run has nothing parked.
+   */
+  setTaskAwaitingApproval(sessionId: string, count: number): Promise<void>;
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>;
   onSessionComplete(listener: (evt: SessionCompletionEvent) => void): () => void;
   getSessionFinalText(sessionId: string): string | undefined;
   /** Resolved working directory of a session, so children inherit the orchestrator's cwd. */
   getSessionWorkingDirectory(sessionId: string): string | undefined;
+  /**
+   * The browser profile a session picked, so children inherit the orchestrator's account.
+   *
+   * Undefined when the session made no pick — the child then follows the workspace default, which
+   * is what the orchestrator is doing too.
+   */
+  getSessionBrowserProfile(sessionId: string): string | undefined;
+  /**
+   * A run reached a terminal state. Optional, and fire-and-forget: a report is a courtesy, and a
+   * host that has nothing to say (or no assistant to say it to) must not be forced to implement
+   * one — nor may a slow report keep a run from settling.
+   */
+  onRunSettled?(info: RunSettledInfo): void;
+}
+
+/**
+ * How a run ended, in the terms a person would use.
+ *
+ * `stopped` is included because the runner knows it happened; whether anyone is told is the
+ * host's decision (see the assistant's queue: a stop is the person's own action, not news).
+ */
+export interface RunSettledInfo {
+  slug: string
+  title: string
+  runId: string
+  status: 'completed' | 'failed' | 'stopped'
+  done: number
+  failed: number
+  total: number
+  /** The conversation that created the graph, from `task.yaml`'s `created_by`. */
+  createdBy?: string
+  orchestratorSessionId?: string
+  /** The first node that failed, by title — one name, not a list. */
+  firstFailure?: string
 }
 
 export interface TaskRunnerDeps {
@@ -202,6 +252,10 @@ class ActiveRun {
   private readonly maxRepairs: number;
   /** Inverted edges: node id → set of nodes that (directly) depend on it. Built lazily for the frontier. */
   private dependents?: Map<string, Set<string>>;
+  /** Parsed `when` per node, done once at construction (see conditions.ts). */
+  private readonly whens = new Map<string, ParsedWhen>();
+  /** Last gate count pushed to the orchestrator session (-1 = never pushed). */
+  private publishedAwaiting = -1;
   private settled = false;
   private settleResolvers: ((s: RunSnapshot) => void)[] = [];
 
@@ -218,6 +272,15 @@ class ActiveRun {
     // bound, so a parsed spec can't exceed it — but a programmatically built spec might).
     this.maxRepairs = Math.min(spec.max_iterations ?? DEFAULT_REPAIR_ATTEMPTS, MAX_REPAIR_ATTEMPTS_CAP);
     for (const node of spec.nodes) this.state.set(node.id, { state: 'pending', attempt: 0 });
+    // `when` is parsed once here, not per scheduling pass. An unparsable condition is refused
+    // outright rather than guessed at — a branch test that silently reads "false" would skip work
+    // the author asked for (spec validation rejects these first; this is the runtime backstop).
+    for (const node of spec.nodes) {
+      if (!node.when) continue;
+      const parsed = parseWhen(node.when, `nodes.${node.id}.when`);
+      if (typeof parsed === 'string') throw new Error(`Refusing to run: ${parsed}`);
+      this.whens.set(node.id, parsed);
+    }
   }
 
   // --- lifecycle ---
@@ -277,6 +340,11 @@ class ActiveRun {
       } else if (e.kind === 'node-scheduled') {
         const st = this.state.get(e.nodeId);
         if (st) st.attempt += 1;
+      } else if (e.kind === 'node-awaiting-approval') {
+        // A gate that was still waiting when the process went down is still waiting: nobody
+        // answered it, and the person may be looking at a dialog that no longer exists.
+        const st = this.state.get(e.nodeId);
+        if (st) st.state = 'awaiting-approval';
       } else if (e.kind === 'node-finished') {
         const st = this.state.get(e.nodeId);
         if (st) st.state = e.state;
@@ -321,9 +389,15 @@ class ActiveRun {
           void this.deps.host.cancelProcessing(st.sessionId, true);
           void this.deps.host.setKanbanColumn(st.sessionId, 'todo');
         }
+      } else if (st.state === 'awaiting-approval') {
+        // A parked gate is someone's to answer, and a stopped run is nobody's: leaving it parked
+        // would keep the tile badged "needs you" for a decision this run can no longer take.
+        st.state = 'cancelled';
+        this.log({ kind: 'node-finished', nodeId, sessionId: '', state: 'cancelled', reason: 'stopped' });
       }
     }
     this.inFlight = 0;
+    this.publishWaitingGates();
     this.finalize();
   }
 
@@ -351,8 +425,11 @@ class ActiveRun {
 
   private scheduleReady(): void {
     if (this.runStatus !== 'running') return;
+    this.settleConditions();
+    this.markWaitingGates();
     for (const node of this.spec.nodes) {
       if (this.inFlight >= this.maxParallel) break;
+      if (this.isGate(node)) continue; // gates are parked above, not dispatched
       if (!this.isReady(node)) continue;
       if (this.isOverBudget()) {
         this.pauseForBudget();
@@ -362,6 +439,117 @@ class ActiveRun {
       void this.dispatch(node);
     }
     this.maybeFinish();
+  }
+
+  /** A gate node is answered by a person, not by a child session. */
+  private isGate(node: TaskNode): boolean {
+    return node.kind === 'approval';
+  }
+
+  /**
+   * Park every gate whose predecessors are satisfied: mark it `awaiting-approval` and stop.
+   *
+   * A gate consumes no parallelism (nobody is working) and is never dispatched — the run
+   * simply holds here until a person answers through `resolveApproval`. That is the entire
+   * difference between a gate and a session node, and it is why the answer a downstream
+   * `when` routes on is a click rather than a model's self-report.
+   */
+  private markWaitingGates(): void {
+    for (const node of this.spec.nodes) {
+      if (!this.isGate(node) || !this.isReady(node)) continue;
+      this.state.get(node.id)!.state = 'awaiting-approval';
+      this.log({ kind: 'node-awaiting-approval', nodeId: node.id });
+    }
+    this.publishWaitingGates();
+  }
+
+  /**
+   * Tell the orchestrator how many gates are parked, when that changes.
+   *
+   * This is the only signal the outside world gets that a run is waiting on a person: the board
+   * badges the tile with it and notifies on 0 → N. Publishing per change (not per scheduling
+   * pass) is what keeps it one notification instead of one per completion anywhere in the run.
+   */
+  private publishWaitingGates(): void {
+    const orchestrator = this.opts.orchestratorSessionId;
+    if (!orchestrator) return;
+    let count = 0;
+    for (const st of this.state.values()) if (st.state === 'awaiting-approval') count += 1;
+    if (count === this.publishedAwaiting) return;
+    this.publishedAwaiting = count;
+    void this.deps.host.setTaskAwaitingApproval(orchestrator, count);
+  }
+
+  /**
+   * File a person's decision on a gate node and carry on: `verdict` becomes the node's output,
+   * so every downstream `when: "<node>.verdict === '…'"` now has something to read.
+   */
+  resolveApproval(nodeId: string, approved: boolean, note?: string): void {
+    const st = this.state.get(nodeId);
+    if (!st) throw new Error(`Node "${nodeId}" is not part of this run`);
+    if (st.state !== 'awaiting-approval') {
+      throw new Error(`Node "${nodeId}" is not waiting for approval (state: ${st.state})`);
+    }
+    // A finished/stopped run has already settled: there is no live branch to route the decision
+    // into, and accepting it would flip a node inside a run nobody considers active any more.
+    if (this.runStatus !== 'running' && this.runStatus !== 'paused') {
+      throw new Error(`Cannot answer "${nodeId}": this run is ${this.runStatus}`);
+    }
+    const verdict = approved ? APPROVAL_VERDICTS[0] : APPROVAL_VERDICTS[1];
+    const output: NodeOutput = {
+      // The node's prose is the person's note — the only thing a human wrote here.
+      text: note?.trim() || (approved ? 'Approved' : 'Rejected'),
+      params: { [APPROVAL_VERDICT_FIELD]: verdict },
+    };
+    this.outputs[nodeId] = output;
+    st.state = 'done';
+    writeNodeOutput(this.deps.workspaceRoot, this.slug, this.runId, nodeId, output);
+    this.log({ kind: 'node-finished', nodeId, sessionId: st.sessionId ?? '', state: 'done', reason: `approval: ${verdict}` });
+    // Published explicitly as well: `scheduleReady` is a no-op on a paused run, and the badge has
+    // to drop the moment the decision lands rather than when the run next gets scheduled.
+    this.publishWaitingGates();
+    this.scheduleReady();
+  }
+
+  /**
+   * Decide which nodes this run will not execute, and mark them `skipped`.
+   *
+   * Two ways a node is not taken: its own `when` reads false, or a node it depends on was
+   * skipped — and the second is not optional. A skipped dependency can never report `done`,
+   * so without propagation its dependents would stay `pending` forever and the run would hang
+   * instead of finishing. Skips cascade in dependency order, hence the fixpoint loop.
+   *
+   * A `when` is evaluated only once everything it reads has settled (`done` or `skipped`):
+   * the fields it tests do not exist before then.
+   */
+  private settleConditions(): void {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const node of this.spec.nodes) {
+        const st = this.state.get(node.id)!;
+        if (st.state !== 'pending') continue;
+
+        const depStates = [...(this.edges.get(node.id) ?? [])].map((dep) => this.state.get(dep)?.state);
+        if (depStates.includes('skipped')) {
+          this.skipNode(node.id, 'a node it depends on was skipped');
+          changed = true;
+          continue;
+        }
+        if (!node.when || depStates.some((s) => s !== 'done')) continue;
+        if (!this.whens.get(node.id)!.evaluate(this.outputs)) {
+          this.skipNode(node.id, `when: ${node.when}`);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  /** Record a node this run decided not to run. Nothing was dispatched, so `inFlight` is untouched. */
+  private skipNode(nodeId: string, reason: string): void {
+    const st = this.state.get(nodeId)!;
+    st.state = 'skipped';
+    this.log({ kind: 'node-finished', nodeId, sessionId: st.sessionId ?? '', state: 'skipped', reason });
   }
 
   private isReady(node: TaskNode): boolean {
@@ -392,6 +580,11 @@ class ActiveRun {
         (this.opts.orchestratorSessionId
           ? this.deps.host.getSessionWorkingDirectory(this.opts.orchestratorSessionId)
           : undefined) ?? this.spec.cwd;
+      // The browser account is inherited the same way the directory is: a node works in the
+      // window its orchestrator works in, rather than falling back to the workspace default.
+      const browserProfile = this.opts.orchestratorSessionId
+        ? this.deps.host.getSessionBrowserProfile(this.opts.orchestratorSessionId)
+        : undefined;
       const options: CreateSessionOptions = {
         parentSessionId: this.opts.orchestratorSessionId,
         // Link the child back to the task / run / node so the manual subtask composer can
@@ -414,6 +607,7 @@ class ActiveRun {
         ...(this.spec.sources?.length ? { enabledSourceSlugs: this.spec.sources } : {}),
         projectId: this.spec.project,
         ...(cwd ? { workingDirectory: cwd } : {}),
+        ...(browserProfile ? { browserProfile } : {}),
         sessionStatus: RUNNING_STATUS,
       };
       // createSession announces the child to the renderer by default, so it nests under the task
@@ -449,7 +643,11 @@ class ActiveRun {
     if (st.attempt > 1 && st.lastFailure) {
       text = `${st.lastFailure}\n\n${text}`;
     }
-    return text;
+
+    // Declared outputs are a contract the child has to honor: without the instruction it can
+    // only guess at the block shape, and `${nodes.<id>.output.<field>}` would never resolve.
+    const contract = buildOutputsContract(node.outputs);
+    return contract ? `${text}\n\n${contract}` : text;
   }
 
   // --- completion ---
@@ -483,15 +681,33 @@ class ActiveRun {
       // of silently marking it done. Nodes with no declared outputs keep the lenient behavior.
       const node = this.spec.nodes.find((n) => n.id === nodeId);
       if ((node?.outputs?.length ?? 0) > 0 && text.trim() === '') {
-        this.failNode(nodeId, 'completed without producing declared output', evt.sessionId);
+        this.failNode(nodeId, 'completed without producing declared output', evt.sessionId, 'empty');
         return;
       }
 
-      if (this.deps.classifyNodeOutcome && (this.deps.classifyNodeOutcome.isActive?.() ?? true)) {
-        void this.finishNodeAfterOutcomeCheck(nodeId, evt.sessionId, text);
+      // Declared outputs are the fields a downstream node's `${nodes.<id>.output.<field>}` —
+      // and a `when:` condition — reads. A missing or malformed field fails the node (the
+      // `retry` policy can re-dispatch it via `when: invalid`) rather than letting the token
+      // stay unresolved in the next prompt, where nothing downstream could tell it apart from
+      // real content.
+      const parsed = parseDeclaredOutputs(text, node?.outputs);
+      if (parsed.problems.length > 0) {
+        this.failNode(
+          nodeId,
+          `declared output contract not met: ${parsed.problems.join('; ')}`,
+          evt.sessionId,
+          'invalid',
+        );
         return;
       }
-      this.markNodeDone(nodeId, evt.sessionId, text);
+
+      const output: NodeOutput = parsed.params ? { text: parsed.body, params: parsed.params } : { text: parsed.body };
+
+      if (this.deps.classifyNodeOutcome && (this.deps.classifyNodeOutcome.isActive?.() ?? true)) {
+        void this.finishNodeAfterOutcomeCheck(nodeId, evt.sessionId, output);
+        return;
+      }
+      this.markNodeDone(nodeId, evt.sessionId, output);
     } else if (evt.reason === 'interrupted') {
       // Externally aborted while running → cancelled (re-dispatched on resume). We do not
       // auto-retry here to avoid a stop/retry loop.
@@ -506,9 +722,8 @@ class ActiveRun {
     }
   }
 
-  private markNodeDone(nodeId: string, sessionId: string, text: string): void {
+  private markNodeDone(nodeId: string, sessionId: string, output: NodeOutput): void {
     const st = this.state.get(nodeId)!;
-    const output: NodeOutput = { text };
     this.outputs[nodeId] = output;
     st.state = 'done';
     this.inFlight = Math.max(0, this.inFlight - 1);
@@ -524,10 +739,10 @@ class ActiveRun {
    * `running` meanwhile; if the run was stopped or the node re-dispatched during the await, the
    * answer is dropped.
    */
-  private async finishNodeAfterOutcomeCheck(nodeId: string, sessionId: string, text: string): Promise<void> {
+  private async finishNodeAfterOutcomeCheck(nodeId: string, sessionId: string, output: NodeOutput): Promise<void> {
     let outcome: 'finished' | 'needs_input' | 'blocked' | null = null;
     try {
-      outcome = await this.deps.classifyNodeOutcome!(text, { slug: this.slug, runId: this.runId, nodeId });
+      outcome = await this.deps.classifyNodeOutcome!(output.text, { slug: this.slug, runId: this.runId, nodeId });
     } catch {
       outcome = null;
     }
@@ -541,7 +756,7 @@ class ActiveRun {
       } else if (outcome === 'blocked') {
         this.failNode(nodeId, 'reported that it could not finish', sessionId);
       } else {
-        this.markNodeDone(nodeId, sessionId, text);
+        this.markNodeDone(nodeId, sessionId, output);
       }
     } catch (err) {
       // Same reporting channel as the synchronous completion listener; the async hop would
@@ -550,17 +765,29 @@ class ActiveRun {
     }
   }
 
-  private failNode(nodeId: string, reason: string, sessionId?: string): void {
+  /**
+   * Fail a node, honoring its `retry` policy.
+   *
+   * `failure` is the class the policy matches against: `error` for a failed/aborted turn,
+   * `empty` for a turn that delivered nothing, `invalid` for an unmet declared-output contract.
+   * Without a class, `retry.when` could only ever mean `error` — so a spec that asked to retry
+   * an empty answer got nothing.
+   */
+  private failNode(
+    nodeId: string,
+    reason: string,
+    sessionId?: string,
+    failure: 'error' | 'empty' | 'invalid' = 'error',
+  ): void {
     const st = this.state.get(nodeId)!;
     const wasRunning = st.state === 'running';
     if (wasRunning) this.inFlight = Math.max(0, this.inFlight - 1);
 
     // Bounded, failure-aware retry: re-dispatch the node when its `retry` policy still
-    // has budget and matches this failure class. error/timeout/dispatch failures all map
-    // to the `error` retry trigger (empty/invalid detection is deferred).
+    // has budget and matches this failure class.
     const node = this.spec.nodes.find((n) => n.id === nodeId);
     const retry = node?.retry;
-    if (retry && st.attempt <= retry.limit && retryMatches(retry.when, 'error')) {
+    if (retry && st.attempt <= retry.limit && retryMatches(retry.when, failure)) {
       st.lastFailure = `Previous attempt failed: ${reason}. Address the cause before retrying.`;
       st.state = 'pending';
       const sid = sessionId ?? st.sessionId;
@@ -580,6 +807,9 @@ class ActiveRun {
   private maybeFinish(): void {
     if (this.runStatus !== 'running') return;
     if (this.inFlight > 0) return;
+    // A parked gate is not a stall: the run is waiting on a person, and there is nothing to
+    // dispatch and nothing to fail. It stays active until `resolveApproval` (or `stop`).
+    if (this.spec.nodes.some((n) => this.state.get(n.id)!.state === 'awaiting-approval')) return;
     if (this.spec.nodes.some((n) => this.isReady(n))) return; // more to dispatch
     const allGood = this.spec.nodes.every((n) => {
       const s = this.state.get(n.id)!.state;
@@ -630,8 +860,37 @@ class ActiveRun {
     if (this.settled) return;
     this.settled = true;
     const snap = this.snapshot();
+    // Tell the host before settling the waiters: whoever is narrating the outcome should be able
+    // to start while `waitUntilSettled` callers are still being resolved. Best-effort — a host
+    // that throws must not make a finished run look unfinished.
+    this.reportSettled();
     for (const resolve of this.settleResolvers) resolve(snap);
     this.settleResolvers = [];
+  }
+
+  /** Hand the outcome to the host, in the vocabulary of the spec rather than of the state machine. */
+  private reportSettled(): void {
+    const status = this.runStatus
+    if (status !== 'completed' && status !== 'failed' && status !== 'stopped') return
+    const states = this.spec.nodes.map((n) => ({ title: nodeTitle(n), state: this.state.get(n.id)!.state }))
+    const done = states.filter((n) => n.state === 'done' || n.state === 'skipped').length
+    const failed = states.filter((n) => n.state === 'failed')
+    try {
+      this.deps.host.onRunSettled?.({
+        slug: this.slug,
+        title: this.spec.title,
+        runId: this.runId,
+        status,
+        done,
+        failed: failed.length,
+        total: this.spec.nodes.length,
+        ...(this.spec.created_by ? { createdBy: this.spec.created_by } : {}),
+        ...(this.opts.orchestratorSessionId ? { orchestratorSessionId: this.opts.orchestratorSessionId } : {}),
+        ...(failed[0] ? { firstFailure: failed[0].title } : {}),
+      })
+    } catch {
+      // A report is not part of the run.
+    }
   }
 
   private async sendVerification(): Promise<void> {
@@ -930,9 +1189,13 @@ function skillsPreamble(skills: string[] | undefined): string {
 /**
  * Whether a node's `retry.when` trigger covers a given failure class. An absent `when`
  * defaults to retrying on `error` (the common "transient failure" case); `empty`/`invalid`
- * triggers are opt-in and not yet produced by the runner, so they never match here.
+ * are opt-in — they are produced by the declared-output checks, so a node that wants a
+ * second attempt at an incomplete answer asks for it explicitly.
  */
-function retryMatches(when: 'error' | 'empty' | 'invalid' | undefined, failure: 'error'): boolean {
+function retryMatches(
+  when: 'error' | 'empty' | 'invalid' | undefined,
+  failure: 'error' | 'empty' | 'invalid',
+): boolean {
   return (when ?? 'error') === failure;
 }
 
@@ -1034,6 +1297,29 @@ export class TaskRunner {
     this.rehydrate(slug, runId);
   }
 
+  /**
+   * Answer a gate node, then return the run's new state.
+   *
+   * A gate can sit for a long time, so the run may not be in memory any more — it is rebuilt
+   * from its run-log first (which restores the `awaiting-approval` state, not a re-dispatch).
+   */
+  resolveApproval(
+    slug: string,
+    runId: string,
+    nodeId: string,
+    approved: boolean,
+    note?: string,
+  ): RunSnapshot {
+    let run = this.runs.get(this.key(slug, runId));
+    if (!run) {
+      this.rehydrate(slug, runId);
+      run = this.runs.get(this.key(slug, runId));
+    }
+    if (!run) throw new Error(`No run "${slug}:${runId}" to resolve`);
+    run.resolveApproval(nodeId, approved, note);
+    return run.snapshot();
+  }
+
   /** Reconstruct an in-memory run from its persisted run-log + node outputs, then resume it. */
   private rehydrate(slug: string, runId: string): RunSnapshot {
     const loaded = loadTaskSpec(this.deps.workspaceRoot, slug);
@@ -1063,6 +1349,22 @@ export class TaskRunner {
 
   getRunState(slug: string, runId: string): RunSnapshot | null {
     return this.runs.get(this.key(slug, runId))?.snapshot() ?? null;
+  }
+
+  /**
+   * The run of a task that is still alive in memory, when there is one.
+   *
+   * Keyed by slug because a task has at most one active run (the runner refuses a second on the
+   * same orchestrator), and a finished one is no longer interesting here — its truth is the
+   * run-log, which storage reads answer after a restart. So `null` means "nothing running", not
+   * "never ran".
+   */
+  activeRun(slug: string): RunSnapshot | null {
+    for (const run of this.runs.values()) {
+      const snap = run.snapshot();
+      if (snap.slug === slug && !isTerminalRunStatus(snap.status)) return snap;
+    }
+    return null;
   }
 
   /** Await a run reaching a terminal state (completed/failed/stopped). */

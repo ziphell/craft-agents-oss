@@ -14,12 +14,19 @@
  */
 
 import { CodedError } from '@craft-agent/shared/protocol'
-import type { BrowserInstanceInfo } from '@craft-agent/shared/protocol'
+import type { BrowserInstanceInfo, PickedElement, TabBelongsTo } from '@craft-agent/shared/protocol'
 import type {
   IBrowserPaneManager,
+  BrowserPrintOptions,
+  BrowserPrintResult,
   BrowserScreenshotOptions,
   BrowserScreenshotRegionTarget,
   BrowserScreenshotResult,
+  VideoFrameExtractionResult,
+  VideoFrameOptions,
+  AudioExtractionResult,
+  DrawioRenderOptions,
+  RenderedDrawioFile,
   BrowserConsoleOptions,
   BrowserConsoleEntry,
   BrowserNetworkOptions,
@@ -30,12 +37,22 @@ import type {
   BrowserDownloadOptions,
   BrowserDownloadEntry,
   BrowserInstanceSnapshot,
+  BrowserTabCreateOptions,
+  BrowserTabSummary,
   AccessibilitySnapshot,
 } from '../handlers/browser-pane-manager-interface'
+import type {
+  BrowserFetchedResource,
+  BrowserFinishedRecording,
+  BrowserStartRecordingArgs,
+  BrowserStartRecordingResult,
+  BrowserStopRecordingResult,
+} from '@craft-agent/shared/agent/browser-pane'
 import {
   CLIENT_BROWSER_INVOKE,
   requestClientBrowserInvoke,
   type BrowserCapabilityMethod,
+  type PdfResultWire,
   type ScreenshotResultWire,
 } from '../transport'
 import type { RpcServer } from '../transport/types'
@@ -50,6 +67,24 @@ export interface RemoteBrowserPaneManagerDeps {
    * pin + fallback selection so the bridge stays agnostic of routing policy.
    */
   readonly getHostClient: () => string | null
+  /**
+   * The **work** this session is part of — its task and node when it is a Conductor child,
+   * itself otherwise.
+   *
+   * Asked per call rather than captured once, because it can change: a session can be bound
+   * to a task after it exists (`bindExistingSessionToTask`), and a tab opened before that is
+   * still the same conversation's. Omitted → the session is its own work, which is what an
+   * ordinary conversation is.
+   */
+  readonly getWork?: () => TabBelongsTo | null
+  /**
+   * The browser profile this session's new tabs should run in.
+   *
+   * Asked per call rather than captured: a conversation can switch profiles, and the next tab it
+   * opens has to land on the new one. Omitted → the desktop side answers with the workspace's
+   * default.
+   */
+  readonly getProfileId?: () => string | null
 }
 
 export class RemoteBrowserPaneManager implements IBrowserPaneManager {
@@ -57,19 +92,33 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   private readonly workspaceId: string
   private readonly rpcServer: RpcServer
   private readonly getHostClient: () => string | null
+  private readonly getWork: () => TabBelongsTo | null
+  private readonly getProfileId: (() => string | null) | null
 
   constructor(deps: RemoteBrowserPaneManagerDeps) {
     this.sessionId = deps.sessionId
     this.workspaceId = deps.workspaceId
     this.rpcServer = deps.rpcServer
     this.getHostClient = deps.getHostClient
+    this.getWork = deps.getWork ?? (() => null)
+    this.getProfileId = deps.getProfileId ?? null
+  }
+
+  /** Who is asking: the session, and the work it is part of. */
+  private work(): TabBelongsTo {
+    return this.getWork() ?? { kind: 'session', sessionId: this.sessionId }
   }
 
   // ---------------------------------------------------------------------------
   // Internal: package and ship one IBrowserPaneManager call.
   // ---------------------------------------------------------------------------
 
-  private async invoke<T>(method: BrowserCapabilityMethod, args: unknown[]): Promise<T> {
+  private async invoke<T>(
+    method: BrowserCapabilityMethod,
+    args: unknown[],
+    tabId?: string,
+    profileId?: string,
+  ): Promise<T> {
     const clientId = this.getHostClient()
     if (!clientId) {
       throw new CodedError(
@@ -90,13 +139,29 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
       args,
       sessionId: this.sessionId,
       workspaceId: this.workspaceId,
+      // Which cookie jar the caller works in. Usually read per call — a conversation can switch
+      // profiles between two commands — but a command may name one (`--profile`), and then that
+      // is what the window is resolved from.
+      profileId: profileId ?? this.getProfileId?.() ?? undefined,
+      // The caller's work travels as identity, not in `args`: the far side stamps a new
+      // tab's `belongsTo` from it rather than from a value the caller could name.
+      // Asked per call — a session can be bound to a task later.
+      work: this.work(),
+      // Carried beside the session and workspace rather than inside `args`: it is routing,
+      // and the tab a command acts on is the caller's decision to state.
+      tabId,
     })
   }
 
   /** Synchronous methods on IBPM are emulated by awaiting in callers; here we
    * preserve a `void` return for fire-and-forget paths used by SessionManager. */
-  private invokeSync(method: BrowserCapabilityMethod, args: unknown[]): void {
-    this.invoke<unknown>(method, args).catch(() => {
+  private invokeSync(
+    method: BrowserCapabilityMethod,
+    args: unknown[],
+    tabId?: string,
+    profileId?: string,
+  ): void {
+    this.invoke<unknown>(method, args, tabId, profileId).catch(() => {
       // Swallow — callers like setAgentControl / unbindAllForSession don't await.
       // The remote agent will surface the error on the next awaited call if
       // something is genuinely broken.
@@ -106,12 +171,6 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   // ---------------------------------------------------------------------------
   // IBrowserPaneManager — session lifecycle
   // ---------------------------------------------------------------------------
-
-  setSessionPathResolver(_fn: (sessionId: string) => string | null): void {
-    // No-op: path resolution belongs to the remote server, not the client BPM.
-    // Calls into this method from the server side are still useful locally for
-    // metadata, but the BPM itself doesn't need them on a remote bridge.
-  }
 
   destroyForSession(sessionId: string): void {
     this.invokeSync('destroyForSession', [sessionId])
@@ -131,19 +190,25 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
    * an awaited call (navigate, screenshot, …) that surfaces real errors.
    *
    * Callers that need the actual instanceId should use the async-friendly
-   * `createForSession` path via the browser-tool-runtime, which awaits.
+   * `createForSession` path via the command-runtime, which awaits.
    */
-  getOrCreateForSession(sessionId: string, _options?: { workspaceId?: string | null }): string {
+  getOrCreateForSession(
+    sessionId: string,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): string {
     // The remote bridge can't synchronously block on a WS round-trip. Return
     // an opaque sentinel — async-aware callers should use `getOrCreateForSessionAsync`.
     // workspaceId is carried on the wire via `BrowserCapabilityRequest.workspaceId`
     // (set from `this.workspaceId`), so the dispatcher already knows it.
-    this.invokeSync('getOrCreateForSession', [sessionId])
+    this.invokeSync('getOrCreateForSession', [sessionId], undefined, options?.profileId)
     return `remote-pending:${sessionId}`
   }
 
-  async getOrCreateForSessionAsync(sessionId: string, _options?: { workspaceId?: string | null }): Promise<string> {
-    return await this.invoke('getOrCreateForSession', [sessionId])
+  async getOrCreateForSessionAsync(
+    sessionId: string,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): Promise<string> {
+    return await this.invoke('getOrCreateForSession', [sessionId], undefined, options?.profileId)
   }
 
   setAgentControl(
@@ -158,13 +223,19 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   // IBrowserPaneManager — instance management
   // ---------------------------------------------------------------------------
 
-  createForSession(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): string {
-    this.invokeSync('createForSession', [sessionId, options])
-    return `remote-pending:${sessionId}`
+  createForSession(
+    sessionId: string | null,
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
+  ): string {
+    this.invokeSync('createForSession', [sessionId, options], undefined, options?.profileId)
+    return `remote-pending:${sessionId ?? 'workspace'}`
   }
 
-  async createForSessionAsync(sessionId: string, options?: { show?: boolean; workspaceId?: string | null }): Promise<string> {
-    return await this.invoke('createForSession', [sessionId, options])
+  async createForSessionAsync(
+    sessionId: string | null,
+    options?: { show?: boolean; workspaceId?: string | null; profileId?: string },
+  ): Promise<string> {
+    return await this.invoke('createForSession', [sessionId, options], undefined, options?.profileId)
   }
 
   getInstance(_id: string): BrowserInstanceSnapshot | undefined {
@@ -186,29 +257,12 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
     return await this.invoke('listInstances', [])
   }
 
-  focusBoundForSession(sessionId: string, _options?: { workspaceId?: string | null }): string {
-    this.invokeSync('focusBoundForSession', [sessionId])
-    return `remote-pending:${sessionId}`
-  }
-
-  async focusBoundForSessionAsync(sessionId: string, _options?: { workspaceId?: string | null }): Promise<string> {
-    return await this.invoke('focusBoundForSession', [sessionId])
-  }
-
-  bindSession(id: string, sessionId: string, _options?: { workspaceId?: string | null }): void {
-    this.invokeSync('bindSession', [id, sessionId])
-  }
-
   focus(id: string): void {
     this.invokeSync('focus', [id])
   }
 
   destroyInstance(id: string): void {
     this.invokeSync('destroyInstance', [id])
-  }
-
-  hide(id: string): void {
-    this.invokeSync('hide', [id])
   }
 
   clearAgentControl(sessionId: string): void {
@@ -226,97 +280,226 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   }
 
   // ---------------------------------------------------------------------------
-  // Async methods — these are the ones that actually matter to the agent.
+  // IBrowserPaneManager — tabs
   // ---------------------------------------------------------------------------
 
-  async navigate(id: string, url: string): Promise<{ url: string; title: string }> {
-    return await this.invoke('navigate', [id, url])
-  }
-  async goBack(id: string): Promise<void> {
-    await this.invoke('goBack', [id])
-  }
-  async goForward(id: string): Promise<void> {
-    await this.invoke('goForward', [id])
+  createTab(instanceId: string, _options?: BrowserTabCreateOptions): string {
+    // Synchronous IBPM return over a WS round-trip: the real id exists only on
+    // the far side. Callers that need it use `createTabAsync`, which is every
+    // caller that does anything with the new tab.
+    this.invokeSync('createTab', [instanceId, _options])
+    return ''
   }
 
-  async getAccessibilitySnapshot(id: string): Promise<AccessibilitySnapshot> {
-    return await this.invoke('getAccessibilitySnapshot', [id])
+  async createTabAsync(instanceId: string, options?: BrowserTabCreateOptions): Promise<string> {
+    return await this.invoke('createTab', [instanceId, options])
+  }
+
+  activateTab(instanceId: string, tabId: string): void {
+    this.invokeSync('activateTab', [instanceId, tabId])
+  }
+
+  setSessionTab(instanceId: string, tabId: string, sessionId: string): void {
+    this.invokeSync('setSessionTab', [instanceId, tabId, sessionId])
+  }
+
+  closeTab(instanceId: string, tabId: string): void {
+    this.invokeSync('closeTab', [instanceId, tabId])
+  }
+
+  assignTab(instanceId: string, tabId: string, to: TabBelongsTo, by: TabBelongsTo): void {
+    // `to` travels in `args` (the far side cannot resolve the receiver's task), while `by`
+    // is the request's own identity — the same split `createTab` makes.
+    this.invokeSync('assignTab', [instanceId, tabId, to, by])
+  }
+
+  listTabs(_instanceId: string): BrowserTabSummary[] {
+    // Sync surface returns []; remote-aware code uses `listTabsAsync`.
+    return []
+  }
+
+  async listTabsAsync(instanceId: string): Promise<BrowserTabSummary[]> {
+    return await this.invoke('listTabs', [instanceId])
+  }
+
+  // ---------------------------------------------------------------------------
+  // Async methods — these are the ones that actually matter to the agent.
+  //
+  // Each tab-scoped one takes the tab it acts on (`tabId`) and ships it as routing
+  // context on the request: the local manager is shared by every conversation, so "which
+  // tab" has to travel with the call.
+  // ---------------------------------------------------------------------------
+
+  async navigate(id: string, url: string, tabId?: string): Promise<{ url: string; title: string }> {
+    return await this.invoke('navigate', [id, url], tabId)
+  }
+  async goBack(id: string, tabId?: string): Promise<void> {
+    await this.invoke('goBack', [id], tabId)
+  }
+  async goForward(id: string, tabId?: string): Promise<void> {
+    await this.invoke('goForward', [id], tabId)
+  }
+  reload(id: string, tabId?: string): void {
+    // Not awaited, for the same reason the toolbar's reload is not: nothing waits
+    // for a document to load. A round-trip that fails means the page did not
+    // reload, which the next state push makes visible.
+    void this.invoke('reload', [id], tabId).catch(() => {})
+  }
+
+  async getAccessibilitySnapshot(id: string, tabId?: string): Promise<AccessibilitySnapshot> {
+    return await this.invoke('getAccessibilitySnapshot', [id], tabId)
   }
   async clickElement(
     id: string, ref: string,
     options?: { waitFor?: 'none' | 'navigation' | 'network-idle'; timeoutMs?: number },
+    tabId?: string,
   ): Promise<void> {
-    await this.invoke('clickElement', [id, ref, options])
+    await this.invoke('clickElement', [id, ref, options], tabId)
   }
-  async clickAtCoordinates(id: string, x: number, y: number): Promise<void> {
-    await this.invoke('clickAtCoordinates', [id, x, y])
+  async clickAtCoordinates(id: string, x: number, y: number, tabId?: string): Promise<void> {
+    await this.invoke('clickAtCoordinates', [id, x, y], tabId)
   }
-  async drag(id: string, x1: number, y1: number, x2: number, y2: number): Promise<void> {
-    await this.invoke('drag', [id, x1, y1, x2, y2])
+  async drag(id: string, x1: number, y1: number, x2: number, y2: number, tabId?: string): Promise<void> {
+    await this.invoke('drag', [id, x1, y1, x2, y2], tabId)
   }
-  async fillElement(id: string, ref: string, value: string): Promise<void> {
-    await this.invoke('fillElement', [id, ref, value])
+  async fillElement(id: string, ref: string, value: string, tabId?: string): Promise<void> {
+    await this.invoke('fillElement', [id, ref, value], tabId)
   }
-  async typeText(id: string, text: string): Promise<void> {
-    await this.invoke('typeText', [id, text])
+  async typeText(id: string, text: string, tabId?: string): Promise<void> {
+    await this.invoke('typeText', [id, text], tabId)
   }
-  async selectOption(id: string, ref: string, value: string): Promise<void> {
-    await this.invoke('selectOption', [id, ref, value])
+  async selectOption(id: string, ref: string, value: string, tabId?: string): Promise<void> {
+    await this.invoke('selectOption', [id, ref, value], tabId)
   }
-  async setClipboard(id: string, text: string): Promise<void> {
-    await this.invoke('setClipboard', [id, text])
+  async setClipboard(id: string, text: string, tabId?: string): Promise<void> {
+    await this.invoke('setClipboard', [id, text], tabId)
   }
-  async getClipboard(id: string): Promise<string> {
-    return await this.invoke('getClipboard', [id])
+  async getClipboard(id: string, tabId?: string): Promise<string> {
+    return await this.invoke('getClipboard', [id], tabId)
   }
-  async scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount?: number): Promise<void> {
-    await this.invoke('scroll', [id, direction, amount])
+  async scroll(id: string, direction: 'up' | 'down' | 'left' | 'right', amount?: number, tabId?: string): Promise<void> {
+    await this.invoke('scroll', [id, direction, amount], tabId)
   }
-  async sendKey(id: string, args: BrowserKeyArgs): Promise<void> {
-    await this.invoke('sendKey', [id, args])
+  async sendKey(id: string, args: BrowserKeyArgs, tabId?: string): Promise<void> {
+    await this.invoke('sendKey', [id, args], tabId)
   }
-  async uploadFile(_id: string, _ref: string, _filePaths: string[]): Promise<unknown> {
+  async uploadFile(_id: string, _ref: string, _filePaths: string[], _tabId?: string): Promise<unknown> {
     throw new CodedError(
       'BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED',
       'File upload from a remote agent is not supported. ' +
       'Ask the user to attach the file to the session instead.',
     )
   }
-  async evaluate(id: string, expression: string): Promise<unknown> {
-    return await this.invoke('evaluate', [id, expression])
+  async evaluate(id: string, expression: string, tabId?: string): Promise<unknown> {
+    return await this.invoke('evaluate', [id, expression], tabId)
   }
 
-  async screenshot(id: string, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> {
-    const wire = await this.invoke<ScreenshotResultWire>('screenshot', [id, options])
+  async fetchResource(
+    id: string,
+    url: string,
+    options?: { referrer?: string; maxBytes?: number },
+    tabId?: string,
+  ): Promise<BrowserFetchedResource> {
+    return await this.invoke<BrowserFetchedResource>('fetchResource', [id, url, options], tabId)
+  }
+
+  async pickElement(
+    id: string,
+    options?: { timeoutMs?: number; pollMs?: number },
+    tabId?: string,
+  ): Promise<PickedElement | null> {
+    return await this.invoke<PickedElement | null>('pickElement', [id, options], tabId)
+  }
+
+  async addInitScript(id: string, key: string, source: string, tabId?: string): Promise<string> {
+    return await this.invoke<string>('addInitScript', [id, key, source], tabId)
+  }
+
+  async clearInitScripts(id: string, keyPrefix: string, tabId?: string): Promise<string[]> {
+    return await this.invoke<string[]>('clearInitScripts', [id, keyPrefix], tabId)
+  }
+
+  async extractVideoFrames(
+    filePath: string,
+    options: VideoFrameOptions,
+  ): Promise<VideoFrameExtractionResult> {
+    return await this.invoke<VideoFrameExtractionResult>('extractVideoFrames', [filePath, options])
+  }
+
+  async extractAudio(filePath: string, outPath: string): Promise<AudioExtractionResult> {
+    return await this.invoke<AudioExtractionResult>('extractAudio', [filePath, outPath])
+  }
+
+  async startRecordingForSession(
+    sessionId: string,
+    args: BrowserStartRecordingArgs,
+    options?: { workspaceId?: string | null; profileId?: string },
+  ): Promise<BrowserStartRecordingResult> {
+    return await this.invoke<BrowserStartRecordingResult>(
+      'startRecordingForSession',
+      [sessionId, args],
+      undefined,
+      options?.profileId,
+    )
+  }
+
+  async stopRecordingForSession(sessionId: string, tabId: string): Promise<BrowserStopRecordingResult> {
+    return await this.invoke<BrowserStopRecordingResult>('stopRecordingForSession', [sessionId, tabId])
+  }
+
+  /** A long call, like `pick`: it is answered when the recording ends, not when it is made. */
+  async waitForRecordingEnd(sessionId: string, tabId: string): Promise<BrowserFinishedRecording | null> {
+    return await this.invoke<BrowserFinishedRecording | null>('waitForRecordingEnd', [sessionId, tabId])
+  }
+
+  /**
+   * Fire-and-forget: a conversation being torn down has nobody left to wait for it, and the
+   * recording's own end is what anything still interested hears about.
+   */
+  endRecordingsForSession(sessionId: string): void {
+    void this.invoke<void>('endRecordingsForSession', [sessionId]).catch(() => {})
+  }
+
+  async renderDrawio(options: DrawioRenderOptions): Promise<RenderedDrawioFile> {
+    return await this.invoke<RenderedDrawioFile>('renderDrawio', [options])
+  }
+
+  async screenshot(id: string, options?: BrowserScreenshotOptions, tabId?: string): Promise<BrowserScreenshotResult> {
+    const wire = await this.invoke<ScreenshotResultWire>('screenshot', [id, options], tabId)
     return this.fromScreenshotWire(wire)
   }
-  async screenshotRegion(id: string, target: BrowserScreenshotRegionTarget): Promise<BrowserScreenshotResult> {
-    const wire = await this.invoke<ScreenshotResultWire>('screenshotRegion', [id, target])
+  async screenshotRegion(id: string, target: BrowserScreenshotRegionTarget, tabId?: string): Promise<BrowserScreenshotResult> {
+    const wire = await this.invoke<ScreenshotResultWire>('screenshotRegion', [id, target], tabId)
     return this.fromScreenshotWire(wire)
   }
 
-  getConsoleLogs(id: string, options?: BrowserConsoleOptions): BrowserConsoleEntry[] {
+  async printPdf(id: string, options?: BrowserPrintOptions, tabId?: string): Promise<BrowserPrintResult> {
+    const wire = await this.invoke<PdfResultWire>('printPdf', [id, options], tabId)
+    return { pdf: bytesToBuffer(wire.pdfBytes), bytes: wire.bytes }
+  }
+
+  getConsoleLogs(id: string, options?: BrowserConsoleOptions, tabId?: string): BrowserConsoleEntry[] {
     // IBPM declares sync. The async result is awaited inside the runtime layer
     // that consumes consoleLogs; returning [] here keeps the sync surface intact.
-    void this.invoke<BrowserConsoleEntry[]>('getConsoleLogs', [id, options]).catch(() => {})
+    void this.invoke<BrowserConsoleEntry[]>('getConsoleLogs', [id, options], tabId).catch(() => {})
     return []
   }
-  windowResize(id: string, width: number, height: number): { width: number; height: number } {
-    void this.invoke<{ width: number; height: number }>('windowResize', [id, width, height]).catch(() => {})
+  resizeViewport(id: string, width: number, height: number, tabId?: string): { width: number; height: number } {
+    void this.invoke<{ width: number; height: number }>('resizeViewport', [id, width, height], tabId).catch(() => {})
     return { width, height }
   }
-  getNetworkLogs(id: string, options?: BrowserNetworkOptions): BrowserNetworkEntry[] {
-    void this.invoke<BrowserNetworkEntry[]>('getNetworkLogs', [id, options]).catch(() => {})
+  getNetworkLogs(id: string, options?: BrowserNetworkOptions, tabId?: string): BrowserNetworkEntry[] {
+    void this.invoke<BrowserNetworkEntry[]>('getNetworkLogs', [id, options], tabId).catch(() => {})
     return []
   }
-  async waitFor(id: string, args: BrowserWaitArgs): Promise<BrowserWaitResult> {
-    return await this.invoke('waitFor', [id, args])
+  async waitFor(id: string, args: BrowserWaitArgs, tabId?: string): Promise<BrowserWaitResult> {
+    return await this.invoke('waitFor', [id, args], tabId)
   }
   async getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]> {
     return await this.invoke('getDownloads', [id, options])
   }
-  async detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
-    return await this.invoke('detectSecurityChallenge', [id])
+  async detectSecurityChallenge(id: string, tabId?: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
+    return await this.invoke('detectSecurityChallenge', [id], tabId)
   }
 
   // ---------------------------------------------------------------------------
@@ -324,21 +507,28 @@ export class RemoteBrowserPaneManager implements IBrowserPaneManager {
   // ---------------------------------------------------------------------------
 
   private fromScreenshotWire(wire: ScreenshotResultWire): BrowserScreenshotResult {
-    const bytes = wire.imageBytes
-    // Structured clone on the WS layer may deliver this as a Uint8Array or as
-    // a serialized object with `data` field — accept both.
-    let buffer: Buffer
-    if (bytes instanceof Uint8Array) {
-      buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-    } else if (bytes && typeof bytes === 'object' && 'data' in (bytes as object)) {
-      buffer = Buffer.from((bytes as { data: number[] }).data)
-    } else {
-      buffer = Buffer.from(bytes as unknown as ArrayBufferLike)
-    }
     return {
-      imageBuffer: buffer,
+      imageBuffer: bytesToBuffer(wire.imageBytes),
       imageFormat: wire.imageFormat,
+      imageWidth: wire.imageWidth,
+      imageHeight: wire.imageHeight,
       metadata: wire.metadata,
     }
   }
+}
+
+/**
+ * Bytes off the wire, as a Buffer.
+ *
+ * Structured clone may deliver a `Uint8Array` or a serialized `{ data: number[] }`, so both are
+ * accepted — the same reason the screenshot wire does it this way.
+ */
+function bytesToBuffer(bytes: Uint8Array | number[] | ArrayBufferLike): Buffer {
+  if (bytes instanceof Uint8Array) return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (Array.isArray(bytes)) return Buffer.from(bytes)
+  // Structured clone can also deliver `{ data: number[] }`; `ArrayBuffer` has no `data`, and the
+  // cast is the only way to look without narrowing everything to `any`.
+  const maybe = bytes as unknown as { data?: number[] }
+  if (maybe && typeof maybe === 'object' && Array.isArray(maybe.data)) return Buffer.from(maybe.data)
+  return Buffer.from(bytes as ArrayBufferLike)
 }

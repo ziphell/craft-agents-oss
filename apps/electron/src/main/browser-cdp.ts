@@ -10,7 +10,26 @@
  */
 
 import type { WebContents } from 'electron'
+import type { PickedElement } from '@craft-agent/shared/protocol'
+import type { BrowserStreamInput, BrowserCaretRect } from '@craft-agent/shared/protocol'
 import { mainLog } from './logger'
+import { keyStroke, modifierMask, typeSteps, type BrowserKeyModifier } from './browser-key-map'
+
+/**
+ * How long a typed string is allowed to take, and the interval floor and ceiling
+ * that budget works within.
+ *
+ * `type` is the path that looks like a person typing (see `typeText`); `fill` is
+ * the fast one. The budget is what keeps those two honest about their roles: a
+ * short search query gets ~150 ms a character, a paragraph gets squeezed toward
+ * the floor rather than becoming a one-minute keystroke recital.
+ */
+const TYPE_BUDGET_MS = 4_000
+const TYPE_PACE_MAX_MS = 180
+const TYPE_PACE_MIN_MS = 14
+
+/** A duration with the unevenness of a hand rather than the steadiness of a loop. */
+const jitter = (ms: number): number => Math.round(ms * (0.7 + Math.random() * 0.6))
 
 export interface AccessibilityNode {
   ref: string           // "@e1", "@e2", etc.
@@ -90,11 +109,800 @@ function summarizeTopCounts(map: Map<string, number>, maxEntries = 8): string {
 
 const CDP_IDLE_DETACH_MS = 5_000
 
+// ---------------------------------------------------------------------------
+// The overlay a page gets while elements are being chosen on it
+// ---------------------------------------------------------------------------
+
+/** Window key the injected overlay publishes its state into. */
+const OVERLAY_STATE_KEY = '__craft_agent_overlay_state__'
+/** Window key exposing the overlay's teardown handle — take it down now. */
+const OVERLAY_CANCEL_KEY = '__craft_agent_overlay_cancel__'
+const OVERLAY_ID = '__craft_agent_overlay__'
+
+/** What the injected overlay has reported since the last read. */
+export interface OverlayReport {
+  /**
+   * `pending` while mounted and nothing has happened yet; `cancelled` once it has
+   * been taken down (Escape in the page, or the toolbar's button); `picked` once a
+   * one-shot pick has been answered; `missing` when this document has no overlay at
+   * all, which is what a navigation looks like from here.
+   */
+  status: 'pending' | 'picked' | 'cancelled' | 'missing'
+  /** Elements picked since the last read — cleared as they are read. */
+  picks: PickedElement[]
+}
+
+/** The bar's word when the caller brings none (the toolbar renderer brings its own). */
+const DEFAULT_OVERLAY_LABELS: OverlayLabels = {
+  add: 'Add to conversation',
+}
+
+/**
+ * How a selection is drawn: a solid frame around it, its name on a chip of the app's
+ * accent, and the one control at the frame's **bottom-left corner**.
+ *
+ * All three wear the accent, because all three are the app's marks *about* the page
+ * rather than a piece of the page: one colour says "this is ours", and the accent is
+ * the colour the window's own chrome already uses. The name chip is the one exception
+ * to sitting on the frame — it stays at the page's bottom-left corner, because a name
+ * that moves with what it names covers the very thing the person is looking at, at the
+ * one moment they are looking at it.
+ */
+function selectionFrameStyle(accent: string): string {
+  return `position:fixed;display:none;border:2px solid ${accent};border-radius:4px;pointer-events:none;`
+}
+
+function selectionLabelStyle(accent: string): string {
+  return `position:fixed;display:none;left:8px;bottom:8px;padding:2px 6px;border-radius:6px;font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:${accent};color:#fff;pointer-events:none;max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`
+}
+
+/**
+ * `buildStableSelector`, as source, for the scripts injected into a page.
+ *
+ * One copy on purpose: the window's own mode and the agent's one-shot pick describe an
+ * element the same way — the selector the agent reads back out of a pick, and the one
+ * a mention carries. A second copy would be a second description of one thing, and the
+ * two would drift.
+ */
+const STABLE_SELECTOR_FN = `  const buildStableSelector = (el) => {
+    if (!el || el.nodeType !== 1) return '';
+    const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id') || el.getAttribute('data-test');
+    if (testId) return '[data-testid="' + testId + '"]';
+    if (el.id && !/^[0-9]/.test(el.id)) return '#' + el.id;
+
+    const parts = [];
+    let cur = el;
+    while (cur && cur.nodeType === 1 && parts.length < 6 && cur !== document.documentElement) {
+      if (cur.id && !/^[0-9]/.test(cur.id)) { parts.unshift('#' + cur.id); break; }
+      let part = cur.tagName.toLowerCase();
+      const parent = cur.parentElement;
+      if (parent) {
+        const sameTag = [];
+        for (const child of parent.children) { if (child.tagName === cur.tagName) sameTag.push(child); }
+        if (sameTag.length > 1) part += ':nth-of-type(' + (sameTag.indexOf(cur) + 1) + ')';
+      }
+      parts.unshift(part);
+      cur = parent;
+    }
+    return parts.join(' > ');
+  };`
+
+/**
+ * The overlay a page gets while someone is choosing elements on it.
+ *
+ * One script for the window's own mode and for the agent's one-shot
+ * `browser_tool pick`, because the gesture is one gesture: point at the page — click
+ * an element, or box several — and what comes back is a selection. Only what happens
+ * afterwards differs, and that is the `resident`/`bar` pair: the window's mode keeps
+ * the selection, draws its bar above it and stays mounted; a one-shot pick reports
+ * the element and tears itself down before anything else can happen.
+ *
+ * It reports into `OVERLAY_STATE_KEY` rather than resolving a long-lived promise, so
+ * the caller can poll with short CDP calls and the idle-detach timer never fires
+ * mid-selection.
+ *
+ * Injected through CDP, so it is unaffected by the page's CSP and needs no
+ * `webPreferences` changes (stays sandboxed).
+ */
+function buildOverlayScript(options: {
+  /**
+   * The app's accent, as a concrete CSS colour.
+   *
+   * Resolved by the caller: a page cannot see the app's variables, and this class
+   * knows nothing about themes. It is the same value the agent-control overlay is
+   * drawn with, so the window's own chrome and everything drawn on a page agree.
+   */
+  accent: string
+  /**
+   * Draw the bar.
+   *
+   * The window's own mode does: the bar is where the selection is handed to the
+   * conversation. A one-shot pick does not — the agent asked for one element, and a
+   * bar nobody asked for is chrome drawn over somebody's page.
+   */
+  bar: boolean
+  /** The bar's word, in the caller's language — the toolbar owns the i18n, not this. */
+  labels: { add: string }
+  /**
+   * Stay armed after a selection.
+   *
+   * One pick is what the agent asks for, but a person who turned the mode on is
+   * working on *elements*, plural, and moving between tabs while they do it: the
+   * overlay stays, a click or a box selects, and the mode ends when they say so
+   * (Escape here, or the toolbar button).
+   */
+  resident: boolean
+}): string {
+  const accent = options.accent
+
+  // Everything the overlay draws is one of these. The frames carry the state —
+  // dashed and tinted for "what a click would take", solid for "what it took", and
+  // a third dashed one for what a drag is covering right now.
+  const hoverBoxStyle = `position:fixed;display:none;border:1px dashed ${accent};background:color-mix(in oklab, ${accent} 15%, transparent);border-radius:4px;pointer-events:none;`
+  const marqueeStyle = `position:fixed;display:none;border:1px dashed ${accent};background:color-mix(in oklab, ${accent} 12%, transparent);border-radius:4px;pointer-events:none;`
+  const frameStyle = selectionFrameStyle(accent)
+  const nameStyle = selectionLabelStyle(accent)
+  const layerStyle = `position:fixed;inset:0;pointer-events:none;`
+  // The bar sits at the selection frame's bottom-left corner — positioned in `paint`,
+  // because it belongs to that frame rather than to the page — and wears the accent,
+  // like the frame and the name chip: one colour for everything the app draws here.
+  // Compact on purpose: it is one short word on somebody else's page, and every pixel
+  // of it is pixels of their page.
+  const barStyle = `position:fixed;display:none;align-items:center;padding:2px;border-radius:7px;background:${accent};box-shadow:0 4px 14px rgba(0,0,0,0.18);pointer-events:auto;`
+  // A button on a bar this small is a glyph or a short word: what it does is said on
+  // hover (and to a screen reader) as well.
+  const barButtonStyle = `all:unset;cursor:pointer;min-width:20px;height:20px;line-height:20px;padding:0 8px;text-align:center;border-radius:5px;color:#fff;font:400 12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;white-space:nowrap;`
+
+  return `(() => {
+  try { window.${OVERLAY_CANCEL_KEY} && window.${OVERLAY_CANCEL_KEY}(); } catch (e) {}
+
+  const root = document.createElement('div');
+  root.id = '${OVERLAY_ID}';
+  root.setAttribute('style', 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;');
+
+  // What the cursor is over — what a click would take.
+  const hoverBox = document.createElement('div');
+  hoverBox.setAttribute('style', ${JSON.stringify(hoverBoxStyle)});
+  root.appendChild(hoverBox);
+
+  // The name of what is hovered or selected — one chip, fixed at the page's bottom-left
+  // by its own style, so it never covers what it names.
+  const nameLabel = document.createElement('div');
+  nameLabel.setAttribute('style', ${JSON.stringify(nameStyle)});
+  root.appendChild(nameLabel);
+
+  // What the drag covers right now.
+  const marquee = document.createElement('div');
+  marquee.setAttribute('style', ${JSON.stringify(marqueeStyle)});
+  root.appendChild(marquee);
+
+  // What is selected: a frame and a name per element, on a layer of their own.
+  const layer = document.createElement('div');
+  layer.setAttribute('style', ${JSON.stringify(layerStyle)});
+  root.appendChild(layer);
+
+  // What a live box is covering right now: the same dashed box the hover draws, one per
+  // element, on a layer above the frames — during a drag these are the thing being
+  // decided, and the release settles them into solid frames in their place.
+  const previewLayer = document.createElement('div');
+  previewLayer.setAttribute('style', ${JSON.stringify(layerStyle)});
+  root.appendChild(previewLayer);
+
+  // The bar: the one thing a person acts with on the page — hand the selection to the
+  // conversation. It is built even for a one-shot pick (where nothing shows it) rather
+  // than spliced in conditionally — one script, one shape, and no second description to
+  // drift.
+  const bar = document.createElement('div');
+  bar.setAttribute('style', ${JSON.stringify(barStyle)});
+  const addButton = document.createElement('button');
+  addButton.type = 'button';
+  addButton.textContent = ${JSON.stringify(options.labels.add)};
+  addButton.title = ${JSON.stringify(options.labels.add)};
+  addButton.setAttribute('aria-label', ${JSON.stringify(options.labels.add)});
+  addButton.setAttribute('style', ${JSON.stringify(barButtonStyle)} + 'padding:0 10px;');
+  // A hover tint is what says the pointer is on a control rather than on the page
+  // behind it — brightness on the accent fill rather than a second colour, so the
+  // button reads as the same control in both states.
+  addButton.addEventListener('mouseenter', () => { addButton.style.filter = 'brightness(1.12)'; });
+  addButton.addEventListener('mouseleave', () => { addButton.style.filter = ''; });
+  bar.appendChild(addButton);
+  root.appendChild(bar);
+
+  document.documentElement.appendChild(root);
+
+${STABLE_SELECTOR_FN}
+
+  const WITH_BAR = ${options.bar};
+
+  // The overlay's whole outward state: what it has picked. Written into the window key
+  // at the end of this script, where the caller polls it — and kept out of cleanup(), so
+  // the final status is still readable after the overlay is gone.
+  const state = {
+    status: 'pending',
+    picks: [],
+  };
+
+  let selected = [];
+  let current = null;       // what the cursor is over
+  let drag = null;
+  // What a box being drawn covers right now — the chip's answer while the hand is still
+  // down, before the release decides the selection.
+  let preview = null;
+
+  const inOverlay = (el) => !!el && root.contains(el);
+
+  /** What a pick reports: the element, and where it is. */
+  const elementPayload = (el) => {
+    const r = el.getBoundingClientRect();
+    return {
+      selector: buildStableSelector(el),
+      tag: el.tagName ? el.tagName.toLowerCase() : '',
+      text: (el.textContent || '').trim().slice(0, 200),
+      rect: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
+    };
+  };
+
+  const rectOf = (d) => ({
+    left: Math.min(d.x0, d.x1),
+    top: Math.min(d.y0, d.y1),
+    right: Math.max(d.x0, d.x1),
+    bottom: Math.max(d.y0, d.y1),
+  });
+
+  /**
+   * What a rectangle selects.
+   *
+   * Inline boxes are skipped, and only the innermost of what is left is kept: boxing
+   * a paragraph has to mean the paragraph and not the spans inside it, and boxing a
+   * card has to mean its contents rather than the card *and* everything in it. A
+   * click is not a box with no area — it is a different question, answered by what is
+   * actually under the cursor, inline elements included: clicking a link inside a
+   * paragraph has to select the link.
+   */
+  const within = (rect) => {
+    if (!document.body) return [];
+    const hits = [];
+    for (const el of document.body.querySelectorAll('*')) {
+      if (el === document.body || inOverlay(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      if (r.bottom < rect.top || r.top > rect.bottom || r.right < rect.left || r.left > rect.right) continue;
+      const display = window.getComputedStyle(el).display;
+      if (display === 'inline' || display === 'contents') continue;
+      hits.push(el);
+    }
+    return hits.filter((el) => !hits.some((other) => other !== el && el.contains(other)));
+  };
+
+  /**
+   * What the name chip says — one chip, one place (the page's bottom-left).
+   *
+   * Three sources, in the order a hand moves: the box being drawn (what it is covering
+   * right now), else what the cursor is over — what a click would take — else what is
+   * selected. So the chip answers "what am I choosing" at every moment, including while
+   * a button is held. Several read one after another — each has its own frame to point
+   * at it, and the chip is what says which is which.
+   */
+  const paintName = () => {
+    const hovered = current && !inOverlay(current) && selected.indexOf(current) === -1 ? current : null;
+    const names = preview
+      ? preview.map(buildStableSelector)
+      : hovered ? [buildStableSelector(hovered)] : selected.map(buildStableSelector);
+    nameLabel.textContent = names.join('  ·  ');
+    nameLabel.style.display = names.length > 0 ? 'block' : 'none';
+  };
+
+  const paintHover = (el) => {
+    // The dashed box follows the hand: what a click would take, and — while a press has
+    // not moved yet — what a release would take, which is the same element either way, so
+    // pressing must not make it disappear. It steps aside once the press has become a box
+    // (the covered elements are outlined instead), on the overlay's own chrome, and on
+    // something already selected — that one has a solid frame, and a second box there
+    // would only say the same thing twice.
+    const taken = el && !inOverlay(el) && selected.indexOf(el) === -1 && !(drag && drag.moved);
+    if (!taken) {
+      hoverBox.style.display = 'none';
+      paintName();
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    hoverBox.style.display = 'block';
+    hoverBox.style.left = r.left + 'px';
+    hoverBox.style.top = r.top + 'px';
+    hoverBox.style.width = r.width + 'px';
+    hoverBox.style.height = r.height + 'px';
+    paintName();
+  };
+
+  const drawMarquee = () => {
+    if (!drag) return;
+    const r = rectOf(drag);
+    marquee.setAttribute('style', ${JSON.stringify(marqueeStyle)}
+      + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + (r.right - r.left) + 'px;height:' + (r.bottom - r.top) + 'px;');
+  };
+
+  /**
+   * Outline what a live box covers — the same dashed box the hover draws, one per
+   * element, so a drag reads as "these are being taken" while it is still happening
+   * rather than only once the hand comes up.
+   */
+  const drawPreview = (elements) => {
+    previewLayer.textContent = '';
+    for (const el of elements) {
+      const r = el.getBoundingClientRect();
+      const box = document.createElement('div');
+      box.setAttribute('style', ${JSON.stringify(hoverBoxStyle)}
+        + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;');
+      previewLayer.appendChild(box);
+    }
+  };
+
+  /**
+   * Draw the selection, and put the bar at the corner it belongs to.
+   *
+   * Each selected element gets a frame, the one control sits at the **union's
+   * bottom-left corner** (so it reads as that selection's own button rather than as
+   * chrome belonging to the page), and the name of what is selected is on the one chip
+   * at the page's bottom-left — out of the way of everything.
+   */
+  const paint = () => {
+    layer.textContent = '';
+    hoverBox.style.display = 'none';
+    selected = selected.filter((el) => el.isConnected && !inOverlay(el));
+
+    // The bar is where the selection is handed to the conversation, so it exists
+    // exactly while there is a selection to hand over.
+    bar.style.display = WITH_BAR && selected.length > 0 ? 'flex' : 'none';
+    paintName();
+    if (selected.length === 0) return;
+
+    // A box selection can hold several elements, so the bar hangs off the **union** of
+    // what is selected — its bottom-left corner, just below the lowest frame when there
+    // is room and just inside its bottom edge when there is not (a selection near the
+    // foot of the page must not push the one control off screen). Never past the left
+    // edge either.
+    let union = null;
+    for (const el of selected) {
+      const r = el.getBoundingClientRect();
+      union = union
+        ? {
+            left: Math.min(union.left, r.left),
+            top: Math.min(union.top, r.top),
+            right: Math.max(union.right, r.right),
+            bottom: Math.max(union.bottom, r.bottom),
+          }
+        : { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+      const frame = document.createElement('div');
+      frame.setAttribute('style', ${JSON.stringify(frameStyle)}
+        + 'display:block;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;');
+      layer.appendChild(frame);
+    }
+
+    if (WITH_BAR && union) {
+      const barHeight = bar.offsetHeight || 32;
+      const below = union.bottom + 6;
+      bar.style.left = Math.max(8, union.left) + 'px';
+      bar.style.top =
+        (below + barHeight <= window.innerHeight ? below : Math.max(8, union.bottom - barHeight - 6)) + 'px';
+    }
+  };
+
+  /**
+   * Hand the selection to the conversation.
+   *
+   * Every selected element, because the selection is the unit here. A click selects
+   * one, so the ordinary "talk about this" case is one reference; boxing several and
+   * adding them says "look at these".
+   */
+  const addToConversation = () => {
+    const elements = selected.filter((el) => el.isConnected);
+    if (elements.length === 0) return;
+    for (const el of elements) state.picks.push(elementPayload(el));
+  };
+
+  /**
+   * What the cursor is over, for the chip that previews "what a click would take".
+   *
+   * Never while a button is held: a press is the start of a selection, and naming
+   * whatever the cursor passes over during one would replace the selection in the
+   * person's reading with a trail of elements — and if the press itself was missed (a
+   * page's own handler ran first), drag would be null and that is exactly what this
+   * guard prevents.
+   */
+  const onMove = (e) => {
+    if (drag || e.buttons) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (el === current) return;
+    current = el;
+    paintHover(el);
+  };
+
+  /**
+   * Whether an event belongs to the browser rather than to the mode.
+   *
+   * One place, and it is where the browser's own behaviour is the point: the overlay's
+   * own chrome — its button is clicked, not selected. Everything else is the mode's.
+   */
+  const browserOwnsIt = (e) => inOverlay(e.target);
+
+  /**
+   * The mouse events behind the pointer events, refused the same way.
+   *
+   * A page is as likely to be listening to mousedown / mouseup as to pointerdown, and
+   * those are separate events with separate listeners: a press the mode does not take
+   * is a press the page still gets, and a double-click the page still gets selects its
+   * text or follows its link. Nothing is acted on here — the pointer handlers do the
+   * work — so this is only the refusal, with the same exception.
+   */
+  const swallowMouse = (e) => {
+    if (e.button !== 0 || browserOwnsIt(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const onPointerDown = (e) => {
+    if (e.button !== 0 || browserOwnsIt(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    // A press is "this one": the chip keeps naming what it landed on and the dashed box
+    // stays around it, because that is what a release without a drag will take and taking
+    // either away at the moment of pressing says the wrong thing. They step aside only
+    // when the press becomes a box. A press on an empty patch targets nothing (the same
+    // rule a click follows), so the chip stays on the selection and no box is drawn.
+    const target = document.elementFromPoint(e.clientX, e.clientY);
+    current = target && !inOverlay(target) && target !== document.body && target !== document.documentElement ? target : null;
+    drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false };
+    preview = null;
+    drawPreview([]);
+    paintHover(current);
+    drawMarquee();
+  };
+
+  const onPointerMove = (e) => {
+    if (!drag) return;
+    drag.x1 = e.clientX;
+    drag.y1 = e.clientY;
+    if (Math.abs(drag.x1 - drag.x0) > 3 || Math.abs(drag.y1 - drag.y0) > 3) drag.moved = true;
+    // A drag is a box from here on: the dashed hover goes away (it would be one element
+    // out of several) and what the box is covering is outlined instead. The chip says the
+    // same thing in words, while the hand is still down.
+    if (drag.moved) {
+      preview = within(rectOf(drag));
+      hoverBox.style.display = 'none';
+    } else {
+      preview = null;
+    }
+    drawPreview(preview || []);
+    paintName();
+    drawMarquee();
+  };
+
+  const onPointerUp = (e) => {
+    if (!drag) return;
+    const box = rectOf(drag);
+    const moved = drag.moved;
+    drag = null;
+    preview = null;
+    drawPreview([]);
+    marquee.style.display = 'none';
+
+    // A one-shot pick (the agent's browser_tool pick) has no second step and no
+    // selection to keep: what is under the cursor is the answer, and the overlay is
+    // torn down with it.
+    if (!${options.resident}) {
+      const el = document.elementFromPoint(e.clientX, e.clientY) || within(box)[0];
+      if (!el || inOverlay(el)) { finish('cancelled'); return; }
+      state.picks.push(elementPayload(el));
+      finish('picked');
+      return;
+    }
+
+    // A drag is a box — the blocks it covers. A press that did not move is a click, and
+    // a click asks about the element under the cursor, inline or not.
+    //
+    // With one exception: an empty patch of page resolves to body (or html), and taking
+    // that would frame the whole document for what the person meant as "nothing here" —
+    // so a click that lands on nothing clears the selection instead.
+    if (moved) {
+      selected = within(box);
+    } else {
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      selected = el && !inOverlay(el) && el !== document.body && el !== document.documentElement ? [el] : [];
+    }
+    paint();
+  };
+
+  // Choosing is not using: nothing the person pressed may activate the page under
+  // the mode.
+  const swallowClick = (e) => {
+    if (browserOwnsIt(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const onDblClick = (e) => {
+    if (browserOwnsIt(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    finish('cancelled');
+  };
+
+  const onViewportChange = () => {
+    // Everything is drawn in viewport coordinates, so a scroll moves what a live box is
+    // covering: the previews are recomputed along with the frames.
+    if (drag && drag.moved) {
+      preview = within(rectOf(drag));
+      drawPreview(preview);
+    }
+    paintHover(current);
+    paint();
+  };
+
+  function cleanup() {
+    window.removeEventListener('mousemove', onMove, true);
+    window.removeEventListener('pointerdown', onPointerDown, true);
+    window.removeEventListener('pointermove', onPointerMove, true);
+    window.removeEventListener('pointerup', onPointerUp, true);
+    window.removeEventListener('mousedown', swallowMouse, true);
+    window.removeEventListener('mouseup', swallowMouse, true);
+    window.removeEventListener('click', swallowClick, true);
+    window.removeEventListener('dblclick', onDblClick, true);
+    window.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('scroll', onViewportChange, true);
+    window.removeEventListener('resize', onViewportChange, true);
+    // Leave nothing of ours on the page.
+    const existing = document.getElementById('${OVERLAY_ID}');
+    if (existing) existing.remove();
+    try { delete window.${OVERLAY_CANCEL_KEY}; } catch (e) { window.${OVERLAY_CANCEL_KEY} = undefined; }
+  }
+
+  function finish(status) {
+    cleanup();
+    state.status = status;
+  }
+
+  addButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    addToConversation();
+  });
+
+  // One way out, and it is the same one the window's crosshair asks for: the overlay
+  // holds nothing of its own on the page, so leaving is leaving.
+  window.${OVERLAY_CANCEL_KEY} = () => finish('cancelled');
+  window.${OVERLAY_STATE_KEY} = state;
+
+  // On **window**, in the capture phase, so the mode sees a gesture before the page
+  // can: a page with its own pointerdown on window capture runs before anything on
+  // document, and one that stops propagation there would otherwise swallow the press
+  // whole — the overlay would draw no marquee, the page would act on the click, and the
+  // chip would start naming whatever the held cursor passed over.
+  window.addEventListener('mousemove', onMove, true);
+  window.addEventListener('pointerdown', onPointerDown, true);
+  window.addEventListener('pointermove', onPointerMove, true);
+  window.addEventListener('pointerup', onPointerUp, true);
+  window.addEventListener('mousedown', swallowMouse, true);
+  window.addEventListener('mouseup', swallowMouse, true);
+  window.addEventListener('click', swallowClick, true);
+  window.addEventListener('dblclick', onDblClick, true);
+  window.addEventListener('keydown', onKey, true);
+  window.addEventListener('scroll', onViewportChange, true);
+  window.addEventListener('resize', onViewportChange, true);
+  paint();
+
+  return true;
+})()`
+}
+
+/**
+ * Read the overlay's reports and clear them in one expression.
+ *
+ * Read-and-clear as a single step because two reads must not both see the same pick,
+ * and a pick that lands between them must not be dropped — the page's own script
+ * cannot run in the middle of this one.
+ */
+const OVERLAY_DRAIN_EXPRESSION = `(() => {
+  const state = window.${OVERLAY_STATE_KEY};
+  if (!state) return JSON.stringify({ status: 'missing', picks: [] });
+  const picks = state.picks || [];
+  state.picks = [];
+  return JSON.stringify({
+    status: state.status,
+    picks: picks,
+  });
+})()`
+
+const OVERLAY_CANCEL_EXPRESSION = `(() => { try { window.${OVERLAY_CANCEL_KEY} && window.${OVERLAY_CANCEL_KEY}(); } catch (e) {} })()`
+
+/**
+ * The bar's own word, in the window's language — the page has no i18n.
+ *
+ * Written on the button as well as used for hover and a screen reader: it is the one
+ * thing the bar does.
+ */
+export interface OverlayLabels {
+  /** Hand the selection to the conversation. */
+  add: string
+}
+
+/** One frame out of a screencast, and where it sits in the recording. */
+export interface ScreencastFrame {
+  /** The frame, as JPEG bytes. */
+  bytes: Buffer
+  /** ms from the start of the stream — which is what this is a picture of. */
+  offsetMs: number
+  /** CSS pixels of the viewport this frame shows (absent when Chromium omits the metadata). */
+  width?: number
+  height?: number
+}
+
+export interface ScreencastOptions {
+  /** Every frame, in the order Chromium produced them. */
+  onFrame: (frame: ScreencastFrame) => void
+  /** The stream ended without being asked to — the renderer died, or the session went away. */
+  onEnd?: (reason: string) => void
+  /** JPEG quality, 0-100. Default 70. */
+  quality?: number
+  /**
+   * Cap the frame at the source, in device pixels.
+   *
+   * The spatial half of "how much is this costing": a frame scaled here never has to be
+   * scaled later, and it is the encoding — not the capture — that pays for size.
+   */
+  maxWidth?: number
+  maxHeight?: number
+}
+
+/** Windows virtual key codes for the named keys a viewer's DOM event can carry. */
+const NAMED_VIRTUAL_KEYS: Record<string, number> = {
+  Enter: 13,
+  Tab: 9,
+  Escape: 27,
+  Backspace: 8,
+  Delete: 46,
+  Insert: 45,
+  ArrowLeft: 37,
+  ArrowUp: 38,
+  ArrowRight: 39,
+  ArrowDown: 40,
+  Home: 36,
+  End: 35,
+  PageUp: 33,
+  PageDown: 34,
+  ' ': 32,
+}
+
+/**
+ * The code CDP needs for *default* behaviour — focus moves, scrolling, ctrl+a.
+ *
+ * A viewer sends a DOM `key`/`code`; a plain character is its own code, and `code` covers the
+ * letter/digit keys whose `key` is layout-dependent.
+ */
+function virtualKeyCode(key: string, code?: string): number {
+  const named = NAMED_VIRTUAL_KEYS[key]
+  if (named) return named
+  if (key.length === 1) return key.toUpperCase().charCodeAt(0)
+  if (code && /^Key[A-Z]$/.test(code)) return code.charCodeAt(3)
+  if (code && /^Digit[0-9]$/.test(code)) return code.charCodeAt(5)
+  return 0
+}
+
+/** The button a CDP `buttons` bitmask is holding (left=1, right=2, middle=4). */
+function heldButton(buttons: number): 'left' | 'right' | 'middle' | null {
+  if (buttons & 1) return 'left'
+  if (buttons & 2) return 'right'
+  if (buttons & 4) return 'middle'
+  return null
+}
+
+/**
+ * Where the caret is, read from the page itself, in its viewport's CSS pixels.
+ *
+ * A viewer types through an invisible textarea of its own, so an input method's candidate window
+ * would otherwise appear wherever that element happens to sit. The caret belongs to a field on
+ * this side, so it has to be measured here: rich text answers from the selection's own rect, and
+ * `<input>` / `<textarea>` are measured by copying the text before the caret into a hidden
+ * stand-in of the field (the same mirror technique a browser's own IME plumbing uses).
+ *
+ * `null` when nothing editable has focus — the viewer then keeps its last anchor.
+ */
+const CARET_RECT_EXPRESSION = `(() => {
+  let el = document.activeElement;
+  // A field inside a shadow root is the focused one, not the host that owns it.
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  if (!el) return null;
+  const tag = el.tagName;
+  const isField = tag === 'INPUT' || tag === 'TEXTAREA';
+  if (!isField && !el.isContentEditable) return null;
+
+  if (!isField) {
+    const root = el.getRootNode();
+    const selection = root && root.getSelection ? root.getSelection() : window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0).cloneRange();
+    range.collapse(true);
+    const rects = range.getClientRects();
+    let rect = rects.length > 0 ? rects[0] : null;
+    if (!rect) {
+      const node = range.startContainer;
+      const box = node.nodeType === 1 ? node : node.parentElement;
+      if (!box) return null;
+      rect = box.getBoundingClientRect();
+    }
+    return { x: rect.left, y: rect.top, height: rect.height || 16 };
+  }
+
+  const style = getComputedStyle(el);
+  const value = el.value || '';
+  const caret = el.selectionStart == null ? value.length : el.selectionStart;
+  const mirror = document.createElement('div');
+  const m = mirror.style;
+  m.position = 'absolute';
+  m.left = '-9999px';
+  m.top = '0';
+  m.visibility = 'hidden';
+  m.whiteSpace = tag === 'INPUT' ? 'pre' : 'pre-wrap';
+  m.wordWrap = 'break-word';
+  m.overflow = 'hidden';
+  const props = ['boxSizing','width','height','paddingTop','paddingRight','paddingBottom','paddingLeft','borderTopWidth','borderRightWidth','borderBottomWidth','borderLeftWidth','fontFamily','fontSize','fontWeight','fontStyle','letterSpacing','lineHeight','textTransform','textIndent','direction'];
+  for (const prop of props) m[prop] = style[prop];
+  mirror.textContent = value.slice(0, caret);
+  const marker = document.createElement('span');
+  marker.textContent = value.slice(caret) || '.';
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const field = el.getBoundingClientRect();
+  const text = mirror.getBoundingClientRect();
+  const point = marker.getBoundingClientRect();
+  const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2 || 16;
+  mirror.remove();
+  return {
+    x: field.left + (point.left - text.left) - el.scrollLeft,
+    y: field.top + (point.top - text.top) - el.scrollTop,
+    height: lineHeight,
+  };
+})()`
+
 export class BrowserCDP {
   private webContents: WebContents
   private attached = false
   private detachListenerRegistered = false
   private idleDetachTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * The screencast in flight, if one is running — the page as a stream of frames.
+   *
+   * The listener is kept so the stream can be unhooked by the same handle it was hooked with,
+   * and `startedAtMs` is what the frames' offsets are counted from.
+   */
+  private screencast: {
+    onFrame: (frame: ScreencastFrame) => void
+    onEnd?: (reason: string) => void
+    listener: (event: unknown, method: string, params: any) => void
+    startedAtMs: number
+  } | null = null
+  /**
+   * A recording's stream, on a **second** CDP session of the same page.
+   *
+   * Chrome keeps one screencast per session, and a viewer already runs one on this page's own
+   * session. The recorder therefore attaches a flattened child session (`Target.attachToTarget`)
+   * and screencasts there, so a recording and people watching the tab are not mutually exclusive
+   * (the same shape agent-browser uses).
+   */
+  private recordingScreencast: {
+    onFrame: (frame: ScreencastFrame) => void
+    onEnd?: (reason: string) => void
+    listener: (event: unknown, method: string, params: any, sessionId?: string) => void
+    /** The flattened child session the recording's screencast runs on. */
+    sessionId: string
+    startedAtMs: number
+  } | null = null
   // Map from "@eN" refs to backend node IDs for the current snapshot.
   private refMap: Map<string, number> = new Map()
   // Map from "@eN" refs to semantic details captured during snapshot.
@@ -102,6 +910,31 @@ export class BrowserCDP {
   // Stable mapping for backend DOM nodes across snapshots.
   private backendNodeRefMap: Map<number, string> = new Map()
   private nextRefCounter = 0
+  // Caller-supplied init-script key → CDP identifier. Also gates idle detach:
+  // CDP drops `addScriptToEvaluateOnNewDocument` registrations on detach.
+  private initScriptIds: Map<string, string> = new Map()
+  /**
+   * Whether the page is being told it is focused — the active page, in an active window.
+   *
+   * Session state like the init scripts: detaching drops it, which is why asking for it holds
+   * the session ({@link holdsSessionState}). Asked for only while a conversation holds a tab
+   * (`BrowserPaneManager.setHeldBy`), so a page is told this for no longer than the work: a
+   * browser that is focused forever is not what a person's browser does, and it is the reading
+   * a site takes when it wants to know whether somebody is actually there.
+   */
+  private focusEmulated = false
+  /**
+   * Whether `Page.enable` has been sent on this session.
+   *
+   * `Page.addScriptToEvaluateOnNewDocument` is answered without it — an identifier
+   * comes back — but a registration made while the domain is **off** is inert: the
+   * script is never run in a document created afterwards (measured on Electron 39:
+   * register, reload, and the flag the script sets is still absent, with the
+   * debugger attached throughout). So the domain is turned on once per session,
+   * before the first registration, and forgotten on detach along with the
+   * registrations it is what makes live.
+   */
+  private pageDomainEnabled = false
 
   constructor(webContents: WebContents) {
     this.webContents = webContents
@@ -125,14 +958,40 @@ export class BrowserCDP {
       this.detachListenerRegistered = true
       this.webContents.debugger.on('detach', () => {
         this.attached = false
+        // Not always our own `detach()`: a session can end because the page's renderer died.
+        // (Opening DevTools does **not** end it on Electron 39 — measure in
+        // `spike/anti-bot-fingerprint.ts` round 5.) Whoever ended it, everything registered
+        // on it went with it, and this is the half of that which used to be forgotten.
+        this.forgetSessionState()
       })
     }
+  }
+
+  /**
+   * Persistent injections, focus emulation and a running screencast live in the CDP session:
+   * detaching silently drops them. Hold the attachment while any is active; the idle timer
+   * resumes once all are off.
+   *
+   * The screencast is held for a reason the other two do not have: **a static page produces no
+   * frames**, so there are no acks either, and the timer would fire on exactly the recording
+   * that has nothing else happening (`spike/capture-hidden-frames.cjs` has the frame counts;
+   * `CDP_IDLE_DETACH_MS` is 5s).
+   */
+  private holdsSessionState(): boolean {
+    return this.initScriptIds.size > 0
+      || this.focusEmulated
+      || this.screencast !== null
+      || this.recordingScreencast !== null
   }
 
   private resetIdleDetachTimer(): void {
     if (this.idleDetachTimer) {
       clearTimeout(this.idleDetachTimer)
+      this.idleDetachTimer = null
     }
+
+    if (this.holdsSessionState()) return
+
     this.idleDetachTimer = setTimeout(() => {
       if (this.attached) {
         mainLog.info('[browser-cdp] idle detach — detaching debugger after inactivity')
@@ -152,16 +1011,379 @@ export class BrowserCDP {
       } catch { /* ignore */ }
       this.attached = false
     }
+    this.forgetSessionState()
   }
 
-  private async send(method: string, params?: Record<string, unknown>): Promise<any> {
+  /**
+   * Everything the session was holding — registrations, the domain that makes them live, the
+   * focus the page was told about — went with it.
+   *
+   * One place, because both ends need it: our own {@link detach}, and a session ended from
+   * outside (the renderer dying), which is the half that used to be forgotten. A flag left
+   * standing is a reader answering for a page that has never heard of it, and the failures
+   * that produces are all silent — a stale `pageDomainEnabled` makes the next
+   * `addInitScript` skip `Page.enable`, so the registration is accepted and then never run.
+   */
+  private forgetSessionState(): void {
+    this.initScriptIds.clear()
+    this.pageDomainEnabled = false
+    this.focusEmulated = false
+    // A screencast is a registration on that session like the others, and unlike the others
+    // somebody outside is waiting on it: a recording whose frames stop is over, so the caller
+    // has to hear it here rather than discover it as a film that ends mid-action.
+    const screencast = this.screencast
+    if (screencast) {
+      this.screencast = null
+      // The listener has to come off here as well as in `stopScreencast`: `debugger.on` outlives
+      // a detach, so a listener left standing would be joined by another on the next recording
+      // and the pile would grow with every one that ended this way.
+      this.webContents.debugger.removeListener('message', screencast.listener)
+      screencast.onEnd?.('the CDP session ended')
+    }
+    // A recording's capture runs on a child session, but that session is an attachment of this
+    // one: it goes with the parent, and the recording has to hear about it.
+    const recording = this.recordingScreencast
+    if (recording) {
+      this.recordingScreencast = null
+      this.webContents.debugger.removeListener('message', recording.listener)
+      recording.onEnd?.('the CDP session ended')
+    }
+  }
+
+  /** One command. `sessionId` targets a flattened child session (the recording's capture). */
+  private async send(
+    method: string,
+    params?: Record<string, unknown>,
+    sessionId?: string,
+  ): Promise<any> {
     await this.ensureAttached()
     try {
-      return await this.webContents.debugger.sendCommand(method, params)
+      return await this.webContents.debugger.sendCommand(method, params, sessionId)
     } finally {
       // Keep detach countdown tied to completed calls so we do not detach mid-flight.
       this.resetIdleDetachTimer()
     }
+  }
+
+  /**
+   * Make the page read `document.hasFocus()` as `true` — and `visibilityState` as `visible` —
+   * without moving or activating any window.
+   *
+   * A tab being driven from the background is exactly the case a site's own "is somebody
+   * there?" check catches, and the honest answer to it here is `false`: the parking window a
+   * background tab lives in is never activated (that is its whole job — see
+   * `BrowserPaneManager.parkingWindowFor`), so the page is visible and unfocused. Measured
+   * what the two ways of changing that cost (`spike/anti-bot-fingerprint.ts` round 2): this
+   * one leaves the person's own window the focused one and the page reads `hasFocus: true`;
+   * `webContents.focus()` reaches the same reading only by activating the window holding the
+   * tab — which for a parked tab means handing the keyboard to a window nobody can see.
+   *
+   * Emulation, not a fact: it is set while a conversation holds the tab and cleared when it
+   * lets go, so a page that stops being worked on goes back to answering for the window it is
+   * really in.
+   */
+  async setFocusEmulation(enabled: boolean): Promise<void> {
+    if (this.focusEmulated === enabled) return
+    try {
+      await this.send('Emulation.setFocusEmulationEnabled', { enabled })
+    } catch (err) {
+      // Turning it *off* and failing means the session is already gone, and the emulation went
+      // with it — holding the session for a page that will never be told would hold it forever.
+      if (!enabled) this.focusEmulated = false
+      mainLog.warn(`[browser-cdp] focus emulation ${enabled ? 'on' : 'off'} ignored: ${String(err)}`)
+      return
+    }
+    this.focusEmulated = enabled
+    // `send` has just restarted the countdown against the value from *before* this call, so
+    // this is the line that turns "one more command" into "for as long as it is on".
+    this.resetIdleDetachTimer()
+  }
+
+  // ---------------------------------------------------------------------------
+  // Screencast — the page as a stream of frames
+  // ---------------------------------------------------------------------------
+
+  /** Whether a viewer's screencast is running on this page's own session. */
+  isScreencasting(): boolean {
+    return this.screencast !== null
+  }
+
+  /**
+   * A viewer's pointer and keyboard, delivered to the page itself.
+   *
+   * CDP rather than `webContents.sendInputEvent`: the latter sends keys to whatever widget the
+   * window has focused, which a background tab (or a window parked off every display) does not
+   * have — the same reason `key` uses CDP (see `browser-key-map`). Coordinates are CSS pixels in
+   * this page's viewport, which is what a viewer computes from the frame it is showing.
+   */
+  async dispatchInput(events: BrowserStreamInput[]): Promise<void> {
+    for (const event of events) {
+      if (event.type === 'mouse') {
+        const type = event.action === 'move' ? 'mouseMoved' : event.action === 'down' ? 'mousePressed' : 'mouseReleased'
+        await this.send('Input.dispatchMouseEvent', {
+          type,
+          x: event.x,
+          y: event.y,
+          // A move that belongs to a drag names the button it holds. Blink reads `none` as a bare
+          // hover: a selection never extends and a drag never starts (measured — `left` selects,
+          // `none` does not), and the compositor's scrollbar follows the same field. `none` is
+          // only for a move with nothing down.
+          button: event.action === 'move' ? heldButton(event.buttons ?? 0) ?? 'none' : event.button ?? 'left',
+          clickCount: event.action === 'move' ? 0 : event.clickCount ?? 1,
+          // Which buttons stay down for the whole gesture — a drag with the right button is not
+          // the same event stream as one with the left.
+          buttons: event.buttons ?? (event.action === 'down' ? 1 : 0),
+        })
+        continue
+      }
+
+      if (event.type === 'wheel') {
+        // There is no `Input.dispatchMouseWheel` in CDP — the wheel is a mouse event whose type
+        // is `mouseWheel`, sent through the same domain (and the same hit-testing pipeline).
+        await this.send('Input.dispatchMouseEvent', {
+          type: 'mouseWheel',
+          x: event.x,
+          y: event.y,
+          deltaX: event.deltaX,
+          deltaY: event.deltaY,
+        })
+        continue
+      }
+
+      if (event.type === 'text') {
+        // A composition arrives whole: `Input.insertText` is the same path a paste takes, so the
+        // page sees one `beforeinput`/`input` instead of a key event per pinyin letter.
+        await this.send('Input.insertText', { text: event.text })
+        continue
+      }
+
+      const virtual = virtualKeyCode(event.key, event.code)
+      await this.send('Input.dispatchKeyEvent', {
+        // `keyDown` (with `text`) inserts a character; `rawKeyDown` is the key without one.
+        type: event.action === 'down' ? (event.text ? 'keyDown' : 'rawKeyDown') : 'keyUp',
+        key: event.key,
+        ...(event.code ? { code: event.code } : {}),
+        ...(event.action === 'down' && event.text ? { text: event.text } : {}),
+        ...(virtual ? { windowsVirtualKeyCode: virtual, nativeVirtualKeyCode: virtual } : {}),
+        modifiers: event.modifiers ?? 0,
+      })
+    }
+  }
+
+  /**
+   * Where the caret is in this page, in its viewport's CSS pixels.
+   *
+   * A viewer parks its invisible input here so the input method's candidate window shows up at
+   * the caret instead of wherever the pointer last was. `null` when nothing editable has focus,
+   * or the page cannot answer (navigating, gone) — the viewer keeps its last anchor then.
+   */
+  async caretRect(): Promise<BrowserCaretRect | null> {
+    try {
+      const response = await this.send('Runtime.evaluate', {
+        expression: CARET_RECT_EXPRESSION,
+        returnByValue: true,
+      })
+      const value = response?.result?.value
+      if (!value || typeof value.x !== 'number' || typeof value.y !== 'number') return null
+      return {
+        x: value.x,
+        y: value.y,
+        height: typeof value.height === 'number' ? value.height : 16,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * The page as frames, for as long as it is asked for.
+   *
+   * This is Chromium's own remote-viewing stream, and the one capture path that is *meant* for
+   * a page nobody is looking at: measured, it keeps delivering while the tab's window is off
+   * every display and while it is hidden (`spike/capture-hidden-frames.cjs` — 120 frames per
+   * 2s in all three states). It is also the agent's half of recording; the person's is display
+   * media, and the two share nothing but the file they write to.
+   *
+   * Two things here are load-bearing rather than housekeeping:
+   *
+   * - **Every frame is acked.** Chromium waits for `Page.screencastFrameAck` between frames;
+   *   without it the stream delivers one frame and stops. The ack goes through `send`, so it
+   *   also counts as activity for the idle timer.
+   * - **The stream holds the session** (see {@link holdsSessionState}): a static page sends no
+   *   frames and so no acks, and the 5s idle timer would then detach the debugger out from
+   *   under exactly the recording that has nothing else happening.
+   */
+  async startScreencast(options: ScreencastOptions): Promise<void> {
+    await this.stopScreencast()
+    await this.ensureAttached()
+
+    const startedAtMs = Date.now()
+    const listener = (_event: unknown, method: string, params: any, sessionId?: string): void => {
+      // A frame from a child session is the recording's (`startRecordingScreencast`); this
+      // stream only owns the page's own session.
+      if (sessionId) return
+      if (method !== 'Page.screencastFrame') return
+      // A frame arriving after the stream was stopped — or after the session went away —
+      // belongs to nothing. Dropping it is not a lost frame; it is the one that would have
+      // been delivered to nobody.
+      const current = this.screencast
+      if (!current) return
+
+      const data = params?.data
+      if (typeof data === 'string' && data.length > 0) {
+        // Chromium's own timestamp when it is there: it is when the frame was taken, which is
+        // what the recording's clock should follow, not when it reached us.
+        const atMs = typeof params?.metadata?.timestamp === 'number'
+          ? params.metadata.timestamp * 1000
+          : Date.now()
+        current.onFrame({
+          bytes: Buffer.from(data, 'base64'),
+          offsetMs: Math.max(0, Math.round(atMs - startedAtMs)),
+          ...(typeof params?.metadata?.deviceWidth === 'number' ? { width: params.metadata.deviceWidth } : {}),
+          ...(typeof params?.metadata?.deviceHeight === 'number' ? { height: params.metadata.deviceHeight } : {}),
+        })
+      }
+
+      void this.send('Page.screencastFrameAck', { sessionId: params?.sessionId }).catch(() => {})
+    }
+
+    this.screencast = { onFrame: options.onFrame, onEnd: options.onEnd, listener, startedAtMs }
+    this.webContents.debugger.on('message', listener)
+
+    try {
+      await this.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: options.quality ?? 70,
+        everyNthFrame: 1,
+        ...(options.maxWidth ? { maxWidth: options.maxWidth } : {}),
+        ...(options.maxHeight ? { maxHeight: options.maxHeight } : {}),
+      })
+    } catch (error) {
+      // A stream that never started must not leave a listener, a held session, or a caller
+      // believing it is recording.
+      this.webContents.debugger.removeListener('message', listener)
+      this.screencast = null
+      throw error
+    }
+
+    // From here the session is held by the stream. `send` restarted the countdown against the
+    // value from *before* this call, so this is the line that turns "one more command" into
+    // "for as long as the stream is on".
+    this.resetIdleDetachTimer()
+  }
+
+  /** End the stream. Safe to call when none is running. */
+  async stopScreencast(): Promise<void> {
+    const current = this.screencast
+    if (!current) return
+
+    this.screencast = null
+    this.webContents.debugger.removeListener('message', current.listener)
+    try {
+      await this.send('Page.stopScreencast')
+    } catch {
+      // The session may already be gone, in which case the stream went with it.
+    }
+    this.resetIdleDetachTimer()
+  }
+
+  /**
+   * A recording's own stream, on a flattened child session.
+   *
+   * Chrome keeps one screencast per CDP session, and a viewer's stream owns this page's session
+   * (`startScreencast`). A recording therefore attaches a child session
+   * (`Target.attachToTarget`, flattened) and runs its capture there, so watching a tab and
+   * recording it are not mutually exclusive. The cost is a second encode for as long as both
+   * are on — the same trade agent-browser makes.
+   *
+   * Frames and acks travel on the child session; the ack must name the child's frame, or
+   * Chromium waits forever after the first one.
+   */
+  async startRecordingScreencast(options: ScreencastOptions): Promise<void> {
+    await this.stopRecordingScreencast()
+    await this.ensureAttached()
+
+    // The page this debugger is attached to. Only the root session can name it, and
+    // `Target.attachToTarget` needs the id.
+    const info = await this.send('Target.getTargetInfo')
+    const targetId = String(info?.targetInfo?.targetId ?? '')
+    if (!targetId) throw new Error('The page did not report a target id.')
+
+    const attached = await this.send('Target.attachToTarget', { targetId, flatten: true })
+    const sessionId = String(attached?.sessionId ?? '')
+    if (!sessionId) throw new Error('The page did not open a second session for the recording.')
+
+    const startedAtMs = Date.now()
+    const listener = (_event: unknown, method: string, params: any, eventSessionId?: string): void => {
+      // Frames on the page's own session belong to the viewer's capture, not to this one.
+      if (eventSessionId !== sessionId) return
+      if (method !== 'Page.screencastFrame') return
+      const current = this.recordingScreencast
+      if (!current) return
+
+      const data = params?.data
+      if (typeof data === 'string' && data.length > 0) {
+        const atMs = typeof params?.metadata?.timestamp === 'number'
+          ? params.metadata.timestamp * 1000
+          : Date.now()
+        current.onFrame({
+          bytes: Buffer.from(data, 'base64'),
+          offsetMs: Math.max(0, Math.round(atMs - startedAtMs)),
+          ...(typeof params?.metadata?.deviceWidth === 'number' ? { width: params.metadata.deviceWidth } : {}),
+          ...(typeof params?.metadata?.deviceHeight === 'number' ? { height: params.metadata.deviceHeight } : {}),
+        })
+      }
+
+      void this.send('Page.screencastFrameAck', { sessionId: params?.sessionId }, sessionId).catch(() => {})
+    }
+
+    this.recordingScreencast = {
+      onFrame: options.onFrame,
+      onEnd: options.onEnd,
+      listener,
+      sessionId,
+      startedAtMs,
+    }
+    this.webContents.debugger.on('message', listener)
+
+    try {
+      await this.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: options.quality ?? 70,
+        everyNthFrame: 1,
+        ...(options.maxWidth ? { maxWidth: options.maxWidth } : {}),
+        ...(options.maxHeight ? { maxHeight: options.maxHeight } : {}),
+      }, sessionId)
+    } catch (error) {
+      this.webContents.debugger.removeListener('message', listener)
+      this.recordingScreencast = null
+      await this.send('Target.detachFromTarget', { sessionId }).catch(() => {})
+      throw error
+    }
+
+    // Held for as long as it runs: a static page sends no frames (and so no acks), and the
+    // parent detaching would take the child session with it (`holdsSessionState`).
+    this.resetIdleDetachTimer()
+  }
+
+  /** End the recording's stream and its session. Safe to call when none is running. */
+  async stopRecordingScreencast(): Promise<void> {
+    const current = this.recordingScreencast
+    if (!current) return
+
+    this.recordingScreencast = null
+    this.webContents.debugger.removeListener('message', current.listener)
+    try {
+      await this.send('Page.stopScreencast', undefined, current.sessionId)
+    } catch {
+      // Already gone with the session; the detach below is then a no-op too.
+    }
+    try {
+      await this.send('Target.detachFromTarget', { sessionId: current.sessionId })
+    } catch {
+      // The page may have gone already.
+    }
+    this.resetIdleDetachTimer()
   }
 
   private allocateRef(backendDOMNodeId?: number): string {
@@ -450,6 +1672,95 @@ export class BrowserCDP {
     }
   }
 
+  /**
+   * Capture a rectangle of the page by **cropping pixels that already exist** — including pixels
+   * outside the viewport, which `capturePage(rect)` cannot reach: that one clamps to the viewport
+   * and hands back a smaller image without saying so. Nothing is resized, zoomed or scrolled for
+   * this: the clip is a rectangle of the document as it stands.
+   *
+   * `clip` is in **document** coordinates, so the caller's viewport-relative rect (what
+   * `getBoundingClientRect` gives) is offset by the scroll position here.
+   *
+   * `scale` is image pixels per CSS pixel — 1 is the element's own pixel size, `devicePixelRatio`
+   * is what the rest of the app's shots use.
+   */
+  async captureRegion(
+    rect: { x: number; y: number; width: number; height: number },
+    options: { scale?: number; format?: 'png' | 'jpeg'; quality?: number } = {},
+  ): Promise<{ buffer: Buffer; width: number; height: number; beyondViewport: boolean }> {
+    const scale = options.scale && options.scale > 0 ? options.scale : 1
+    const metrics = await this.getViewportMetrics()
+    const scrollX = Number(metrics.scrollX ?? 0)
+    const scrollY = Number(metrics.scrollY ?? 0)
+    const viewportWidth = Number(metrics.width ?? 0)
+    const viewportHeight = Number(metrics.height ?? 0)
+
+    // The rect as given is what the page shows; a sliver of rounding error is cheaper than a
+    // clipped edge, so the box grows outward to whole pixels before it is clipped out.
+    const left = Math.floor(rect.x)
+    const top = Math.floor(rect.y)
+    const right = Math.ceil(rect.x + rect.width)
+    const bottom = Math.ceil(rect.y + rect.height)
+    const width = Math.max(1, right - left)
+    const height = Math.max(1, bottom - top)
+
+    const beyondViewport =
+      right + scrollX > scrollX + viewportWidth || bottom + scrollY > scrollY + viewportHeight
+
+    const result = await this.send('Page.captureScreenshot', {
+      format: options.format === 'jpeg' ? 'jpeg' : 'png',
+      ...(options.format === 'jpeg' ? { quality: Math.round((options.quality ?? 0.8) * 100) } : {}),
+      clip: { x: left + scrollX, y: top + scrollY, width, height, scale },
+      captureBeyondViewport: true,
+      // Measured, twice, on this capture path (a parked window is what a background tab is captured
+      // through):
+      //   fromSurface: true  — the clip comes back at the right size, but everything past the
+      //                        viewport's edge is page background: captureBeyondViewport is ignored,
+      //                        because the surface only exists for the viewport.
+      //   fromSurface: false — the whole image is black.
+      // So this returns **real pixels for the part that was on screen**, and nothing for the rest.
+      // Callers that need the whole element must resize the viewport themselves (an explicit act);
+      // `--beyond-viewport` says so when it hands back an image with unpainted area.
+      fromSurface: true,
+    })
+
+    const data = result?.data
+    if (typeof data !== 'string' || data.length === 0) {
+      throw new Error('Page.captureScreenshot returned no image data')
+    }
+
+    return {
+      buffer: Buffer.from(data, 'base64'),
+      width: Math.round(width * scale),
+      height: Math.round(height * scale),
+      beyondViewport,
+    }
+  }
+
+  /**
+   * The page as it is now, through the debugger session.
+   *
+   * `webContents.capturePage` needs the window to have a **display surface**. A window created in
+   * the background has never been on a display, and on macOS that is fatal for the capture — both
+   * for the window itself and for the parking window holding its tabs ("Current display surface
+   * not available for capture"). Chromium's own screenshot renders the page from the renderer
+   * instead, so it answers for a tab nobody has ever seen.
+   */
+  async captureViewport(options: { format?: 'png' | 'jpeg'; quality?: number } = {}): Promise<Buffer> {
+    const result = await this.send('Page.captureScreenshot', {
+      format: options.format === 'jpeg' ? 'jpeg' : 'png',
+      ...(options.format === 'jpeg' ? { quality: Math.round((options.quality ?? 0.8) * 100) } : {}),
+      // The viewport as the viewer sees it: no clip, nothing beyond it.
+      fromSurface: true,
+    })
+
+    const data = result?.data
+    if (typeof data !== 'string' || data.length === 0) {
+      throw new Error('Page.captureScreenshot returned no image data')
+    }
+    return Buffer.from(data, 'base64')
+  }
+
   async getViewportMetrics(): Promise<ViewportMetrics> {
     const result = await this.send('Runtime.evaluate', {
       expression: `(() => ({
@@ -571,7 +1882,184 @@ export class BrowserCDP {
   }
 
   // ---------------------------------------------------------------------------
-  // Native Mouse Input (uses webContents.sendInputEvent for trusted events)
+  // Element picker
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Put the overlay on the page and leave it there.
+   *
+   * Re-injecting is also how a page is re-armed: the script tears down whatever was
+   * installed before it, so an arm is idempotent and a page that navigated out from
+   * under an armed overlay gets a fresh one.
+   */
+  async armOverlay(options: {
+    /** The app's accent, as a concrete CSS colour — see `buildOverlayScript`. */
+    accent: string
+    /** The bar's word, in the caller's language — the toolbar renderer has i18n. */
+    labels?: Partial<OverlayLabels>
+    /**
+     * Draw the bar.
+     *
+     * The window's own mode does; a one-shot pick does not — the agent asked for one
+     * element, and a bar nobody asked for is chrome over somebody's page.
+     */
+    bar?: boolean
+    /** Stay mounted after a selection — see `buildOverlayScript`. */
+    resident?: boolean
+  }): Promise<void> {
+    const script = buildOverlayScript({
+      accent: options.accent,
+      bar: options.bar === true,
+      labels: { ...DEFAULT_OVERLAY_LABELS, ...options.labels },
+      resident: options.resident === true,
+    })
+    await this.send('Runtime.evaluate', { expression: script })
+  }
+
+  /**
+   * Take what the overlay has reported since the last call, and clear it.
+   *
+   * Never throws on a missing overlay: "there is no overlay in this document" is an
+   * answer (the page navigated), not a failure.
+   */
+  async drainOverlay(): Promise<OverlayReport> {
+    const res = await this.send('Runtime.evaluate', {
+      expression: OVERLAY_DRAIN_EXPRESSION,
+      returnByValue: true,
+    })
+
+    const raw = res?.result?.value
+    if (typeof raw !== 'string') return { status: 'missing', picks: [] }
+
+    try {
+      const parsed = JSON.parse(raw) as {
+        status?: string
+        picks?: PickedElement[]
+      }
+      return {
+        status: (parsed.status as OverlayReport['status']) ?? 'missing',
+        picks: Array.isArray(parsed.picks) ? parsed.picks : [],
+      }
+    } catch {
+      return { status: 'missing', picks: [] }
+    }
+  }
+
+  /**
+   * Prompt the user to click an element on the page, once.
+   *
+   * Returns the picked element's stable selector + geometry, or `null` when the
+   * user pressed Escape, the pick was cancelled, or the timeout elapsed. The
+   * window's own mode is the resident, bar-carrying one (`armOverlay` +
+   * `drainOverlay`); this is what a caller that asked for one element gets — the
+   * same overlay, without the bar and gone as soon as it answers.
+   *
+   * Polls instead of awaiting one long-lived CDP promise: each poll is a short
+   * call, so the idle-detach timer keeps being reset and cannot fire mid-pick.
+   */
+  async pickElement(options: {
+    timeoutMs?: number
+    pollMs?: number
+    /** The app's accent, as a concrete CSS colour — see `buildOverlayScript`. */
+    accent: string
+  }): Promise<PickedElement | null> {
+    const timeoutMs = Math.max(1_000, options.timeoutMs ?? 120_000)
+    const pollMs = Math.max(50, options.pollMs ?? 200)
+
+    await this.armOverlay({ accent: options.accent, bar: false, resident: false })
+
+    const deadline = Date.now() + timeoutMs
+    try {
+      while (Date.now() < deadline) {
+        const report = await this.drainOverlay()
+
+        if (report.picks.length > 0) return report.picks[0] ?? null
+        if (report.status === 'cancelled' || report.status === 'missing') return null
+
+        await new Promise((resolve) => setTimeout(resolve, pollMs))
+      }
+
+      mainLog.info('[browser-cdp] picker timed out — no element selected')
+      return null
+    } finally {
+      await this.teardownOverlay()
+    }
+  }
+
+  /** Take the overlay down. Safe to call when none is mounted. */
+  async teardownOverlay(): Promise<void> {
+    try {
+      await this.send('Runtime.evaluate', { expression: OVERLAY_CANCEL_EXPRESSION })
+    } catch (err) {
+      mainLog.debug(`[browser-cdp] teardownOverlay ignored: ${String(err)}`)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Persistent injection (survives reload / navigation)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Register a script that runs in every new document, before the page's own
+   * scripts — the mechanism behind "an injection outlives a reload".
+   *
+   * `key` is caller-chosen and re-registering the same key replaces the previous
+   * script, so re-applying the same injection is idempotent.
+   *
+   * While any init script is registered the debugger is held attached, because
+   * CDP drops these registrations when the session detaches — and the Page domain
+   * has to be on, or the registration is accepted and then never run
+   * ({@link enablePageDomain}).
+   */
+  async addInitScript(key: string, source: string): Promise<string> {
+    await this.enablePageDomain()
+    await this.removeInitScript(key)
+
+    const result = await this.send('Page.addScriptToEvaluateOnNewDocument', { source })
+    const identifier = String(result?.identifier ?? '')
+    if (identifier) {
+      this.initScriptIds.set(key, identifier)
+    }
+    this.resetIdleDetachTimer()
+    return identifier
+  }
+
+  /** Unregister a previously added init script. No-op when the key is unknown. */
+  async removeInitScript(key: string): Promise<void> {
+    const identifier = this.initScriptIds.get(key)
+    if (!identifier) return
+
+    this.initScriptIds.delete(key)
+    try {
+      await this.send('Page.removeScriptToEvaluateOnNewDocument', { identifier })
+    } catch (err) {
+      mainLog.debug(`[browser-cdp] removeInitScript(${key}) ignored: ${String(err)}`)
+    }
+    this.resetIdleDetachTimer()
+  }
+
+  /** Keys of every currently registered init script, in registration order. */
+  listInitScriptKeys(): string[] {
+    return Array.from(this.initScriptIds.keys())
+  }
+
+  /**
+   * Turn the Page domain on, once per session.
+   *
+   * Without it `Page.addScriptToEvaluateOnNewDocument` is a registration nothing
+   * reads back: the script runs in no document at all, which is indistinguishable
+   * from a patch that changed nothing ({@link pageDomainEnabled} for the
+   * measurement). Done here rather than at attach time so that the domains this
+   * session uses stay the ones its features need.
+   */
+  private async enablePageDomain(): Promise<void> {
+    if (this.pageDomainEnabled) return
+    await this.send('Page.enable')
+    this.pageDomainEnabled = true
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mouse Input (through CDP — see sendMouseEvent for why not native injection)
   // ---------------------------------------------------------------------------
 
   /**
@@ -608,77 +2096,89 @@ export class BrowserCDP {
     return points
   }
 
-  private sendMouseEvent(type: 'mouseMove' | 'mouseDown' | 'mouseUp', x: number, y: number, button?: 'left' | 'right' | 'middle', clickCount?: number): void {
-    const event: Record<string, unknown> = { type, x: Math.round(x), y: Math.round(y) }
-    if (button) event.button = button
-    if (clickCount !== undefined) event.clickCount = clickCount
-    this.webContents.sendInputEvent(event as any)
-  }
-
-  // Explicit CDP mouse fallback methods kept for resilience.
-  private async clickAtCDP(x: number, y: number): Promise<void> {
-    await this.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x,
-      y,
-      button: 'left',
-      clickCount: 1,
-    })
-    await this.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      x,
-      y,
-      button: 'left',
-      clickCount: 1,
-    })
-  }
-
-  private async dragCDP(x1: number, y1: number, x2: number, y2: number): Promise<void> {
-    const dx = x2 - x1
-    const dy = y2 - y1
-    const distance = Math.sqrt(dx * dx + dy * dy)
-    const steps = Math.max(5, Math.min(20, Math.round(distance / 20)))
-    let lastX = x1
-    let lastY = y1
-
-    await this.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x: x1,
-      y: y1,
-      button: 'left',
-      buttons: 1,
-      clickCount: 1,
-    })
-
-    try {
-      for (let i = 1; i <= steps; i++) {
-        const t = i / steps
-        const x = Math.round(x1 + dx * t)
-        const y = Math.round(y1 + dy * t)
-        await this.send('Input.dispatchMouseEvent', {
-          type: 'mouseMoved',
-          x,
-          y,
-          button: 'left',
-          buttons: 1,
-        })
-        lastX = x
-        lastY = y
-
-        if (i < steps) {
-          await new Promise(resolve => setTimeout(resolve, 10))
-        }
-      }
-    } finally {
-      await this.send('Input.dispatchMouseEvent', {
-        type: 'mouseReleased',
-        x: lastX,
-        y: lastY,
-        button: 'left',
-        buttons: 0,
-        clickCount: 1,
+  /**
+   * Scroll the tab, the way a person scrolling there would, and say what happened.
+   *
+   * `window.scrollBy` first, because it is deterministic: it scrolls the document
+   * whatever the pointer happens to be over, which is what `scroll down 400` means
+   * on an ordinary page. Only when the document has nowhere to go does a real wheel
+   * event go to the middle of the viewport — that is what reaches a scroller which
+   * is *not* the document: an app shell whose list scrolls inside a frame, an
+   * embedded viewer, a dialog. A `mouseWheel` through CDP goes into the browser's
+   * input pipeline, which hit-tests and routes to whatever is there (the same
+   * reason clicks go through CDP — see sendMouseEvent).
+   *
+   * Neither reaching anything is reported rather than pretended: `documentMoved`
+   * says whether the document itself moved, and when the gesture was handed on,
+   * that is stated instead of claiming a scroll that may not have happened.
+   */
+  async scrollBy(deltaX: number, deltaY: number): Promise<{ viaWheel: boolean; documentMoved: boolean }> {
+    const metrics = async (): Promise<[number, number, number, number]> => {
+      const res = await this.send('Runtime.evaluate', {
+        expression: 'JSON.stringify([window.scrollX, window.scrollY, window.innerWidth, window.innerHeight])',
+        returnByValue: true,
       })
+      try {
+        const parsed = JSON.parse(res?.result?.value ?? '[0,0,0,0]')
+        return [Number(parsed[0]) || 0, Number(parsed[1]) || 0, Number(parsed[2]) || 0, Number(parsed[3]) || 0]
+      } catch {
+        return [0, 0, 0, 0]
+      }
     }
+
+    const before = await metrics()
+    await this.send('Runtime.evaluate', { expression: `window.scrollBy(${deltaX}, ${deltaY})` })
+    const afterScript = await metrics()
+    if (afterScript[0] !== before[0] || afterScript[1] !== before[1]) {
+      return { viaWheel: false, documentMoved: true }
+    }
+
+    await this.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: Math.round(afterScript[2] / 2),
+      y: Math.round(afterScript[3] / 2),
+      deltaX,
+      deltaY,
+    })
+    const afterWheel = await metrics()
+    return { viaWheel: true, documentMoved: afterWheel[0] !== before[0] || afterWheel[1] !== before[1] }
+  }
+
+  /**
+   * One mouse step, dispatched through CDP.
+   *
+   * Not `webContents.sendInputEvent`: a natively injected mouse event is handed
+   * to the TOP renderer, which cannot deliver it into a frame that lives in
+   * another process — so a click on a cross-origin iframe (a YouTube embed, a
+   * payment form, any third-party widget) did nothing at all while the command
+   * reported success. Measured on one page with two frames (same-origin and
+   * opaque): the native injector reached the same-origin frame and never the
+   * opaque one; CDP reached both, and the page still sees `isTrusted: true`
+   * (`spike/cdp-oopif-click.cjs`). CDP goes through the browser's own input
+   * pipeline, which hit-tests the page and routes to the right frame on its own
+   * — so the coordinates stay page coordinates, exactly as before.
+   *
+   * `buttons` is the state of the buttons *during* the event: a move that is part
+   * of a drag carries 1, or the drag reads as a hover.
+   */
+  private async sendMouseEvent(
+    type: 'mouseMove' | 'mouseDown' | 'mouseUp',
+    x: number,
+    y: number,
+    button?: 'left' | 'right' | 'middle',
+    clickCount?: number,
+    buttons = 0,
+  ): Promise<void> {
+    const cdpType = type === 'mouseMove' ? 'mouseMoved' : type === 'mouseDown' ? 'mousePressed' : 'mouseReleased'
+    const params: Record<string, unknown> = {
+      type: cdpType,
+      x: Math.round(x),
+      y: Math.round(y),
+      buttons: type === 'mouseDown' ? Math.max(buttons, 1) : buttons,
+    }
+    if (button) params.button = button
+    if (clickCount !== undefined) params.clickCount = clickCount
+    await this.send('Input.dispatchMouseEvent', params)
   }
 
   // ---------------------------------------------------------------------------
@@ -687,73 +2187,211 @@ export class BrowserCDP {
 
   async clickAtCoordinates(x: number, y: number): Promise<void> {
     try {
-      // Generate short trajectory to the click target for realism
+      // A short trajectory to the click target, for realism. Through CDP like
+      // every other mouse step: the motion is the same, and it reaches frames
+      // the native injector never could.
       const startX = x + (Math.random() - 0.5) * 60
       const startY = y + (Math.random() - 0.5) * 60
       const trajectory = this.generateTrajectory(startX, startY, x, y, 3 + Math.floor(Math.random() * 3))
 
       for (const point of trajectory) {
-        this.sendMouseEvent('mouseMove', point.x, point.y)
+        await this.sendMouseEvent('mouseMove', point.x, point.y)
         await new Promise(resolve => setTimeout(resolve, 4 + Math.random() * 8))
       }
 
-      this.sendMouseEvent('mouseDown', Math.round(x), Math.round(y), 'left', 1)
+      await this.sendMouseEvent('mouseDown', Math.round(x), Math.round(y), 'left', 1)
       await new Promise(resolve => setTimeout(resolve, 20 + Math.random() * 40))
-      this.sendMouseEvent('mouseUp', Math.round(x), Math.round(y), 'left', 1)
+      await this.sendMouseEvent('mouseUp', Math.round(x), Math.round(y), 'left', 1)
     } catch (error) {
-      mainLog.warn(`[browser-cdp] native clickAt failed, falling back to CDP: ${error instanceof Error ? error.message : String(error)}`)
-      await this.clickAtCDP(x, y)
+      // There is no second mechanism to fall back to (native injection is the
+      // one that silently did nothing on cross-origin frames), so this says so.
+      mainLog.warn(`[browser-cdp] click at (${x}, ${y}) failed: ${error instanceof Error ? error.message : String(error)}`)
+      throw error
     }
   }
 
   async drag(x1: number, y1: number, x2: number, y2: number): Promise<void> {
+    const dx = x2 - x1
+    const dy = y2 - y1
+    const distance = Math.sqrt(dx * dx + dy * dy)
+    const steps = Math.max(5, Math.min(20, Math.round(distance / 20)))
+
+    let lastX = x1
+    let lastY = y1
+
     try {
-      const dx = x2 - x1
-      const dy = y2 - y1
-      const distance = Math.sqrt(dx * dx + dy * dy)
-      const steps = Math.max(5, Math.min(20, Math.round(distance / 20)))
-
-      // Move to start position
-      this.sendMouseEvent('mouseMove', x1, y1)
-      await new Promise(resolve => setTimeout(resolve, 10))
-
-      // Press at start position
-      this.sendMouseEvent('mouseDown', x1, y1, 'left', 1)
+      await this.sendMouseEvent('mouseDown', x1, y1, 'left', 1)
       await new Promise(resolve => setTimeout(resolve, 30))
 
-      let lastX = x1
-      let lastY = y1
+      // The moves carry buttons: 1 — a move without it reads as a hover, and the
+      // drag never starts.
+      const trajectory = this.generateTrajectory(x1, y1, x2, y2, steps)
+      for (let i = 0; i < trajectory.length; i++) {
+        const point = trajectory[i]!
+        await this.sendMouseEvent('mouseMove', point.x, point.y, 'left', undefined, 1)
+        lastX = point.x
+        lastY = point.y
 
-      try {
-        const trajectory = this.generateTrajectory(x1, y1, x2, y2, steps)
-        for (let i = 0; i < trajectory.length; i++) {
-          const point = trajectory[i]!
-          this.sendMouseEvent('mouseMove', point.x, point.y)
-          lastX = point.x
-          lastY = point.y
-
-          if (i < trajectory.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 8 + Math.random() * 12))
-          }
+        if (i < trajectory.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 8 + Math.random() * 12))
         }
-      } catch (error) {
-        // Always release even on error
-        this.sendMouseEvent('mouseUp', lastX, lastY, 'left', 1)
-        throw error
       }
-
-      await new Promise(resolve => setTimeout(resolve, 20))
-      this.sendMouseEvent('mouseUp', lastX, lastY, 'left', 1)
     } catch (error) {
-      mainLog.warn(`[browser-cdp] native drag failed, falling back to CDP: ${error instanceof Error ? error.message : String(error)}`)
-      await this.dragCDP(x1, y1, x2, y2)
+      // The page must not be left mid-drag, but a failed release must not hide
+      // what actually went wrong.
+      await this.releaseDrag(lastX, lastY)
+      throw error
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await this.sendMouseEvent('mouseUp', lastX, lastY, 'left', 1)
+  }
+
+  /** Let go of a drag, best effort: the caller's own error is the one that matters. */
+  private async releaseDrag(x: number, y: number): Promise<void> {
+    try {
+      await this.sendMouseEvent('mouseUp', x, y, 'left', 1)
+    } catch (error) {
+      mainLog.warn(`[browser-cdp] drag release at (${x}, ${y}) failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
+  /**
+   * One keystroke: down, held for a moment, up.
+   *
+   * The hold is not decoration — a real key is down for 25–150 ms, and back-to-back
+   * `keyDown`/`keyUp` 0.6 ms apart is what a loop does, not a hand (measured on a
+   * page: 0.6–0.8 ms between the two). It defaults to a plausible middle and is
+   * paced by `typeText` so that key-down → key-up → pause adds up to one interval.
+   */
+  private async sendChar(char: string, holdMs = 40): Promise<void> {
+    const stroke = keyStroke(char)
+    await this.sendStroke(stroke, holdMs, stroke.text ?? char)
+  }
+
+  /** The shared shape of one key: the same parameters `pressKey` builds, without the probe. */
+  private async sendStroke(stroke: ReturnType<typeof keyStroke>, holdMs: number, text?: string): Promise<void> {
+    const params = {
+      key: stroke.key,
+      code: stroke.code,
+      windowsVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      modifiers: 0,
+    }
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...(text !== undefined ? { text } : {}), ...params })
+    await new Promise(resolve => setTimeout(resolve, holdMs))
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
+  }
+
+  /**
+   * Type text into whatever holds the focus — the `browser_tool type` path.
+   *
+   * Two things it is deliberate about, both measured on a real page:
+   *
+   * - **Not every character is a key.** Seven Chinese characters used to arrive
+   *   as seven `keydown`s carrying `key: '前'`, `code: ''`, `keyCode: 0` — a shape
+   *   no keyboard and no IME produces. Characters without a physical key now go
+   *   in as one `Input.insertText` run instead (see `typeSteps`), which is the
+   *   browser's own "insert this text" and the path a paste takes.
+   * - **Keys arrive at a hand's pace, not at the speed of a loop.** The same
+   *   seven characters landed inside 24 ms — 2.5–5.9 ms apart, which is 400
+   *   characters a second; anything measuring keystroke intervals sees that
+   *   instantly. Each interval is drawn around a pace rather than fixed, and the
+   *   pace shrinks for long text so a paragraph stays a paragraph: `fill` is the
+   *   path for bulk, and this one is for looking like a person typed it.
+   */
   async typeText(text: string): Promise<void> {
-    for (const char of text) {
-      await this.send('Input.dispatchKeyEvent', { type: 'keyDown', text: char })
-      await this.send('Input.dispatchKeyEvent', { type: 'keyUp', text: char })
+    if (!text) return
+    // ~4 s for a whole string, never slower than 180 ms a character and never
+    // faster than 14 ms — which is still a machine, but only for text nobody
+    // would type by hand anyway.
+    const pace = Math.min(TYPE_PACE_MAX_MS, Math.max(TYPE_PACE_MIN_MS, Math.floor(TYPE_BUDGET_MS / text.length)))
+    const hold = Math.min(60, Math.max(8, Math.round(pace * 0.35)))
+
+    for (const step of typeSteps(text)) {
+      if (step.kind === 'insert') {
+        await this.send('Input.insertText', { text: step.text })
+        await new Promise(resolve => setTimeout(resolve, jitter(pace)))
+        continue
+      }
+      if (step.kind === 'named') {
+        const stroke = keyStroke(step.key)
+        await this.sendStroke(stroke, jitter(hold), stroke.text)
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, jitter(pace) - hold)))
+        continue
+      }
+      await this.sendChar(step.char, jitter(hold))
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, jitter(pace) - hold)))
+    }
+  }
+
+  /**
+   * Press one key on this tab — the `browser_tool key` path.
+   *
+   * Through CDP rather than `webContents.sendInputEvent`, because a natively
+   * injected key goes to the widget the *window* has focused: on a browser
+   * window the person is not typing in it goes nowhere, and the command still
+   * reported success (see browser-key-map.ts for the measurement).
+   *
+   * `keyDown`, not `rawKeyDown`: `keyDown` is the shape this app is known to
+   * deliver (it is what `type`/`fill` send), and `rawKeyDown` — the usual
+   * Playwright shape — reached no page here even though the same payload
+   * delivers fine from a standalone Electron. A key that produces text carries
+   * it on the keydown itself (as `type` does), so no second `char` event is
+   * sent — that would insert the character twice.
+   *
+   * Delivery is checked, not assumed: a listener is installed for the duration
+   * of the press, so "sent" and "arrived" are told apart. A page that saw
+   * nothing is reported (a frame holding the focus — an iframe, say — is the
+   * one honest reason it can happen).
+   */
+  async pressKey(key: string, modifiers: readonly BrowserKeyModifier[] = []): Promise<{ delivered: number }> {
+    const stroke = keyStroke(key, modifiers)
+    const params = {
+      key: stroke.key,
+      code: stroke.code,
+      windowsVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      modifiers: modifierMask(modifiers),
+      ...(stroke.text !== undefined ? { text: stroke.text } : {}),
+    }
+
+    // The probe lives in a **closure the install expression returns**, not on
+    // `window`: a page can list its own properties at any moment, and
+    // `__craftKeySeen` / `__craftKeyProbe` announced both that it was being driven
+    // and by whom. Counting and tearing down are calls on that handle, which
+    // leaves nothing behind either way.
+    const install = `(() => {
+      const seen = []
+      const probe = (e) => { seen.push(e.key) }
+      addEventListener('keydown', probe, true)
+      return () => { removeEventListener('keydown', probe, true); return seen.length }
+    })()`
+
+    let finish: string | null = null
+    try {
+      const installed = await this.send('Runtime.evaluate', { expression: install })
+      finish = (installed as { result?: { objectId?: string } })?.result?.objectId ?? null
+      await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...params })
+      await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
+      if (!finish) return { delivered: 0 }
+      const settled = await this.send('Runtime.callFunctionOn', {
+        objectId: finish,
+        functionDeclaration: 'function() { return this() }',
+        returnByValue: true,
+      })
+      return { delivered: Number((settled as { result?: { value?: unknown } })?.result?.value ?? 0) }
+    } catch {
+      /* navigation mid-press: the page it was installed into is gone with it */
+      return { delivered: 0 }
+    } finally {
+      if (finish) {
+        try {
+          await this.send('Runtime.releaseObject', { objectId: finish })
+        } catch {
+          /* the context is gone; the handle went with it */
+        }
+      }
     }
   }
 
@@ -805,6 +2443,27 @@ export class BrowserCDP {
     }
   }
 
+  /**
+   * Replace a field's contents **through the browser's own input pipeline**.
+   *
+   * Not `this.value = ''` + `dispatchEvent(new Event('input'))`: a fabricated
+   * event is `isTrusted === false`, and that flag is on the very first thing
+   * this browser does to a page — a form validating on `input`, a framework's
+   * value tracker, or anything watching for automation can read it without any
+   * trick of its own (measured: `fill-spike.cjs`, `input:false` + `change:false`).
+   *
+   * A real `Ctrl/Cmd+A` followed by `Input.insertText` produces what a paste
+   * produces — `beforeinput` + `input`, both trusted, `inputType: 'insertText'`
+   * — and the `change` a field owes its page arrives by itself when focus
+   * leaves, which is when a browser actually sends it. (The old code fired one
+   * immediately, untrusted, at a moment no browser would.)
+   *
+   * The selection is verified rather than assumed: a page that swallows the key
+   * stroke (a rich editor with its own shortcut handling) leaves the caret where
+   * it was, and the insert would then append instead of replace. When the value
+   * that came back is not the one asked for, the field is selected in the page
+   * and the insert is repeated once.
+   */
   async fillElement(ref: string, value: string): Promise<ElementGeometry> {
     const backendNodeId = this.refMap.get(ref)
     if (!backendNodeId) {
@@ -812,43 +2471,86 @@ export class BrowserCDP {
     }
 
     try {
-      // Focus the element first
       await this.send('DOM.focus', { backendNodeId })
 
-      // Clear existing content
-      const { object } = await this.send('DOM.resolveNode', { backendNodeId })
-      await this.send('Runtime.callFunctionOn', {
-        objectId: object.objectId,
-        functionDeclaration: `function() {
-          this.value = '';
-          this.dispatchEvent(new Event('input', { bubbles: true }));
-        }`,
-      })
+      await this.sendSelectAll()
+      await this.send('Input.insertText', { text: value })
 
-      // Type the new value character by character for realistic input
-      for (const char of value) {
-        await this.send('Input.dispatchKeyEvent', {
-          type: 'keyDown',
-          text: char,
-        })
-        await this.send('Input.dispatchKeyEvent', {
-          type: 'keyUp',
-          text: char,
-        })
+      // `null` means "not a field this can read" — that is not a failed insert, so
+      // it is not a reason to insert a second time.
+      const landed = await this.readFieldValue(backendNodeId)
+      if (landed !== null && landed !== value) {
+        await this.selectFocusedContents(backendNodeId)
+        await this.send('Input.insertText', { text: value })
       }
-
-      // Dispatch change event
-      await this.send('Runtime.callFunctionOn', {
-        objectId: object.objectId,
-        functionDeclaration: `function() {
-          this.dispatchEvent(new Event('change', { bubbles: true }));
-        }`,
-      })
 
       return await this.getElementGeometry(ref)
     } catch (err) {
       mainLog.error(`[browser-cdp] Fill failed for ${ref}:`, err)
       throw new Error(`Failed to fill ${ref}: ${err}`)
+    }
+  }
+
+  /**
+   * `Ctrl+A` (`Cmd+A` on macOS) as a real key stroke, so the selection is made
+   * the way a person's would be: no page-side `select()` call, no synthetic
+   * event, and it works for a textarea, an `<input>` and a contenteditable alike.
+   */
+  private async sendSelectAll(): Promise<void> {
+    const modifier: BrowserKeyModifier = process.platform === 'darwin' ? 'meta' : 'control'
+    const stroke = keyStroke('a', [modifier])
+    const params = {
+      key: stroke.key,
+      code: stroke.code,
+      windowsVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: stroke.windowsVirtualKeyCode,
+      modifiers: modifierMask([modifier]),
+    }
+    // `keyDown`, not `rawKeyDown`: this file's own measurement (`pressKey` below)
+    // is that `rawKeyDown` reaches no page in this app even though the same
+    // payload delivers from a standalone Electron. The fallback in `fillElement`
+    // is what covers a page that swallows the stroke anyway.
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...params })
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
+  }
+
+  /**
+   * What the field actually holds now — `null` when it is not a field this can
+   * read, which is the answer that tells the caller not to bother correcting.
+   */
+  private async readFieldValue(backendNodeId: number): Promise<string | null> {
+    try {
+      const { object } = await this.send('DOM.resolveNode', { backendNodeId })
+      const res = await this.send('Runtime.callFunctionOn', {
+        objectId: object.objectId,
+        functionDeclaration: 'function() { if (typeof this.value === "string") return this.value; if (this.isContentEditable) return this.textContent; return null }',
+        returnByValue: true,
+      })
+      const read = (res as { result?: { value?: unknown } })?.result?.value
+      return typeof read === 'string' ? read : null
+    } catch {
+      return null
+    }
+  }
+
+  /** The fallback for a page that ate the key stroke: select inside the page, once. */
+  private async selectFocusedContents(backendNodeId: number): Promise<void> {
+    try {
+      const { object } = await this.send('DOM.resolveNode', { backendNodeId })
+      await this.send('Runtime.callFunctionOn', {
+        objectId: object.objectId,
+        functionDeclaration: `function() {
+          if (typeof this.select === 'function') { this.select(); return }
+          const selection = document.getSelection()
+          if (!selection) return
+          const range = document.createRange()
+          range.selectNodeContents(this)
+          selection.removeAllRanges()
+          selection.addRange(range)
+        }`,
+      })
+    } catch {
+      /* nothing to select: the insert that follows is still the best attempt */
     }
   }
 

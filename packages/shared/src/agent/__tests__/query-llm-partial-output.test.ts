@@ -196,7 +196,6 @@ describe('call_llm tool — warning prefix rendering', () => {
     return {
       prompt,
       attachments: undefined,
-      model: undefined,
       systemPrompt: undefined,
       maxTokens: undefined,
       temperature: undefined,

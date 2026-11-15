@@ -6,8 +6,8 @@
  *
  * This helper is intentionally thin and deterministic:
  * - It provides command discovery via --help
- * - It emits structured browser_* tool call templates as JSON
- * - Execution still happens through native browser_* tools in sessions
+ * - It emits structured `browser_tool` command templates as JSON
+ * - Execution still happens through the session's `browser_tool` in agent turns
  */
 
 type CommandSpec = {
@@ -24,31 +24,40 @@ type Io = {
 
 const COMMANDS: CommandSpec[] = [
   { name: 'help', description: 'Show usage', example: 'browser-tool --help' },
-  { name: 'list', description: 'List supported browser_* operations', example: 'browser-tool list' },
-  { name: 'template', args: '<operation>', description: 'Print JSON template for one browser_* operation', example: 'browser-tool template browser_navigate' },
-  { name: 'all-templates', description: 'Print JSON templates for all browser_* operations', example: 'browser-tool all-templates' },
+  { name: 'list', description: 'List supported browser_tool commands', example: 'browser-tool list' },
+  { name: 'template', args: '<command>', description: 'Print a JSON template for one browser_tool command', example: 'browser-tool template navigate' },
+  { name: 'all-templates', description: 'Print JSON templates for all browser_tool commands', example: 'browser-tool all-templates' },
   { name: 'parse-url', args: '<url>', description: 'Parse a URL and print structured fields for debugging', example: 'browser-tool parse-url file:///tmp/report.html' },
 ];
 
-const TOOL_TEMPLATES: Record<string, Record<string, unknown>> = {
-  browser_open: {},
-  browser_navigate: { url: 'https://example.com' },
-  browser_snapshot: {},
-  browser_click: { ref: '@e1', waitFor: 'network-idle', timeoutMs: 8000 },
-  browser_fill: { ref: '@e5', value: 'hello world' },
-  browser_select: { ref: '@e3', value: 'option_value' },
-  browser_screenshot: {},
-  browser_screenshot_region: { ref: '@e12', padding: 8 },
-  browser_console: { level: 'warn', limit: 50 },
-  browser_window_resize: { width: 1280, height: 720 },
-  browser_network: { limit: 50, status: 'failed' },
-  browser_wait: { kind: 'network-idle', timeoutMs: 8000 },
-  browser_key: { key: 'Enter' },
-  browser_downloads: { action: 'list', limit: 20 },
-  browser_scroll: { direction: 'down', amount: 500 },
-  browser_back: {},
-  browser_forward: {},
-  browser_evaluate: { expression: 'document.title' },
+/**
+ * Templates for the in-session `browser_tool` wrapper.
+ *
+ * Each entry is one `command` string the tool accepts. The old split `browser_*`
+ * tools no longer exist, so templates are keyed by browser_tool's own verbs.
+ */
+const TOOL_TEMPLATES: Record<string, string> = {
+  navigate: 'navigate https://example.com',
+  snapshot: 'snapshot',
+  read: 'read --save notes/my-page.md',
+  find: 'find login button',
+  click: 'click @e1',
+  'click-at': 'click-at 350 200',
+  drag: 'drag 100 200 300 400',
+  fill: 'fill @e5 user@example.com',
+  type: 'type Hello World',
+  select: 'select @e3 optionValue',
+  screenshot: 'screenshot --annotated',
+  console: 'console 50 warn',
+  evaluate: 'evaluate document.title',
+  wait: 'wait network-idle 8000',
+  tabs: 'tabs',
+  profiles: 'profiles',
+  'tab-new': 'tab-new https://example.com',
+  'tab-show': 'tab-show tab-2 --handover',
+  'tab-close': 'tab-close tab-2',
+  'record-start': 'record-start --tab tab-2 --ttl 30s',
+  'record-stop': 'record-stop --tab tab-2',
 };
 
 function printHelp(io: Io): void {
@@ -65,7 +74,7 @@ function printHelp(io: Io): void {
   }
   io.log('');
   io.log('Notes:');
-  io.log('  - Primary execution path is native browser_* tools in sessions.');
+  io.log('  - Primary execution path is the session\'s browser_tool command wrapper.');
   io.log('  - This CLI is a secondary helper for discovery and templating.');
   io.log('');
   io.log('Examples:');
@@ -123,21 +132,24 @@ export function runBrowserToolCli(argv: string[], io: Io = console): number {
 
   if (command === 'template') {
     if (!op) {
-      io.error('Error: template requires <operation>');
+      io.error('Error: template requires <command>');
       return 1;
     }
     const input = TOOL_TEMPLATES[op];
     if (!input) {
-      io.error(`Error: unknown operation "${op}"`);
+      io.error(`Error: unknown browser_tool command "${op}"`);
       return 1;
     }
-    printJson(io, { tool: op, input });
+    printJson(io, { tool: 'browser_tool', name: op, input: { command: input } });
     return 0;
   }
 
   if (command === 'all-templates') {
-    const out = Object.entries(TOOL_TEMPLATES).map(([tool, input]) => ({ tool, input }));
-    printJson(io, { templates: out });
+    const templates = Object.entries(TOOL_TEMPLATES).map(([name, input]) => ({
+      name,
+      input: { command: input },
+    }));
+    printJson(io, { tool: 'browser_tool', templates });
     return 0;
   }
 
@@ -148,7 +160,7 @@ export function runBrowserToolCli(argv: string[], io: Io = console): number {
     }
 
     try {
-      printJson(io, { parsed: parseUrlDetails(op) });
+      printJson(io, parseUrlDetails(op));
       return 0;
     } catch (error) {
       io.error(`Error: invalid URL "${op}"`);

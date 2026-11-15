@@ -78,6 +78,7 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
   '.icns': 'image/x-icns',
   '.heic': 'image/heic',
   '.heif': 'image/heif',
+  '.avif': 'image/avif',
   '.svg': 'image/svg+xml',
 };
 
@@ -91,7 +92,8 @@ const TEXT_EXTENSIONS = new Set([
   '.csv', '.log', '.conf', '.ini', '.cfg',
 ]);
 
-// Office file extensions (will be converted to markdown via markitdown-js)
+// Office file extensions (converted to markdown before the model reads them — see
+// packages/server-core/src/services/office-to-markdown.ts)
 const OFFICE_EXTENSIONS: Record<string, string> = {
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -287,7 +289,7 @@ function looksLikeFilePath(str: string): boolean {
  * Resolve a path (handle ~ expansion)
  */
 export function resolvePath(filePath: string): string {
-  if (filePath.startsWith('~/')) {
+  if (filePath.startsWith('~/') || filePath.startsWith('~\\')) {
     const home = process.env.HOME || process.env.USERPROFILE || '';
     return resolve(home, filePath.slice(2));
   }
@@ -885,7 +887,7 @@ export function formatSinglePathToRelative(absolutePath: string, cwd?: string): 
 
   const relativePath = relative(basePath, absolutePath);
   if (relativePath && !relativePath.startsWith('..') && !relativePath.startsWith('./')) {
-    return './' + relativePath;
+    return './' + relativePath.split(sep).join('/');
   }
   return relativePath || absolutePath;
 }

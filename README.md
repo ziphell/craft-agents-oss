@@ -153,7 +153,7 @@ Use **SHIFT+TAB** to cycle through modes in the chat interface.
 
 ## Remote Server (Headless)
 
-Craft Agents can run as a headless server on a remote machine (e.g., a Linux VPS), with the desktop app connecting as a thin client. This lets you keep long-running sessions alive, access them from multiple machines, and run compute-heavy tasks on a powerful server.
+Craft Agents can run as a headless server on a remote machine (e.g., a Linux VPS), with the desktop app opening windows that connect to it. This lets you keep long-running sessions alive, access them from multiple machines, and run compute-heavy tasks on a powerful server.
 
 ### Quick Start
 
@@ -175,13 +175,9 @@ Copy these values and use them to connect the desktop app.
 
 ### Connecting the Desktop App
 
-Launch the Electron app in thin-client mode by passing the server URL and token:
+Open the app menu (top-left logo) and choose **Connect to Server…**, then enter the server URL and token printed above. **Connect** tests the connection and opens a window whose sessions, tools and browser run on that server. The dialog keeps every server you add — a second one is one click away — and the star marks the server new windows open on.
 
-```bash
-CRAFT_SERVER_URL=wss://203.0.113.5:9100 CRAFT_SERVER_TOKEN=<token> bun run electron:start
-```
-
-In thin-client mode, the desktop app renders the UI but all session logic, tool execution, and LLM calls run on the remote server.
+Connection is a property of the window, not of the app: a remote window renders the UI while all session logic, tool execution, and LLM calls run on that server. Other windows stay local, Server Mode keeps running, and the tray offers both local and remote windows — no restart needed.
 
 ### Environment Variables
 
@@ -383,6 +379,15 @@ bun run typecheck:all
 # Debug logging (writes to ~/Library/Logs/@craft-agent/electron/)
 # Logs are automatically enabled in development
 ```
+
+### Office documents
+
+Word, Excel, PowerPoint and PDF files open, edit and save **inside** the app, on the GenOffice
+engines. Their build artifacts are not committed: a fresh checkout has no editors until
+`bun scripts/build-office-assets.ts` (editors + CLI) and `bun scripts/build-office-engine.ts`
+(engine bundles) have run, and `bun scripts/build-office-assets.ts --check` says what is missing.
+The architecture, the reasons behind it, and the real-machine checklist live in
+[docs/office-embed.md](docs/office-embed.md).
 
 ### Environment Variables
 

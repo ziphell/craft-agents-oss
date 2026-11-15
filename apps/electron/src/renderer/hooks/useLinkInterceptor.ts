@@ -2,20 +2,30 @@
  * useLinkInterceptor - Centralized hook for intercepting file/URL open requests.
  *
  * Replaces the old handleOpenFile/handleOpenUrl in App.tsx that always opened externally.
- * Now classifies file types and decides whether to show an in-app preview overlay
- * or fall back to opening in the default external application.
+ * Now classifies file types and decides what a click means: an in-app preview overlay, the
+ * workspace's browser window, or the default external application.
  *
  * Architecture:
  *   Markdown click → PlatformContext → App.tsx → useLinkInterceptor
  *     ├── canPreview? → set previewState (renders overlay in App.tsx)
- *     └── can't preview? → electronAPI.openFile (opens externally)
+ *     └── else? → electronAPI.openFile (opens externally)
+ *
+ *   URL click → the app's own `openUrl` (App.tsx): a browser address opens in the workspace's
+ *   browser window, the system browser when the person asked for that — the same switch — and
+ *   the shell opener for everything that is not one.
+ *
+ * An `.html` file is a preview like any other and gets the same treatment: read here, drawn in
+ * the window that draws HTML. Opening it for real — in a browser, as a tab at its own address —
+ * is a button in that window's own header, not this decision: a click says "show me this file",
+ * nothing more.
  *
  * Uses refs for options to keep returned callbacks referentially stable,
  * preventing unnecessary re-renders of consumers (AppShellContext, PlatformProvider).
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { classifyFile, type FilePreviewType } from '@craft-agent/ui'
+import { classifyFile, officeAppFor, type FilePreviewType } from '@craft-agent/ui'
+import { mediaKindOfFile } from '@craft-agent/shared/media/file-kind'
 import { getLanguageFromPath } from '@/lib/file-utils'
 
 // ── Preview state types ────────────────────────────────────────────────────────
@@ -25,6 +35,23 @@ import { getLanguageFromPath } from '@/lib/file-utils'
 
 interface ImagePreview {
   type: 'image'
+  filePath: string
+}
+
+/**
+ * A clip or a recording, drawn by the player in a full window.
+ *
+ * `classifyFile` leaves these to the system for a plain click, because a path in a document is
+ * usually "show me this in my own player". A click here is the app's own preview request, so the
+ * media kind is decided first and the window plays it itself.
+ */
+interface VideoPreview {
+  type: 'video'
+  filePath: string
+}
+
+interface AudioPreview {
+  type: 'audio'
   filePath: string
 }
 
@@ -62,13 +89,64 @@ interface TextPreview {
   error?: string
 }
 
+interface DrawioPreview {
+  type: 'drawio'
+  filePath: string
+  /** The document, read before the window opens — the viewer draws what it is handed. */
+  content: string | null
+  error?: string
+}
+
+/**
+ * An HTML file, read before the window opens for the same reason a diagram is: the window draws
+ * what it is handed rather than fetching it, and a file that cannot be read has an error to show
+ * instead of an empty box.
+ */
+interface HTMLPreview {
+  type: 'html'
+  filePath: string
+  content: string | null
+  error?: string
+}
+
+/**
+ * A Word/Excel/PowerPoint document, opened by the vendored editor in an overlay.
+ *
+ * The bytes are *not* read here: the editor fetches its own document through the frame's
+ * bridge, and reading a 30 MB workbook into React state only to hand it back would be a copy
+ * for nothing.
+ */
+interface OfficePreview {
+  type: 'office'
+  filePath: string
+  /** Which editor bundle opens it — `officeAppFor` decided. */
+  app: 'docs' | 'sheets' | 'slides'
+}
+
+/**
+ * A cut (`.reel`), opened by the timeline editor.
+ *
+ * The document is read and written by that surface itself, so there is no content to carry here —
+ * only the path, which is also the cut's identity.
+ */
+interface ReelPreview {
+  type: 'reel'
+  filePath: string
+}
+
 export type FilePreviewState =
   | ImagePreview
+  | VideoPreview
+  | AudioPreview
   | PDFPreview
   | CodePreview
   | MarkdownPreview
   | JSONPreview
   | TextPreview
+  | DrawioPreview
+  | HTMLPreview
+  | OfficePreview
+  | ReelPreview
 
 // ── Hook options ───────────────────────────────────────────────────────────────
 // Callbacks injected by App.tsx so the hook doesn't depend on window.electronAPI directly.
@@ -76,11 +154,11 @@ export type FilePreviewState =
 interface LinkInterceptorOptions {
   /** Open file in default external application (e.g., VS Code) */
   openFileExternal: (path: string) => Promise<void>
-  /** Open URL in default browser */
-  openUrl: (url: string) => Promise<void>
+  /** Open URL in default browser. `sessionId` is the conversation the click came from, when known. */
+  openUrl: (url: string, sessionId?: string) => Promise<void>
   /** Reveal file in system file manager */
   showInFolder: (path: string) => Promise<void>
-  /** Read file as UTF-8 text (for code, markdown, json, text previews) */
+  /** Read file as UTF-8 text (for code, markdown, json, text and html previews) */
   readFile: (path: string) => Promise<string>
   /** Read file as data URL (for image previews) */
   readFileDataUrl: (path: string) => Promise<string>
@@ -94,7 +172,7 @@ interface LinkInterceptorResult {
   /** Replacement for App.tsx handleOpenFile — classifies and routes */
   handleOpenFile: (path: string) => void
   /** Replacement for App.tsx handleOpenUrl — always opens externally */
-  handleOpenUrl: (url: string) => void
+  handleOpenUrl: (url: string, sessionId?: string) => void
   /** Open file directly in external app, bypassing classification/preview */
   openFileExternal: (path: string) => void
   /** Current preview state, drives which overlay renders in App.tsx */
@@ -129,15 +207,21 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
 
   /**
    * Main entry point for file link clicks.
-   * Classifies the file by extension, then either opens a preview overlay
-   * or falls back to opening externally.
+   * Classifies the file by extension, then either opens a preview overlay or falls back to
+   * opening externally.
    *
-   * For text-based files (code, markdown, json, text), reads the content BEFORE
-   * showing the overlay — local filesystem reads are near-instant, so no loading
-   * state is needed. This avoids null-content issues in overlay components
-   * (e.g., @uiw/react-json-view crashes on null value).
+   * Reads the content BEFORE showing the overlay — local filesystem reads are near-instant, so
+   * no loading state is needed. This avoids null-content issues in overlay components
+   * (e.g., @uiw/react-json-view crashes on null value), and a diagram or HTML is read here for
+   * the same reason: the window draws what it is handed, it does not open the file itself.
    */
   const handleOpenFile = useCallback(async (path: string) => {
+    const media = mediaKindOfFile(path)
+    if (media) {
+      setPreviewState({ type: media, filePath: path })
+      return
+    }
+
     const classification = classifyFile(path)
 
     if (!classification.canPreview || !classification.type) {
@@ -151,6 +235,31 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
     // For image/pdf: set state immediately — the overlay handles its own async loading
     if (type === 'image' || type === 'pdf') {
       setPreviewState({ type, filePath: path })
+      return
+    }
+
+    // A cut is a timeline, not text: the editor loads and saves the document itself.
+    if (type === 'reel') {
+      setPreviewState({ type: 'reel', filePath: path })
+      return
+    }
+
+    // For office documents: same, for the same reason — the editor loads its own bytes.
+    if (type === 'office') {
+      const app = officeAppFor(path)
+      if (!app) {
+        optionsRef.current.openFileExternal(path)
+        return
+      }
+      setPreviewState({ type: 'office', filePath: path, app })
+      return
+    }
+
+    // A markdown document is read by the pane that draws and edits it (`MarkdownEditorPane` →
+    // `useFileWriter`), so reading it here as well would only keep a second full copy of the file
+    // in state that the window never uses — and read every large document twice.
+    if (type === 'markdown') {
+      setPreviewState({ type: 'markdown', filePath: path, content: null })
       return
     }
 
@@ -173,9 +282,14 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
     optionsRef.current.openFileExternal(path)
   }, []) // Stable: uses optionsRef
 
-  /** URLs always open externally — no in-app browser for security */
-  const handleOpenUrl = useCallback((url: string) => {
-    optionsRef.current.openUrl(url)
+  /**
+   * A URL is handed to the app, which decides where it opens: a page goes to the workspace's
+   * browser window by default (the person's setting, read there), the system browser when they
+   * asked for that, and the shell opener for anything that is not a page. This hook only
+   * carries the click.
+   */
+  const handleOpenUrl = useCallback((url: string, sessionId?: string) => {
+    optionsRef.current.openUrl(url, sessionId)
   }, []) // Stable: uses optionsRef
 
   const closePreview = useCallback(() => {
@@ -226,6 +340,8 @@ export function useLinkInterceptor(options: LinkInterceptorOptions): LinkInterce
 /**
  * Build the initial preview state for text-based file types.
  * Content is null initially (loading), and gets populated after async read.
+ * HTML and a diagram are in here for the same reason as the text types: what they show is the
+ * file's own text, read first.
  */
 function buildInitialTextState(type: FilePreviewType, path: string): FilePreviewState {
   switch (type) {
@@ -237,8 +353,14 @@ function buildInitialTextState(type: FilePreviewType, path: string): FilePreview
       return { type: 'json', filePath: path, content: null }
     case 'text':
       return { type: 'text', filePath: path, content: null }
+    case 'drawio':
+      return { type: 'drawio', filePath: path, content: null }
+    case 'html':
+      return { type: 'html', filePath: path, content: null }
+    case 'reel':
+      return { type: 'reel', filePath: path }
     default:
-      // Should never happen — image/pdf are handled before this function is called
+      // Should never happen — image/pdf are set before this is called.
       return { type: 'text', filePath: path, content: null }
   }
 }

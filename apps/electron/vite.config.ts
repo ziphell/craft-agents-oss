@@ -37,8 +37,12 @@ export default defineConfig({
   base: './',
   build: {
     outDir: resolve(__dirname, 'dist/renderer'),
-    emptyDirBeforeWrite: true,
-    sourcemap: true,  // Source maps generated for debugging. Not uploaded to Sentry (see CLAUDE.md).
+    // `emptyOutDir`, not `emptyDirBeforeWrite`: the latter is not a vite option and is silently
+    // ignored, which is how this directory accumulated 364 files / 121 MB — a dozen stale
+    // `index-*.js` (6 MB each) that `files: dist/**` then shipped. outDir sits outside `root`, so
+    // vite leaves it alone unless this is set.
+    emptyOutDir: true,
+    sourcemap: false,  // Maps are not consumed (Sentry upload disabled); also a major build-memory cost.
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'src/renderer/index.html'),

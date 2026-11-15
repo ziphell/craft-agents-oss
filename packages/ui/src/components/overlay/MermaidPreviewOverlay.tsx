@@ -2,7 +2,6 @@
  * MermaidPreviewOverlay — fullscreen diagram preview with zoom and pan.
  */
 
-import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { GitGraph } from 'lucide-react'
 import { PreviewOverlay } from './PreviewOverlay'
@@ -24,6 +23,8 @@ export interface MermaidPreviewOverlayProps {
   onClose: () => void
   svg: string
   code: string
+  /** The window's title. Defaults to the mermaid one; a mind map is not a mermaid diagram. */
+  title?: string
 }
 
 export function MermaidPreviewOverlay({
@@ -31,11 +32,12 @@ export function MermaidPreviewOverlay({
   onClose,
   svg,
   code,
+  title,
 }: MermaidPreviewOverlayProps) {
   const { t } = useTranslation()
-  const containerRef = useRef<HTMLDivElement>(null)
 
   const {
+    containerRef,
     scale,
     translate,
     isDragging,
@@ -47,10 +49,7 @@ export function MermaidPreviewOverlay({
     reset,
     onMouseDown,
     onDoubleClick,
-  } = useRichBlockInteractions({
-    isOpen,
-    containerRef,
-  })
+  } = useRichBlockInteractions({ isOpen })
 
   const isDefaultView = scale === 1 && translate.x === 0 && translate.y === 0
 
@@ -82,7 +81,7 @@ export function MermaidPreviewOverlay({
         label: 'Diagram',
         variant: 'purple',
       }}
-      title={t('overlay.mermaidDiagram')}
+      title={title ?? t('overlay.mermaidDiagram')}
       headerActions={headerActions}
     >
       <div

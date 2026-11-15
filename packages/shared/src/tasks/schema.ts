@@ -7,11 +7,13 @@
  * the TypeScript types inferred from them + thin parse helpers.
  *
  * v1 EXECUTES: `kind: 'session'` nodes wired by `depends_on` + `inputs`
- *   (with `${nodes.<id>.output[.field]}` / `${params.<name>}` references).
- * v1 PARSES BUT DEFERS: every other `kind` and the control-flow fields
- *   (`loop`, `when`, `route`, `for_each`, `aggregate`, `approval`, …). They are
- *   validated so hand-authored yaml round-trips, but the Conductor ignores them
- *   until P4. See sessions/.../tasks-architecture.md §5–§5a for the full design.
+ *   (with `${nodes.<id>.output[.field]}` / `${params.<name>}` references), the declared
+ *   `outputs:` that make `.field` references resolvable (see outputs.ts), and `when:`
+ *   branch tests (see conditions.ts).
+ * v1 PARSES BUT DEFERS: every other `kind` and the remaining control-flow fields
+ *   (`loop`, `route`, `for_each`, `aggregate`, `approval`, …). They are validated so
+ *   hand-authored yaml round-trips, but the Conductor ignores them until P4. See
+ *   sessions/.../tasks-architecture.md §5–§5a for the full design.
  *
  * Design note: the architecture draft used BOTH `type:` and `kind:` for a
  * node's role. We consolidate on a single `kind` discriminant (cleaner, avoids
@@ -46,6 +48,16 @@ export const PARAM_TYPES = ['string', 'number', 'boolean', 'enum', 'json', 'text
 export const OUTPUT_KINDS = ['param', 'artifact'] as const;
 export const RETRY_WHEN = ['error', 'empty', 'invalid'] as const;
 export const CACHE_MODES = ['pure', 'off'] as const;
+
+/**
+ * A gate node's decision, and the field it is filed under.
+ *
+ * Both are fixed rather than author-named: the whole point of a gate is that a downstream
+ * `when: "<gate>.verdict === 'approved'"` reads the same field wherever it is written, and
+ * a human's click is not a model's output that could be asked to honor a declared shape.
+ */
+export const APPROVAL_VERDICT_FIELD = 'verdict';
+export const APPROVAL_VERDICTS = ['approved', 'rejected'] as const;
 export const TASK_RUNNERS = ['conduct', 'orchestrate'] as const;
 
 // ---------------------------------------------------------------------------
@@ -136,7 +148,8 @@ const TaskNodeObject = z.object({
   id: slug('node id'),
   /** Board tile label; defaults to `id` when omitted. */
   title: z.string().min(1).optional(),
-  /** Instruction dispatched to the node session (may contain ${…} refs). Required for `session` nodes. */
+  /** Instruction dispatched to the node session (may contain ${…} refs). Required for `session`
+   *  nodes; for a gate (`kind: 'approval'`) it is the question put to the person. */
   prompt: z.string().optional(),
   kind: z.enum(NODE_KINDS).default('session'),
 
@@ -153,7 +166,7 @@ const TaskNodeObject = z.object({
   inputs: z.record(z.string(), InputRefSchema).optional(),
   outputs: z.array(OutputDeclSchema).optional(),
 
-  // Control-flow (parsed now, executed in P4).
+  // Control-flow: `when` is executed (a false condition skips the node); the rest parse in P4.
   when: z.string().optional(),
   trigger: z.enum(TRIGGER_RULES).optional(),
   replicas: z.number().int().positive().optional(),
@@ -164,6 +177,8 @@ const TaskNodeObject = z.object({
   retry: RetrySchema.optional(),
   timeout: z.number().positive().optional(),
   cache: z.enum(CACHE_MODES).optional(),
+  /** Superseded by `kind: 'approval'` (one discriminant, not two spellings of a gate) — the
+   *  validator rejects this flag rather than let it look like it does something. */
   approval: z.boolean().optional(),
 });
 
@@ -194,6 +209,22 @@ export const TaskSpecSchema = z
     goal: z.string().min(1),
     /** Freeform rubric the orchestrator grades the final result against (verification gate). Falls back to `goal`. */
     acceptance_criteria: z.string().min(1).optional(),
+    /** The plan file this task was generated from — a `*.plan.md` in the project folder. Optional:
+     *  a hand-authored task (or one generated with no plan) carries none. Stored portable (a `~`
+     *  prefix when under the home dir) and expanded on read, exactly like ProjectConfig.workingDirectory
+     *  (see storage.ts) — the same convention, not a new one. */
+    from: z.string().min(1).optional(),
+    /**
+     * The conversation that created this task, by session id.
+     *
+     * Deliberately **not** the orchestrator's `parentSessionId`: a parent would make the task tile
+     * disappear from the board (`KanbanBoardContainer` skips sessions that have one) and turn the
+     * orchestrator into a subtask, which also hides the task editor. So the link lives here, where
+     * it is a fact about the task rather than a claim about the conversation tree.
+     *
+     * Absent for tasks authored by hand or created from the board — nobody's conversation made them.
+     */
+    created_by: z.string().min(1).optional(),
     project: z.string().min(1).optional(),
     /** Working directory for the orchestrator and every child session. Absolute path; when
      *  omitted the orchestrator's own working directory (project/workspace default) is used and

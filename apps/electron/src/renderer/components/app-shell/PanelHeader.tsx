@@ -203,23 +203,23 @@ export function PanelHeader({
   const content = isCompactMode ? (
     <>
       {leadingAction && (
-        <div className="titlebar-no-drag shrink-0 z-[1]">
+        <div className="titlebar-no-drag shrink-0 z-[1] flex items-center">
           {leadingAction}
         </div>
       )}
       <div className="flex-1" />
       {centerButton && (
-        <div className="titlebar-no-drag shrink-0 z-[1]">
+        <div className="titlebar-no-drag shrink-0 z-[1] flex items-center">
           {centerButton}
         </div>
       )}
       {actions && (
-        <div className="titlebar-no-drag shrink-0 z-[1]">
+        <div className="titlebar-no-drag shrink-0 z-[1] flex items-center">
           {actions}
         </div>
       )}
       {rightSidebarButton && (
-        <div className="titlebar-no-drag shrink-0 z-[1]">
+        <div className="titlebar-no-drag shrink-0 z-[1] flex items-center">
           {rightSidebarButton}
         </div>
       )}
@@ -235,7 +235,7 @@ export function PanelHeader({
   ) : (
     <>
       {leadingAction && (
-        <div className="titlebar-no-drag shrink-0">
+        <div className="titlebar-no-drag shrink-0 flex items-center">
           {leadingAction}
         </div>
       )}
@@ -245,17 +245,17 @@ export function PanelHeader({
         </div>
       </div>
       {centerButton && (
-        <div className="titlebar-no-drag shrink-0">
+        <div className="titlebar-no-drag shrink-0 flex items-center">
           {centerButton}
         </div>
       )}
       {actions && (
-        <div className="titlebar-no-drag shrink-0">
+        <div className="titlebar-no-drag shrink-0 flex items-center">
           {actions}
         </div>
       )}
       {rightSidebarButton && (
-        <div className="titlebar-no-drag shrink-0">
+        <div className="titlebar-no-drag shrink-0 flex items-center">
           {rightSidebarButton}
         </div>
       )}

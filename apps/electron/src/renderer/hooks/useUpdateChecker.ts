@@ -126,7 +126,11 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
       const info = await window.electronAPI.checkForUpdates()
       setUpdateInfo(info)
 
-      if (!info.available) {
+      if (info.downloadState === 'error') {
+        // The check didn't complete (e.g. update checks are disabled), so don't
+        // claim the app is up to date.
+        toast.error(t('toast.failedToCheckUpdates'))
+      } else if (!info.available) {
         toast.success(t('toast.upToDate'), {
           description: t('toast.versionIsLatest', { version: info.currentVersion }),
           duration: 3000,

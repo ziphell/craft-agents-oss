@@ -6,7 +6,6 @@
 export type {
   WorkspaceInfo,
   Workspace,
-  RemoteServerConfig,
   McpAuthType,
   AuthType,
   OAuthCredentials,
@@ -41,6 +40,7 @@ export type {
   AnnotationTarget,
   AnnotationV1,
   Message,
+  MessageReply,
   StoredMessage,
   TokenUsage,
   AgentEventUsage,
@@ -68,23 +68,4 @@ export type {
   ActiveSessionInfo,
 } from './server.ts';
 
-// Page types (workspace-scoped mini dashboards)
-export type {
-  PageKind,
-  PageScriptRuntime,
-  PageRefreshSpec,
-  PageRefreshStatus,
-  PageSeriesPoint,
-  PageDataSnapshot,
-  PageActionHttpMethod,
-  PageActionDescriptor,
-  PageActionGrant,
-  PageRenderLease,
-  PageActionInvocation,
-  PageActionRequest,
-  PageActionResult,
-  PageShareInfo,
-  PageThumbnailInfo,
-  PageConfig,
-} from './page.ts';
 

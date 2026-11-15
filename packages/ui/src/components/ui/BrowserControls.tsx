@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, forwardRef, type ReactNode } from 'react'
-import { ChevronLeft, ChevronRight, RotateCw, X, Globe } from 'lucide-react'
+import { ChevronLeft, ChevronRight, RotateCw, X, Globe, AlertCircle } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { cn } from '../../lib/utils'
 import { useTranslation } from 'react-i18next'
@@ -43,6 +43,13 @@ export interface BrowserControlsProps {
   url?: string
   /** Whether page is loading (toggles Stop/Reload, shows progress) */
   loading?: boolean
+  /**
+   * Why the page on screen did not load, if it did.
+   *
+   * The bar draws it in the icon slot — a red mark instead of the globe — and leaves the
+   * explanation itself to the page area, where a whole page can say it in words.
+   */
+  error?: { code: string; status?: number; url: string } | null
   /** Enable back button */
   canGoBack?: boolean
   /** Enable forward button */
@@ -67,6 +74,16 @@ export interface BrowserControlsProps {
   trailingContent?: ReactNode
   /** Show animated loading progress bar (default true) */
   showProgressBar?: boolean
+  /**
+   * Bump to move the caret into the address bar.
+   *
+   * The bar lives in its own webContents, so "focus the bar" cannot ride the host's
+   * own focus handling: the host counts the times it has asked — a new tab, or coming
+   * back to one — and this focuses on each new number. A number rather than a boolean
+   * because it is a request, not a state: two new tabs in a row are two requests, and
+   * a flag that was already set would say nothing about the second.
+   */
+  focusAddressBarToken?: number
   /** Additional CSS classes on the URL bar group (reload + form) */
   urlBarClassName?: string
   /**
@@ -147,6 +164,7 @@ const HALF_MAX_WIDTH = 300
 export function BrowserControls({
   url: controlledUrl,
   loading = false,
+  error,
   canGoBack = false,
   canGoForward = false,
   onNavigate,
@@ -159,6 +177,7 @@ export function BrowserControls({
   leadingContent,
   trailingContent,
   showProgressBar = true,
+  focusAddressBarToken,
   urlBarClassName,
   leftClearance,
   themeColor,
@@ -168,13 +187,36 @@ export function BrowserControls({
   const [localUrl, setLocalUrl] = useState(controlledUrl ?? '')
   const [isFocused, setIsFocused] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  /**
+   * The highest focus request this input has already honoured.
+   *
+   * Seeded with whatever arrived with the first render, so a bar whose document mounts
+   * *after* the new tab that asked for it — the token already bumped — does not read
+   * mounting as a request to focus.
+   */
+  const honoredFocusToken = useRef(focusAddressBarToken ?? 0)
 
   // Sync with controlled url when not focused
   useEffect(() => {
     if (!isFocused && controlledUrl != null) {
-      setLocalUrl(controlledUrl === 'about:blank' ? '' : controlledUrl)
+      setLocalUrl(controlledUrl === 'about:blank' || controlledUrl === 'about:newtab' ? '' : controlledUrl)
     }
   }, [controlledUrl, isFocused])
+
+  /**
+   * Move the caret into the address bar when the host asks (see `focusAddressBarToken`).
+   *
+   * Declared **after** the URL sync above on purpose: both effects run in the same
+   * commit, and the sync has to run while `isFocused` is still false — focusing is what
+   * makes it stop running, so a new tab whose bar was focused too early would keep
+   * showing the previous tab's address instead of its own empty one.
+   */
+  useEffect(() => {
+    if (focusAddressBarToken === undefined) return
+    if (focusAddressBarToken <= honoredFocusToken.current) return
+    honoredFocusToken.current = focusAddressBarToken
+    inputRef.current?.focus()
+  }, [focusAddressBarToken])
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -210,7 +252,7 @@ export function BrowserControls({
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (controlledUrl != null) {
-          setLocalUrl(controlledUrl === 'about:blank' ? '' : controlledUrl)
+          setLocalUrl(controlledUrl === 'about:blank' || controlledUrl === 'about:newtab' ? '' : controlledUrl)
         }
         inputRef.current?.blur()
       }
@@ -253,9 +295,12 @@ export function BrowserControls({
           className={cn(
             'w-full rounded-[8px] bg-transparent px-3 pl-8 text-[13px] text-foreground/70 outline-none transition-all',
             compact ? 'h-[28px]' : 'h-[30px]',
-            !safeThemeColor && (isFocused
-              ? 'bg-background border border-transparent shadow-minimal'
-              : 'border border-foreground/5'),
+            // The field wears the app's own edge (`shadow-minimal`: a ring plus soft blur), resting
+            // and focused alike — a bare `border-foreground/5` read thinner than the panels beside
+            // it, because an app edge is not a hairline (the page's own ring matches it; see
+            // `shared/browser-live-fx.ts`). Focusing only fills the field in.
+            !safeThemeColor && 'border border-transparent shadow-minimal',
+            !safeThemeColor && isFocused && 'bg-background',
             safeThemeColor && 'border border-transparent',
           )}
           style={safeThemeColor ? {
@@ -273,6 +318,11 @@ export function BrowserControls({
             <span className="flex items-center justify-center h-3.5 w-3.5" style={safeThemeColor ? { color: isFocused ? 'var(--tb-fg)' : 'var(--tb-fg-muted)' } : undefined}>
               <Spinner className="text-[11px] text-foreground/40" />
             </span>
+          ) : error ? (
+            <AlertCircle
+              className="h-3.5 w-3.5 text-destructive"
+              style={safeThemeColor ? { color: '#ff6369' } : undefined}
+            />
           ) : (
             <Globe className="h-3.5 w-3.5 text-foreground/30" style={safeThemeColor ? { color: isFocused ? 'var(--tb-fg)' : 'var(--tb-fg-muted)' } : undefined} />
           )}
@@ -308,7 +358,7 @@ export function BrowserControls({
     <div
       className={cn(
         'relative flex items-center gap-1',
-        compact ? 'h-[40px] px-2' : 'h-[48px] border-b border-foreground/6 px-3',
+        compact ? 'h-[40px] px-2' : 'h-[48px] px-3',
         className,
       )}
       data-themed={safeThemeColor ? '' : undefined}

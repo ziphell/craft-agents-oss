@@ -325,7 +325,37 @@ export class Renderer {
 
       case 'text_complete': {
         const text = typeof event.text === 'string' ? event.text : state.textBuffer
+        const isIntermediate = Boolean(event.isIntermediate)
         this.cancelEditTimer(state)
+
+        // An intermediate completion is assistant text that precedes more work
+        // (a tool call / another turn) — it is not a message boundary. Fold it
+        // into the run's existing bubble so one agent run stays one chat
+        // message; finalising here (the previous behaviour) fanned a
+        // tool-heavy run out into one message per round-trip. Only a
+        // non-intermediate completion closes the bubble (the code below).
+        if (isIntermediate && adapter.capabilities.messageEditing) {
+          if (text.trim()) {
+            if (state.streamingMessageId) {
+              await this.tryEditMessage(adapter, binding, state.streamingMessageId, text.trim(), state)
+            } else {
+              // No bubble yet (no deltas were rendered) — post one and keep it.
+              try {
+                const sent = await adapter.sendText(binding.channelId, text.trim(), bindingOpts(binding))
+                state.streamingMessageId = sent.messageId
+              } catch {
+                // Posting failed — nothing to fold into; wait for the next event.
+              }
+            }
+          }
+          // Keep the bubble alive for the next turn; advance the turn id so a
+          // discard for the following turn is scoped correctly.
+          const turnId = typeof event.turnId === 'string' ? event.turnId : null
+          if (turnId) state.streamingTurnId = turnId
+          state.textBuffer = ''
+          state.lastEditedLength = 0
+          break
+        }
 
         if (state.streamingMessageId && adapter.capabilities.messageEditing) {
           if (text.trim()) {
@@ -490,13 +520,19 @@ export class Renderer {
         const finalText = (state.finalBuffer.trim() || state.lastAssistantText.trim())
         if (state.progressMessageId && adapter.capabilities.messageEditing) {
           if (finalText) {
-            await this.tryEditMessage(
+            const edited = await this.tryEditMessage(
               adapter,
               binding,
               state.progressMessageId,
               truncateForAdapter(finalText, adapter),
               state,
             )
+            if (!edited) {
+              // The bubble can no longer be edited (edit window expired,
+              // message removed, …). Post the answer as a fresh message so the
+              // user isn't stranded on the last status line.
+              await this.sendText(adapter, binding, finalText)
+            }
           }
           // If the run produced no assistant text at all, leave the last
           // status in place rather than editing to an empty string — avoids
@@ -743,13 +779,22 @@ Approve in the desktop app to continue.`,
   // Adapter helpers
   // ---------------------------------------------------------------------------
 
+  /**
+   * Edit a previously-sent message in place.
+   *
+   * Returns `true` when the bubble now reflects `text` (or the failure is a
+   * benign no-op), and `false` when the edit could not be applied for a reason
+   * a fresh send could still fix (edit window expired, message gone, …). The
+   * `progress` finaliser uses the `false` signal to fall back to posting a new
+   * message instead of stranding the user on "💭 thinking…".
+   */
   private async tryEditMessage(
     adapter: PlatformAdapter,
     binding: ChannelBinding,
     messageId: string,
     text: string,
     state: RenderState,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const truncated = truncateForAdapter(text, adapter)
 
     try {
@@ -757,6 +802,7 @@ Approve in the desktop app to continue.`,
       // message_thread_id, but we pass it for caller uniformity.
       await adapter.editMessage(binding.channelId, messageId, truncated, bindingOpts(binding))
       state.currentEditIntervalMs = DEFAULT_EDIT_INTERVAL_MS
+      return true
     } catch (err: unknown) {
       const is429 =
         err instanceof Error &&
@@ -767,7 +813,8 @@ Approve in the desktop app to continue.`,
           state.currentEditIntervalMs = DEFAULT_EDIT_INTERVAL_MS
         }, BACKOFF_RESET_MS)
       }
-      // Other errors: silently skip — text_complete / complete will retry.
+      // Other errors: report failure so callers may retry or fall back.
+      return false
     }
   }
 

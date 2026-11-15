@@ -13,7 +13,7 @@
 /**
  * Source types - how we connect to the source
  */
-export type SourceType = 'mcp' | 'api' | 'local';
+export type SourceType = 'mcp' | 'api' | 'local' | 'web' | 'email';
 
 /**
  * MCP source authentication types (for individual source connections)
@@ -413,6 +413,50 @@ export interface LocalSourceConfig {
 }
 
 /**
+ * Web page configuration
+ *
+ * A web source is a bookmark: the url is the entry point, and `guide.md` carries what the page is
+ * and how to work with it. Nothing is captured or stored here — the browser reads the page when it
+ * is needed.
+ */
+export interface WebSourceConfig {
+  url: string;
+}
+
+/**
+ * Mailbox configuration
+ *
+ * One mailbox per source folder. Non-secret settings live here; the password or
+ * authorization code lives in the credential store (source_basic, user = address).
+ */
+export interface EmailSourceConfig {
+  /** Full address. Also the IMAP/SMTP login user. */
+  address: string;
+  /** Provider preset id (qq, 163, gmail, outlook, ...). Inferred from the address when omitted. */
+  provider?: string;
+  /** Shown in tool output and the UI. */
+  displayName?: string;
+  /** Mailbox used when a tool call does not name one. Defaults to INBOX. */
+  defaultMailbox?: string;
+  /** Per-account overrides for self-hosted or uncommon servers. */
+  imap?: { host?: string; port?: number; secure?: boolean };
+  smtp?: { host?: string; port?: number; secure?: boolean };
+}
+
+/**
+ * The folder a saved note's images live in — named after the note, so a folder on disk says which
+ * file it belongs to without either of them being read. `page.md` → `page.assets`.
+ *
+ * A naming convention rather than a secret, and one the writer and the reader share:
+ * `read --save --images` writes into it, and anything reading the note later resolves its pictures
+ * from it.
+ */
+export function snapshotAssetsDirName(noteFileName: string): string {
+  const stem = noteFileName.replace(/\.[a-z0-9]+$/i, '');
+  return `${stem || 'snapshot'}.assets`;
+}
+
+/**
  * Source connection status
  * - 'connected': Source is connected and working
  * - 'needs_auth': Source requires authentication
@@ -460,6 +504,8 @@ export interface FolderSourceConfig {
   mcp?: McpSourceConfig;
   api?: ApiSourceConfig;
   local?: LocalSourceConfig;
+  web?: WebSourceConfig;
+  email?: EmailSourceConfig;
 
   // Icon: emoji or URL
   // Config is the source of truth. Local icon files are auto-discovered only when icon is undefined.
@@ -502,6 +548,42 @@ export interface SourceGuide {
 }
 
 /**
+ * A saved page's note, split into the block that describes it and the page itself.
+ *
+ * The note's shape is fixed and written by `renderWebSnapshotNote`; this is the reader's half of
+ * it, for anything working with a note `read --save` wrote (a markdown renderer has no concept of
+ * frontmatter, and would set `---` as a rule and `title: …` as a run-on paragraph). Only the
+ * leading block counts: a `---` line further down is a horizontal rule.
+ */
+export function splitWebSnapshotNote(note: string): { frontmatter: string; body: string } {
+  const match = note.match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/)
+  if (!match) return { frontmatter: '', body: note }
+  return { frontmatter: match[1] ?? '', body: note.slice(match[0].length) }
+}
+
+/** The page itself, without the envelope. See {@link splitWebSnapshotNote}. */
+export function webSnapshotBody(note: string): string {
+  return splitWebSnapshotNote(note).body
+}
+
+/**
+ * Page facts worth keeping, as much as the page was willing to state them.
+ *
+ * One type for both halves: extraction fills it in (`buildWebSnapshot`, from the page's own
+ * metadata) and it is written into the note's frontmatter, from which a later reader can read it
+ * back. It lives here rather than beside the extractor because the extractor pulls in Defuddle,
+ * which a renderer should not have to load.
+ */
+export interface WebSnapshotMeta {
+  author?: string
+  published?: string
+  description?: string
+  site?: string
+  language?: string
+  wordCount?: number
+}
+
+/**
  * Fully loaded source with all files
  */
 export interface LoadedSource {
@@ -537,6 +619,8 @@ export interface CreateSourceInput {
   mcp?: McpSourceConfig;
   api?: ApiSourceConfig;
   local?: LocalSourceConfig;
+  web?: WebSourceConfig;
+  email?: EmailSourceConfig;
   icon?: string; // Emoji or URL (auto-downloaded)
   enabled?: boolean;
 }

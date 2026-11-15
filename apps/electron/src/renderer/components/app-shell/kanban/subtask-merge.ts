@@ -16,7 +16,7 @@
  * children of a merged node are superseded — collapsed into the node row instead of
  * duplicating it. Without a spec the rows are simply the children (legacy tiles).
  */
-import type { KanbanSubtask, SubtaskRunState } from './types'
+import type { KanbanModelConnection, KanbanSubtask, SubtaskRunState } from './types'
 import { quickAddSessionId } from './task-spec-form'
 
 /** A spec node reduced to what a tile row needs (model pre-defaulted from the spec). */
@@ -32,6 +32,8 @@ export interface SubtaskChildRow {
   title: string
   runState: SubtaskRunState
   model: string
+  /** Connection serving `model`, resolved by the caller; drives the row's brand icon. */
+  connection?: KanbanModelConnection
   taskNodeId?: string
   createdAt?: number
 }
@@ -42,6 +44,7 @@ const toRow = (child: SubtaskChildRow): KanbanSubtask => ({
   title: child.title,
   runState: child.runState,
   model: child.model,
+  connection: child.connection,
 })
 
 export function mergeSubtaskRows(

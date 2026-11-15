@@ -11,7 +11,10 @@
 import { atom } from 'jotai'
 import type { Getter, Setter } from 'jotai/vanilla'
 import { atomFamily } from 'jotai-family'
-import type { Session, Message } from '../../shared/types'
+// Direct path, not the sessions barrel: the barrel also exports disk and
+// agent plumbing that must never enter the renderer bundle.
+import { SESSION_MESSAGE_PAGE_SIZE } from '@craft-agent/shared/sessions/message-page'
+import type { Session, Message, SessionMode } from '../../shared/types'
 
 /**
  * Session metadata for list display (lightweight, no messages)
@@ -43,6 +46,8 @@ export interface SessionMeta {
   hasUnread?: boolean
   /** Labels for filtering (additive tags, many-per-session) */
   labels?: string[]
+  /** The layer this conversation is working in (only meaningful inside its project; prompt-block only) */
+  mode?: SessionMode
   /** Permission mode ('safe', 'ask', 'guarded', 'allow-all') — used by view expressions */
   permissionMode?: string
   /** Session status for filtering */
@@ -69,8 +74,10 @@ export interface SessionMeta {
   createdAt?: number
   /** Total number of messages in this session */
   messageCount?: number
-  /** When true, session is hidden from session list (e.g., mini edit sessions) */
+  /** When true, session is hidden from session list (e.g., mini edit sessions, the assistant) */
   hidden?: boolean
+  /** `bot` for the assistant's own conversation; absent for ordinary ones. */
+  role?: 'bot'
   /** Whether this session is archived */
   isArchived?: boolean
   /** Timestamp when session was archived (for retention policy) */
@@ -89,6 +96,8 @@ export interface SessionMeta {
   taskNodeId?: string
   /** Tasks Conductor: total DAG node count (orchestrator only) — stable board progress denominator while children spawn lazily */
   taskNodeCount?: number
+  /** Tasks Conductor: how many `kind: approval` gates of the active run are waiting on a person */
+  taskAwaitingApproval?: number
   /** Tasks Conductor: a generate-time draft orchestrator, hidden from the board until adopted by createTask. */
   taskDraft?: boolean
 }
@@ -599,8 +608,21 @@ async function loadSessionMessages(
 
   // Create the loading promise with all the fetch and update logic
   const loadPromise = (async (): Promise<Session | null> => {
-    // Fetch messages from main process
-    const loadedSession = await window.electronAPI.getSessionMessages(sessionId)
+    // Fetch the newest page of messages from main process.
+    //
+    // The server keeps the whole history (branching, compaction and retries read
+    // it); what a conversation long enough to matter should not do is *carry* all
+    // of it into the renderer on open. Older pages arrive as the reader scrolls
+    // up — see `loadOlderSessionMessagesAtom`.
+    const loadedSession = await window.electronAPI.getSessionMessages(sessionId, {
+      limit: SESSION_MESSAGE_PAGE_SIZE,
+      // A page that stops in the middle of a long turn is unreadable: the
+      // question is off-screen, the turn has no beginning, and everything that
+      // measures from the question (elapsed time, the turn rail) has nothing to
+      // measure from. So the opening page carries a few questions regardless of
+      // how many messages that costs.
+      minQuestions: 5,
+    })
     if (!loadedSession) {
       return get(sessionAtomFamily(sessionId))
     }
@@ -632,6 +654,13 @@ async function loadSessionMessages(
             : existingSession.isProcessing && existingSession.messages.length > 0
               ? existingSession.messages
               : loadedSession.messages,
+          // Kept in step with whichever message list won above: the flag describes
+          // what the renderer is missing, so preserving the in-memory list also
+          // preserves how much of the history that list is missing.
+          messagesTruncated: preservedStaleMessages
+            || (existingSession.isProcessing && existingSession.messages.length > 0)
+            ? existingSession.messagesTruncated ?? false
+            : loadedSession.messagesTruncated ?? false,
           tokenUsage: loadedSession.tokenUsage ?? existingSession.tokenUsage,
           sessionFolderPath: loadedSession.sessionFolderPath ?? existingSession.sessionFolderPath,
         }
@@ -683,6 +712,53 @@ export const ensureSessionMessagesLoadedAtom = atom(
 )
 
 /**
+ * Action atom: fetch one more page of *older* messages for a session.
+ *
+ * This is the other half of paged loading. The transcript's reverse pagination
+ * used to be a slice of whatever the renderer happened to hold; now that opening
+ * a conversation carries only its newest page, scrolling past the oldest loaded
+ * message has to ask for the page before it.
+ *
+ * Returns how many messages were added — 0 when the conversation is complete,
+ * or when the page brought nothing this renderer did not already have — so the
+ * caller can widen its turn window by exactly that much.
+ */
+export const loadOlderSessionMessagesAtom = atom(
+  null,
+  async (get, set, sessionId: string): Promise<number> => {
+    const session = get(sessionAtomFamily(sessionId))
+    if (!session || !session.messagesTruncated) return 0
+    const oldest = session.messages[0]
+    if (!oldest) return 0
+
+    const page = await window.electronAPI.getSessionMessages(sessionId, {
+      limit: SESSION_MESSAGE_PAGE_SIZE,
+      before: oldest.id,
+    })
+    if (!page) return 0
+
+    // Re-read after the await: a streamed token may have appended a message
+    // while the page was in flight, and that append must survive.
+    const current = get(sessionAtomFamily(sessionId))
+    if (!current) return 0
+
+    const known = new Set(current.messages.map(message => message.id))
+    const older = page.messages.filter(message => !known.has(message.id))
+
+    // A page that brought nothing new means the cursor no longer names a message
+    // the server has (deleted, or compacted away). Keep what is on screen and
+    // stop asking — otherwise the scroll handler would fetch in a loop.
+    set(sessionAtomFamily(sessionId), {
+      ...current,
+      messages: older.length > 0 ? [...older, ...current.messages] : current.messages,
+      messagesTruncated: older.length > 0 ? (page.messagesTruncated ?? false) : false,
+    })
+
+    return older.length
+  }
+)
+
+/**
  * Force-refresh session messages even if the session is currently marked as loaded.
  * Used by reconnect recovery when a session atom is stuck in an empty-but-loaded state.
  */
@@ -690,6 +766,91 @@ export const forceSessionMessagesReloadAtom = atom(
   null,
   async (get, set, sessionId: string): Promise<Session | null> => {
     return loadSessionMessages(get, set, sessionId, { force: true })
+  }
+)
+
+/**
+ * Action atom: every question in a conversation, for the turn rail.
+ *
+ * Answered over the whole history — the rail has to tick questions that were
+ * never loaded, or it quietly claims the conversation starts where the page does.
+ */
+export const sessionQuestionsAtom = atom(
+  null,
+  async (_get, _set, sessionId: string) => {
+    return window.electronAPI.getSessionQuestions(sessionId)
+  }
+)
+
+/**
+ * Action atom: where `query` occurs in a conversation.
+ *
+ * Answered by the server over the whole history, because search is the one
+ * feature that must reach text the reader cannot see — a client holding only the
+ * newest page would otherwise report "0 results" for text that is plainly there.
+ * One definition of "searchable" for every client, too.
+ */
+export const searchSessionMessagesAtom = atom(
+  null,
+  async (_get, _set, sessionId: string, query: string) => {
+    return window.electronAPI.searchSessionMessages(sessionId, query)
+  }
+)
+
+/** Reveals in flight per session, so repeated jumps do not refetch the same page. */
+const revealPromises = new Map<string, Promise<boolean>>()
+
+/**
+ * Action atom: make one specific message available to the transcript.
+ *
+ * This is how a search hit from the middle of an unloaded history gets opened:
+ * the page still ends where the client's window begins — no hole in the
+ * conversation — it just starts early enough to contain the target.
+ *
+ * Returns whether the message is now present (false when it no longer exists).
+ */
+export const revealSessionMessageAtom = atom(
+  null,
+  async (get, set, sessionId: string, messageId: string): Promise<boolean> => {
+    const existing = get(sessionAtomFamily(sessionId))
+    if (!existing) return false
+    if (existing.messages.some(message => message.id === messageId)) return true
+
+    const oldest = existing.messages[0]
+    if (!oldest) return false
+
+    const key = `${sessionId}:${messageId}`
+    const inFlight = revealPromises.get(key)
+    if (inFlight) return inFlight
+
+    const pending = (async () => {
+      const page = await window.electronAPI.getSessionMessages(sessionId, {
+        before: oldest.id,
+        include: messageId,
+      })
+      if (!page) return false
+
+      const current = get(sessionAtomFamily(sessionId))
+      if (!current) return false
+
+      const known = new Set(current.messages.map(message => message.id))
+      const older = page.messages.filter(message => !known.has(message.id))
+
+      set(sessionAtomFamily(sessionId), {
+        ...current,
+        messages: older.length > 0 ? [...older, ...current.messages] : current.messages,
+        messagesTruncated: page.messagesTruncated ?? false,
+      })
+
+      return older.some(message => message.id === messageId)
+    })()
+
+    revealPromises.set(key, pending)
+    try {
+      return await pending
+    } finally {
+      revealPromises.delete(key)
+    }
   }
 )
 

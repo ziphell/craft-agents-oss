@@ -5,7 +5,7 @@
  * Pure functions that return new state - no side effects.
  */
 
-import type { SessionState, StreamingState, TextDeltaEvent, TextCompleteEvent, TextDiscardEvent } from '../types'
+import type { SessionState, StreamingState, TextDeltaEvent, TextCompleteEvent, TextDiscardEvent, ThinkingCompleteEvent } from '../types'
 import type { Message } from '../../../shared/types'
 import {
   findStreamingMessage,
@@ -159,5 +159,42 @@ export function handleTextComplete(
   return {
     session: appendMessage(session, newMessage, shouldUpdateTimestamp),
     streaming: null,
+  }
+}
+
+/**
+ * Handle thinking_complete - append a finished reasoning block.
+ *
+ * Reasoning has no streaming form: it arrives complete, persisted as an
+ * intermediate assistant message flagged with isThinking. Keeping it
+ * intermediate means final-response consumers ignore it.
+ */
+export function handleThinkingComplete(
+  state: SessionState,
+  event: ThinkingCompleteEvent
+): SessionState {
+  const { session, streaming } = state
+
+  // Re-delivery of the same persisted message is a no-op.
+  if (event.messageId && session.messages.some(m => m.id === event.messageId)) {
+    return state
+  }
+
+  const newMessage: Message = {
+    id: event.messageId ?? generateMessageId(),
+    role: 'assistant',
+    content: event.text,
+    timestamp: event.timestamp ?? Date.now(),
+    isStreaming: false,
+    isPending: false,
+    isIntermediate: true,
+    isThinking: true,
+    turnId: event.turnId,
+    parentToolUseId: event.parentToolUseId,
+  }
+
+  return {
+    session: appendMessage(session, newMessage, false),
+    streaming,
   }
 }

@@ -29,6 +29,7 @@ import {
 import {
   isCompatProvider,
   modelSupportsImages,
+  modelSupportsThinking,
   resolveEffectiveConnectionSlug,
   type LlmConnectionWithStatus,
 } from '@config/llm-connections'
@@ -40,6 +41,7 @@ import { ConnectionIcon } from '@/components/icons/ConnectionIcon'
 import { derivePickerMode } from './picker-mode'
 import {
   groupConnectionsByProvider,
+  modelLabel,
   stripPiPrefixForDisplay,
 } from './model-picker-helpers'
 import { getContextDisplay, getContextDisplayLabels, type ContextStatus } from './context-display'
@@ -52,7 +54,8 @@ interface CompactModelSelectorProps {
   onConnectionChange?: (connectionSlug: string) => void
   thinkingLevel?: ThinkingLevel
   onThinkingLevelChange?: (level: ThinkingLevel) => void
-  isEmptySession?: boolean
+  /** True while the session is generating — switching is only allowed between turns */
+  isProcessing?: boolean
   connectionUnavailable?: boolean
   contextStatus?: ContextStatus
 }
@@ -64,7 +67,7 @@ export function CompactModelSelector({
   onConnectionChange,
   thinkingLevel = 'medium',
   onThinkingLevelChange,
-  isEmptySession = false,
+  isProcessing = false,
   connectionUnavailable = false,
   contextStatus,
 }: CompactModelSelectorProps) {
@@ -100,7 +103,6 @@ export function CompactModelSelector({
   const pickerMode = derivePickerMode({
     connectionUnavailable,
     connectionDefaultModel,
-    isEmptySession,
     connectionCount: llmConnections.length,
   })
 
@@ -124,7 +126,7 @@ export function CompactModelSelector({
     const model = availableModels.find(
       m => typeof m !== 'string' && m.id === currentModel,
     )
-    return typeof model !== 'string' && model?.supportsThinking === false
+    return !modelSupportsThinking(model)
   }, [availableModels, currentModel])
 
   const connectionsByProvider = React.useMemo(
@@ -143,6 +145,12 @@ export function CompactModelSelector({
   React.useEffect(() => {
     if (!open) setExpandedConnection(null)
   }, [open])
+
+  // A turn can start while the drawer is open (e.g. a queued send lands); close it
+  // so the "switch only between turns" rule holds.
+  React.useEffect(() => {
+    if (isProcessing) setOpen(false)
+  }, [isProcessing])
 
   const handlePickFlatModel = React.useCallback(
     (modelId: string) => {
@@ -165,10 +173,19 @@ export function CompactModelSelector({
   )
 
   return (
-    <Drawer open={open} onOpenChange={setOpen}>
+    <Drawer
+      open={open}
+      onOpenChange={(next) => {
+        // Switching is only allowed between turns: while the session is
+        // generating the input shows the stop button and this drawer stays shut.
+        if (next && isProcessing) return
+        setOpen(next)
+      }}
+    >
       <DrawerTrigger asChild>
         <button
           type="button"
+          disabled={isProcessing}
           aria-label={connectionUnavailable
             ? t('common.unavailable')
             : `${t('common.model')}: ${currentModelDisplayName}`}
@@ -177,6 +194,7 @@ export function CompactModelSelector({
             connectionUnavailable
               ? 'bg-destructive/10 text-destructive'
               : 'bg-foreground/5 text-foreground/70',
+            isProcessing && 'opacity-50 cursor-not-allowed',
           )}
           style={{ '--shadow-color': 'var(--foreground-rgb)' } as React.CSSProperties}
         >
@@ -184,6 +202,7 @@ export function CompactModelSelector({
             <>
               <AlertCircle className="h-3.5 w-3.5" />
               <span>{t('common.unavailable')}</span>
+              <ChevronDown className="h-3 w-3 opacity-50 shrink-0" />
             </>
           ) : (
             <>
@@ -282,12 +301,11 @@ export function CompactModelSelector({
                         <div className="pl-6 flex flex-col gap-0.5">
                           {(conn.models || ANTHROPIC_MODELS).map(model => {
                             const modelId = typeof model === 'string' ? model : model.id
-                            const modelName = typeof model === 'string'
-                              ? stripPiPrefixForDisplay(getModelShortName(model))
-                              : (model.name ?? stripPiPrefixForDisplay(model.id))
+                            const customEndpoint = isCompatProvider(conn.providerType)
+                            const modelName = modelLabel(model, { customEndpoint })
                             const isSelectedModel =
                               isCurrentConnection && currentModel === modelId
-                            const showVision = isCompatProvider(conn.providerType)
+                            const showVision = customEndpoint
                             const visionOn = showVision && modelSupportsImages(conn, modelId)
                             return (
                               <DrawerClose asChild key={modelId}>
@@ -332,9 +350,10 @@ export function CompactModelSelector({
             // 'flat' — list models of the active connection
             availableModels.map(model => {
               const modelId = typeof model === 'string' ? model : model.id
-              const modelName = typeof model === 'string'
-                ? stripPiPrefixForDisplay(getModelShortName(model))
-                : (model.name ?? stripPiPrefixForDisplay(model.id))
+              const customEndpoint =
+                !!effectiveConnectionDetails &&
+                isCompatProvider(effectiveConnectionDetails.providerType)
+              const modelName = modelLabel(model, { customEndpoint })
               const isSelected = currentModel === modelId
               const descriptionKey =
                 typeof model !== 'string' && 'descriptionKey' in model
@@ -345,9 +364,7 @@ export function CompactModelSelector({
                 : (typeof model !== 'string' && 'description' in model
                     ? (model.description as string)
                     : '')
-              const showVision =
-                !!effectiveConnectionDetails &&
-                isCompatProvider(effectiveConnectionDetails.providerType)
+              const showVision = customEndpoint
               const visionOn =
                 showVision && modelSupportsImages(effectiveConnectionDetails!, modelId)
               return (

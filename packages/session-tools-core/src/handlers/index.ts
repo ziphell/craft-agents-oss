@@ -79,24 +79,20 @@ export type { CreateTaskArgs } from './create-task.ts';
 export { handleArchiveSession } from './archive-session.ts';
 export type { ArchiveSessionArgs } from './archive-session.ts';
 
-// Pages
+// Tweaks
 export {
-  handleListPages,
-  handleGetPage,
-  handleCreatePage,
-  handleUpdatePage,
-  handleWritePageData,
-  handleDeletePage,
-} from './pages.ts';
+  handleListTweaks,
+  handleGetTweak,
+  handleCreateTweak,
+  handleUpdateTweak,
+  handleDeleteTweak,
+} from './tweaks.ts';
 export type {
-  ListPagesArgs,
-  GetPageArgs,
-  CreatePageArgs,
-  UpdatePageArgs,
-  WritePageDataArgs,
-  DeletePageArgs,
-} from './pages.ts';
-
+  GetTweakArgs,
+  CreateTweakArgs,
+  UpdateTweakArgs,
+  DeleteTweakArgs,
+} from './tweaks.ts';
 // Decision model
 export { handleDecide } from './decide.ts';
 export type { DecideArgs } from './decide.ts';

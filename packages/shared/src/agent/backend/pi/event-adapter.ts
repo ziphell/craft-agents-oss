@@ -571,6 +571,17 @@ export class PiEventAdapter extends BaseEventAdapter {
           break;
         }
 
+        // Model reasoning lives in `thinking` blocks. Emit one event per block,
+        // in content order, so multiple reasoning segments stay distinct steps.
+        // Empty (redacted) blocks are skipped.
+        for (const thinking of this.extractThinkingBlocks(event.message)) {
+          yield {
+            type: 'thinking_complete',
+            text: thinking,
+            turnId: this.nextSubTurnId('think'),
+          };
+        }
+
         // Extract text content from the final assistant message
         const textContent = this.extractTextFromMessage(event.message);
         // Pi SDK stopReason: 'toolUse' means the model will call tools next (intermediate commentary),
@@ -1048,6 +1059,25 @@ export class PiEventAdapter extends BaseEventAdapter {
     }
 
     return null;
+  }
+
+  /**
+   * Extract model reasoning (`thinking`) blocks from a Pi AgentMessage, in
+   * content order. Redacted thinking carries only a signature and no text, so
+   * it is skipped rather than emitted as an empty step.
+   */
+  private extractThinkingBlocks(message: unknown): string[] {
+    if (!message || typeof message !== 'object') return [];
+
+    const msg = message as {
+      content?: Array<{ type: string; thinking?: string }>;
+    };
+
+    if (!Array.isArray(msg.content)) return [];
+
+    return msg.content
+      .filter((c) => c.type === 'thinking' && c.thinking?.trim())
+      .map((c) => c.thinking!.trim());
   }
 
   /**

@@ -104,6 +104,7 @@ export const DOC_REFS = {
   sources: `${APP_ROOT}/docs/sources.md`,
   permissions: `${APP_ROOT}/docs/permissions.md`,
   skills: `${APP_ROOT}/docs/skills.md`,
+  playbooks: `${APP_ROOT}/docs/playbooks.md`,
   themes: `${APP_ROOT}/docs/themes.md`,
   statuses: `${APP_ROOT}/docs/statuses.md`,
   labels: `${APP_ROOT}/docs/labels.md`,
@@ -111,15 +112,17 @@ export const DOC_REFS = {
   automations: `${APP_ROOT}/docs/automations.md`,
   hooks: `${APP_ROOT}/docs/automations.md`,
   tasks: `${APP_ROOT}/docs/automations.md`,
-  pages: `${APP_ROOT}/docs/pages.md`,
+  tweaks: `${APP_ROOT}/docs/tweaks.md`,
   mermaid: `${APP_ROOT}/docs/mermaid.md`,
   dataTables: `${APP_ROOT}/docs/data-tables.md`,
   htmlPreview: `${APP_ROOT}/docs/html-preview.md`,
+  drawioTools: `${APP_ROOT}/docs/drawio-tools.md`,
   pdfPreview: `${APP_ROOT}/docs/pdf-preview.md`,
   imagePreview: `${APP_ROOT}/docs/image-preview.md`,
   markdownPreview: `${APP_ROOT}/docs/markdown-preview.md`,
   llmTool: `${APP_ROOT}/docs/llm-tool.md`,
   browserTools: `${APP_ROOT}/docs/browser-tools.md`,
+  layers: `${APP_ROOT}/docs/layers.md`,
   decisions: `${APP_ROOT}/docs/decisions.md`,
   craftCli: `${APP_ROOT}/docs/craft-cli.md`,
   docsDir: `${APP_ROOT}/docs/`,
@@ -167,6 +170,33 @@ export function initializeDocs(): void {
   }
 
   debug(`[docs] Synced ${Object.keys(bundledDocs).length} docs`);
+}
+
+/**
+ * Get the text of one bundled doc, or null when it cannot be read in this runtime.
+ *
+ * For the places where a doc **is** the content rather than a reference to read
+ * later — text injected whole into a prompt has to be readable at prompt-build time.
+ *
+ * The bundled copy is preferred (it is always the running version); the file synced
+ * on launch is the same text and is the fallback for a runtime that has no bundled
+ * assets root (a server started without one).
+ */
+export function getDocContent(filename: string): string | null {
+  const bundled = getBundledDocs()[filename];
+  if (typeof bundled === 'string' && bundled.trim().length > 0) return bundled;
+
+  try {
+    const synced = getDocPath(filename);
+    if (existsSync(synced)) {
+      const content = readFileSync(synced, 'utf-8');
+      if (content.trim().length > 0) return content;
+    }
+  } catch {
+    // Nothing to log: a missing doc degrades to the caller's own fallback.
+  }
+
+  return null;
 }
 
 // Export the lazy getter for external access

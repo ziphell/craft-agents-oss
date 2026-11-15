@@ -1,6 +1,6 @@
 {
   "name": "@craft-agent/server-core",
-  "version": "0.14.1",
+"version": "0.14.1",
   "license": "Apache-2.0",
   "description": "Reusable headless server infrastructure for Craft Agent",
   "type": "module",
@@ -25,12 +25,17 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@craft-agent/office-host": "workspace:*",
     "@craft-agent/core": "workspace:*",
     "@craft-agent/shared": "workspace:*",
     "jose": "^6.0.0",
     "ws": "^8.19.0",
     "sharp": "0.34.5",
-    "@earendil-works/pi-ai": "0.87.1"
+    "@earendil-works/pi-ai": "0.87.1",
+    "mammoth": "^1.11.0",
+    "node-pptx-parser": "^1.0.1",
+    "turndown": "^7.2.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "typescript": "^5.8.2",

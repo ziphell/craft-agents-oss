@@ -19,8 +19,8 @@ export default defineConfig({
   base: './',
   build: {
     outDir: resolve(__dirname, 'dist'),
-    emptyDirBeforeWrite: true,
-    sourcemap: true,
+    emptyOutDir: true,
+    sourcemap: false,
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'src/index.html'),
@@ -102,6 +102,9 @@ export default defineConfig({
       return {
         '/api': { target: httpTarget, changeOrigin: true, secure: false },
         '/login': { target: httpTarget, changeOrigin: true, secure: false },
+        // The bundled drawio editor is served by the hub at this origin in production; in dev
+        // the app is on Vite's port, so the same path has to reach the hub too.
+        '/drawio': { target: httpTarget, changeOrigin: true, secure: false },
         '/ws': { target: wsTarget, ws: true, secure: false },
       }
     })(),

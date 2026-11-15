@@ -11,10 +11,21 @@
 import i18n from 'i18next'
 import { toast } from 'sonner'
 import { openExternalUrl } from '@craft-agent/ui'
+import {
+  CLIENT_DOCUMENT_FLUSH,
+  CLIENT_OFFICE_APPLY_EDIT,
+} from '@craft-agent/server-core/transport'
 import { WsRpcClient } from '../../../electron/src/transport/client'
 import { buildClientApi } from '../../../electron/src/transport/build-api'
 import { CHANNEL_MAP } from '../../../electron/src/transport/channel-map'
 import type { ElectronAPI, TransportConnectionState } from '../../../electron/src/shared/types'
+import {
+  hasNativeBridge,
+  nativeForeground,
+  onNativeForegroundChange,
+  onNativeNotificationNavigate,
+  postToNative,
+} from './native-bridge'
 
 // ---------------------------------------------------------------------------
 // Web file picker (replaces native Electron dialog)
@@ -63,28 +74,112 @@ export interface WebApiOptions {
   workspaceId?: string
 }
 
+/**
+ * Per-tab memory of the workspace being viewed. sessionStorage (not localStorage) on purpose:
+ * a reload keeps the tab where it was, a brand new tab starts from the default workspace.
+ */
+export const WORKSPACE_STORAGE_KEY = 'craft:workspaceId'
+/** 通知开关是客户端能力，不经过 hub；存在页面存储里，跟随 origin。 */
+const NOTIFICATIONS_STORAGE_KEY = 'craft:notificationsEnabled'
+
+function rememberWorkspace(workspaceId: string | undefined) {
+  if (!workspaceId) return
+  sessionStorage.setItem(WORKSPACE_STORAGE_KEY, workspaceId)
+}
+
 export function createWebApi(options: WebApiOptions): {
   api: ElectronAPI
   client: WsRpcClient
 } {
   const { serverUrl, workspaceId } = options
+  /** The workspace this tab speaks for now — `switchWorkspace` moves it with the connection. */
+  let currentWorkspaceId = workspaceId
+  rememberWorkspace(workspaceId)
 
   const client = new WsRpcClient(serverUrl, {
     workspaceId,
     autoReconnect: true,
     mode: 'remote',
+    clientInfo: {
+      name: typeof navigator !== 'undefined' ? 'Web browser' : 'Web client',
+      platform: typeof navigator !== 'undefined' ? navigator.platform : undefined,
+      role: 'window',
+    },
     // No token — auth is via session cookie sent on WebSocket upgrade
+    //
+    // The two office hops are declared here because the server refuses to invoke a capability a
+    // client did not advertise (`invokeClientWithTimeout` checks `client.capabilities`). This tab
+    // does answer them — the relay below reaches the same page the desktop window uses.
+    clientCapabilities: [CLIENT_OFFICE_APPLY_EDIT, CLIENT_DOCUMENT_FLUSH],
   })
 
-  // Build the API proxy from the same channel map the Electron app uses
+  // Build the API proxy from the same channel map the Electron app uses.
+  // Notification channels are LOCAL_ONLY on desktop; the Android shell answers them through the
+  // native bridge, so they count as available here too.
+  const isChannelAvailable = (channel: string): boolean =>
+    (hasNativeBridge() && channel.startsWith('notification:')) || client.isChannelAvailable(channel)
+
   const baseApi = buildClientApi(
     client,
     CHANNEL_MAP,
-    (ch) => client.isChannelAvailable(ch),
+    isChannelAvailable,
+  )
+
+  /**
+   * The two office page hops, in a browser.
+   *
+   * On desktop these are **preload ↔ page** (`bootstrap.ts`): the capability lands in the preload,
+   * which hands it to the page and relays the answer. A browser tab has no preload — but it runs the
+   * same app (`@/App` is the app's own `App.tsx`) over the same RPC client, so the hop lives here:
+   * the capability calls the page's subscriber directly, and the answer arrives through
+   * `respondOfficeEdit` / `respondDocumentFlush`.
+   *
+   * A tab whose page has no editor open answers "no" rather than leaving the agent's tool call
+   * waiting — the same choice the preload makes when nothing subscribed.
+   */
+  type OfficeHopResult = { ok: boolean; message?: string }
+  type OfficeEditPayload = {
+    path: string
+    edit: { from: number; to: number; expectedText: string; text: string }
+  }
+  let officeEditHandler: ((id: number, payload: OfficeEditPayload) => void) | null = null
+  let documentFlushHandler: ((id: number, path: string) => void) | null = null
+  let hopSeq = 0
+  const pendingHops = new Map<number, (result: OfficeHopResult) => void>()
+
+  /** Ask the page; a page that never answers is a "no" after the same 30 s the preload waits. */
+  function relayToPage(ask: ((id: number) => void) | null): Promise<OfficeHopResult> {
+    return new Promise((resolve) => {
+      if (!ask) {
+        resolve({ ok: false, message: 'no editor in this window can do that' })
+        return
+      }
+      const id = ++hopSeq
+      pendingHops.set(id, resolve)
+      ask(id)
+      setTimeout(() => {
+        if (!pendingHops.delete(id)) return
+        resolve({ ok: false, message: 'the editor did not answer' })
+      }, 30_000)
+    })
+  }
+
+  function settleHop(id: number, result: OfficeHopResult): void {
+    const resolve = pendingHops.get(id)
+    if (!resolve) return
+    pendingHops.delete(id)
+    resolve(result)
+  }
+
+  client.handleCapability(CLIENT_OFFICE_APPLY_EDIT, (payload: OfficeEditPayload) =>
+    relayToPage(officeEditHandler ? (id) => officeEditHandler?.(id, payload) : null),
+  )
+  client.handleCapability(CLIENT_DOCUMENT_FLUSH, (payload: { path?: string }) =>
+    relayToPage(documentFlushHandler ? (id) => documentFlushHandler?.(id, payload?.path ?? '') : null),
   )
 
   // Override LOCAL_ONLY methods with web-compatible implementations
-  const webOverrides: Partial<ElectronAPI> = {
+  const webOverrides = {
     // Shell operations — use browser APIs
     openUrl: (url: string) => {
       const result = openExternalUrl(url)
@@ -101,10 +196,47 @@ export function createWebApi(options: WebApiOptions): {
     },
     openFile: () => Promise.resolve(), // no-op in browser
     showInFolder: () => Promise.resolve(), // no-op in browser
+    /** No sandboxed-preview navigation hook in a browser tab — there is no main process. */
+    onBrowserOpenLink: () => () => {},
+    /**
+     * The office hops are real in a browser (see `relayToPage`): this tab runs the same app, whose
+     * `App.tsx` subscribes with `applyOfficeEdit` / `flushDocument`. Desktop does the equivalent in
+     * its preload; there is no preload here, so the relay above stands in for it.
+     */
+
+    onOfficeEditRequest: (handler) => {
+      officeEditHandler = handler
+      return () => {
+        if (officeEditHandler === handler) officeEditHandler = null
+      }
+    },
+    respondOfficeEdit: (id, result) => settleHop(id, result),
+    onDocumentFlushRequest: (handler) => {
+      documentFlushHandler = handler
+      return () => {
+        if (documentFlushHandler === handler) documentFlushHandler = null
+      }
+    },
+    respondDocumentFlush: (id, result) => settleHop(id, result),
 
     // File dialogs
     openFileDialog: webFilePicker,
     openFolderDialog: () => Promise.resolve(null), // not possible in browser
+    openLocalFolderDialog: () => Promise.resolve(null), // not possible in browser
+    /**
+     * A hub-produced export: the browser fetches `/api/exports/<id>` itself, carrying its session
+     * cookie, and the response's `Content-Disposition` names the file. Long downloads keep going
+     * in the browser's own download UI — nothing is held in a JS buffer.
+     */
+    saveProducedFile: async (download) => {
+      const link = document.createElement('a')
+      link.href = `/api/exports/${encodeURIComponent(download.id)}`
+      link.download = download.name
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      return { canceled: false as const, path: download.name }
+    },
 
     // System info
     getVersions: () => ({ node: 'n/a', chrome: navigator.userAgent, electron: 'web' }),
@@ -127,8 +259,19 @@ export function createWebApi(options: WebApiOptions): {
     confirmCloseWindow: () => Promise.resolve(),
     cancelCloseWindow: () => Promise.resolve(),
     onCloseRequested: () => () => {},
-    getWindowFocusState: () => Promise.resolve(document.hasFocus()),
+    getWindowFocusState: () => Promise.resolve(hasNativeBridge() ? nativeForeground() : document.hasFocus()),
+    // No window to maximize here — the caption buttons are the browser's own.
+    getWindowMaximizedState: () => Promise.resolve(false),
+    onWindowMaximizedChange: () => () => {},
     onWindowFocusChange: (cb: (focused: boolean) => void) => {
+      // A WebView keeps DOM focus while the app is in the background; only the shell knows.
+      if (hasNativeBridge()) {
+        return onNativeForegroundChange((focused) => {
+          // 后台时页面可能被冻结，握手定时器会在回到前台后才报超时；直接补一次重连。
+          if (focused && client.getConnectionState().status !== 'connected') client.reconnectNow()
+          cb(focused)
+        })
+      }
       const onFocus = () => cb(true)
       const onBlur = () => cb(false)
       window.addEventListener('focus', onFocus)
@@ -140,18 +283,25 @@ export function createWebApi(options: WebApiOptions): {
     },
 
     // Workspace operations — web UI works with a single connection
-    getWindowWorkspace: () => Promise.resolve(workspaceId ?? null),
+    getWindowWorkspace: () => Promise.resolve(currentWorkspaceId ?? null),
     getWindowMode: () => Promise.resolve('main'),
     // switchWorkspace must call the server so it registers the client's
     // workspaceId — otherwise push events (session updates) won't arrive.
     switchWorkspace: async (wsId: string) => {
       await client.invoke('window:switchWorkspace', wsId)
+      currentWorkspaceId = wsId
+      rememberWorkspace(wsId)
+      // The server's record is not the client's identity: a reconnect after this would offer the
+      // workspace this tab was opened on, fail the server's identity check, and come back as a
+      // different client on the old workspace.
+      client.setWorkspace(wsId)
     },
     openWorkspace: async () => {},
     openSessionInNewWindow: async (_wsId: string, sessionId: string) => {
       // Open in new tab
       window.open(`${window.location.origin}/?session=${sessionId}`, '_blank')
     },
+    // A design's own window is an Electron window; the browser has nothing to open.
 
     // Auto-update — not applicable to web (but expose server version for About page)
     checkForUpdates: () => Promise.resolve({ available: false, currentVersion: client.getServerVersion() ?? '' } as any),
@@ -195,13 +345,23 @@ export function createWebApi(options: WebApiOptions): {
     onBadgeDraw: () => () => {},
     onBadgeDrawWindows: () => () => {},
 
-    // Notifications — Web Notifications API
-    showNotification: async (title: string, body: string) => {
+    // Notifications — the Android shell shows them natively; a browser tab uses Web Notifications.
+    showNotification: async (title: string, body: string, workspaceId: string, sessionId: string) => {
+      if (hasNativeBridge() && postToNative({ type: 'notification', title, body, workspaceId, sessionId })) {
+        return
+      }
       if ('Notification' in window && Notification.permission === 'granted') {
         new Notification(title, { body })
       }
     },
-    onNotificationNavigate: () => () => {},
+    // Native notification taps re-enter the WebView and are delivered back as a shell event.
+    onNotificationNavigate: (cb: (data: { workspaceId: string; sessionId: string }) => void) =>
+      hasNativeBridge() ? onNativeNotificationNavigate(cb) : () => {},
+    // The notification toggle is a client-side preference (notification channels are LOCAL_ONLY).
+    getNotificationsEnabled: async () => localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) !== 'false',
+    setNotificationsEnabled: async (enabled: boolean) => {
+      localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, String(enabled))
+    },
 
     // Git bash (Windows-only) — not applicable
     checkGitBash: () => Promise.resolve({ available: true } as any),
@@ -226,17 +386,60 @@ export function createWebApi(options: WebApiOptions): {
       return client.onConnectionStateChanged(cb as any)
     },
     reconnectTransport: () => { client.reconnectNow(); return Promise.resolve() },
-    isChannelAvailable: (ch: string) => client.isChannelAvailable(ch),
+    isChannelAvailable,
 
     // Relaunch — reload page
     relaunchApp: () => { window.location.reload(); return Promise.resolve() },
     removeWorkspace: () => Promise.resolve(false), // not supported in web UI
-    invokeOnServer: () => Promise.reject(new Error('Cross-server RPC not available in web UI')),
-  }
+
+    // Client connection management — these describe a *window's* transport and its hub config.
+    // The browser tab is the client: it connected to one hub when the page loaded, and a tab
+    // cannot open or re-point windows on that machine.
+    getClientMode: () => Promise.resolve({
+      connections: [],
+      running: null,
+      serverEnabled: false,
+    }),
+    saveRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    removeRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    connectToRemoteConnection: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    testClientModeConnection: () => Promise.resolve({ ok: false, error: 'Not available in the web UI' }),
+    openRemoteWindow: () => Promise.resolve(),
+    switchRemoteWorkspace: () => Promise.resolve(),
+    switchRemoteServer: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    switchLocalWorkspace: () => Promise.reject(new Error('Connection settings are not available in the web UI')),
+    openLocalWindow: () => Promise.resolve(),
+    getWebContentsId: () => -1,
+    getClientIdentity: () => ({ deviceId: '', name: 'Web browser', platform: navigator.platform }),
+
+    // Browsing / creating on some *other* saved server: there is no list of servers here, and no
+    // window to re-point, so every one of these is answered as absent rather than as a no-op that
+    // would look like it succeeded.
+    listRemoteDirectories: () => Promise.reject(new Error('Browsing a remote server is not available in the web UI')),
+    getRemoteHomeDir: () => Promise.reject(new Error('Browsing a remote server is not available in the web UI')),
+    listRemoteWorkspaces: () => Promise.reject(new Error('Browsing a remote server is not available in the web UI')),
+    checkRemoteWorkspaceSlug: () => Promise.reject(new Error('Remote workspaces are not available in the web UI')),
+    createRemoteWorkspace: () => Promise.reject(new Error('Remote workspaces are not available in the web UI')),
+    /** No saved servers, so no links to report on. */
+    getRemoteConnectionStatuses: () => Promise.resolve([]),
+    /** Nothing to rename: the browser tab's title is the page's. */
+    setWindowTitle: () => Promise.resolve(),
+    /** This tab is the target; it cannot be re-pointed from inside itself. */
+    onRemoteTargetChanged: () => () => {},
+
+    // Cross-machine session transfer and its progress stream — both need the desktop main process.
+    transferSessionToWorkspace: () => Promise.reject(new Error('Session transfer is not available in the web UI')),
+    onTransferProgress: () => () => {},
+
+    // A browser `File` has no path; attachments are uploaded by content instead.
+    getFilePath: () => null,
+    // No main process i18n instance to sync — the renderer's own change is the whole change.
+    changeLanguage: () => Promise.resolve(),
+  } satisfies Partial<ElectronAPI>
 
   // OAuth overrides — web-compatible browser opening
   // The Electron preload uses shell.openExternal() which isn't available in browsers.
-  const oauthOverrides: Partial<ElectronAPI> = {
+  const oauthOverrides = {
     // Generic source OAuth — server prepares the flow, we open the auth URL in a new tab.
     // The OAuth provider redirects through the relay to our server's /api/oauth/callback,
     // which completes the token exchange and pushes status via WebSocket.
@@ -328,7 +531,27 @@ export function createWebApi(options: WebApiOptions): {
         error: i18n.t('errors.chatGptOAuthNotAvailable'),
       }
     },
-  }
+  } satisfies Partial<ElectronAPI>
+
+  /**
+   * Compile-time guardrail: every `ElectronAPI` function is answered either by the channel map (a
+   * server call) or by an override here. Adding a method without either fails typecheck, instead
+   * of surfacing as `undefined is not a function` at the one click that needs it.
+   *
+   * Namespaced APIs (browserPane, browserProfiles) are flattened into CHANNEL_MAP keys, so they
+   * are counted through those rather than by their group name.
+   */
+  type AnyFn = (...args: any[]) => any
+  type FunctionKeys<T> = {
+    [K in keyof T]-?: Extract<T[K], AnyFn> extends never ? never : K
+  }[keyof T] & string
+  type UncoveredApi = Exclude<
+    FunctionKeys<ElectronAPI>,
+    keyof typeof CHANNEL_MAP | keyof typeof webOverrides | keyof typeof oauthOverrides
+  >
+  type AssertNever<T extends never> = true
+  const _allApiCovered: AssertNever<UncoveredApi> = true
+  void _allApiCovered
 
   const api = { ...baseApi, ...webOverrides, ...oauthOverrides } as ElectronAPI
 

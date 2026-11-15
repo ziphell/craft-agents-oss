@@ -1,0 +1,120 @@
+{
+ "display": {
+  "workArea": {
+   "x": 0,
+   "y": 0,
+   "width": 1440,
+   "height": 912
+  },
+  "scaleFactor": 2
+ },
+ "calibration": {
+  "sentPhysical": {
+   "x": 1120,
+   "y": 1020
+  },
+  "cursorPointDip": {
+   "x": 559,
+   "y": 509
+  },
+  "expectedDip": {
+   "x": 560,
+   "y": 510
+  }
+ },
+ "baselineUnderOnly": {
+  "down": 1,
+  "up": 1,
+  "move": 6,
+  "enter": 0,
+  "lastXY": [
+   419,
+   186,
+   true
+  ]
+ },
+ "overNoIgnore": {
+  "under": {
+   "down": 0,
+   "up": 0,
+   "move": 0,
+   "enter": 0,
+   "lastXY": null
+  },
+  "over": {
+   "down": 1,
+   "up": 1,
+   "move": 17,
+   "enter": 0,
+   "lastXY": [
+    259,
+    209,
+    true
+   ]
+  }
+ },
+ "overIgnore": {
+  "under": {
+   "down": 1,
+   "up": 1,
+   "move": 3,
+   "enter": 0,
+   "lastXY": [
+    347,
+    169,
+    true
+   ]
+  },
+  "over": {
+   "down": 0,
+   "up": 0,
+   "move": 0,
+   "enter": 0,
+   "lastXY": null
+  }
+ },
+ "hoverNoIgnore": {
+  "under": {
+   "down": 0,
+   "up": 0,
+   "move": 0,
+   "enter": 0,
+   "lastXY": null
+  },
+  "over": {
+   "down": 0,
+   "up": 0,
+   "move": 2,
+   "enter": 0,
+   "lastXY": null
+  }
+ },
+ "hoverIgnore": {
+  "under": {
+   "down": 0,
+   "up": 0,
+   "move": 5,
+   "enter": 0,
+   "lastXY": null
+  },
+  "over": {
+   "down": 0,
+   "up": 0,
+   "move": 0,
+   "enter": 0,
+   "lastXY": null
+  }
+ },
+ "styles": {
+  "style": 348585984,
+  "ex": 136839456,
+  "owner": "0",
+  "WS_EX_TRANSPARENT": true,
+  "WS_EX_LAYERED": true,
+  "WS_EX_TOOLWINDOW": false,
+  "WS_EX_NOACTIVATE": true,
+  "WS_EX_APPWINDOW": false,
+  "hasOwner": false,
+  "WS_POPUP": false
+ }
+}

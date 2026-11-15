@@ -13,7 +13,7 @@
  */
 
 import type { SessionState, AgentEvent, ProcessResult } from './types'
-import { handleTextDelta, handleTextComplete, handleTextDiscard } from './handlers/text'
+import { handleTextDelta, handleTextComplete, handleTextDiscard, handleThinkingComplete } from './handlers/text'
 import { handleToolStart, handleToolResult, handleTaskBackgrounded, handleShellBackgrounded, handleTaskProgress, handleTaskCompleted } from './handlers/tool'
 import {
   handleComplete,
@@ -22,6 +22,7 @@ import {
   handleSourcesChanged,
   handleLabelsChanged,
   handleProjectIdChanged,
+  handleModeChanged,
   handleSessionStatusChanged,
   handleSessionMetadataChanged,
   handleSessionFlagged,
@@ -43,7 +44,10 @@ import {
   handlePermissionModeChanged,
   handleSessionModelChanged,
   handleConnectionChanged,
+  handleBrowserProfileChanged,
   handleUserMessage,
+  handleQueuedMessageCancelled,
+  handleQueuedMessagesState,
   handleMessageAnnotationsUpdated,
   handleSessionShared,
   handleSessionUnshared,
@@ -80,6 +84,11 @@ export function processEvent(
 
     case 'text_complete': {
       const newState = handleTextComplete(state, event)
+      return { state: newState, effects: [] }
+    }
+
+    case 'thinking_complete': {
+      const newState = handleThinkingComplete(state, event)
       return { state: newState, effects: [] }
     }
 
@@ -164,6 +173,9 @@ export function processEvent(
     case 'connection_changed':
       return handleConnectionChanged(state, event)
 
+    case 'browser_profile_changed':
+      return handleBrowserProfileChanged(state, event)
+
     case 'sources_changed':
       return handleSourcesChanged(state, event)
 
@@ -172,6 +184,9 @@ export function processEvent(
 
     case 'project_id_changed':
       return handleProjectIdChanged(state, event)
+
+    case 'mode_changed':
+      return handleModeChanged(state, event)
 
     case 'session_status_changed':
       return handleSessionStatusChanged(state, event)
@@ -205,6 +220,12 @@ export function processEvent(
 
     case 'user_message':
       return handleUserMessage(state, event)
+
+    case 'queued_message_cancelled':
+      return handleQueuedMessageCancelled(state, event)
+
+    case 'queued_messages_state':
+      return handleQueuedMessagesState(state, event)
 
     case 'message_annotations_updated':
       return handleMessageAnnotationsUpdated(state, event)

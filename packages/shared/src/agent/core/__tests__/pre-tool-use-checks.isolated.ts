@@ -1049,6 +1049,19 @@ describe('shouldPromptInAskMode', () => {
       expect(mockMatchesAllowedWritePath).not.toHaveBeenCalled();
     });
 
+    it('auto-allows whitelisted file write tools', () => {
+      pm = createMockPermissionManager({
+        isCommandWhitelisted: (cmd) => cmd === 'Write',
+      });
+
+      const result = shouldPromptInAskMode('Write', { file_path: '/test/a.ts' }, pm, {
+        workspaceRootPath: '/test',
+        activeSourceSlugs: [],
+      });
+      expect(result).toBeNull();
+    });
+
+
     it('auto-allows writes into a folder approved with "Always Allow"', () => {
       pm = createMockPermissionManager({
         isCommandWhitelisted: (key) => key === 'write:/test',

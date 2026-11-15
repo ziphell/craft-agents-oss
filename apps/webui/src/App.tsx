@@ -10,7 +10,8 @@
 
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { useTranslation } from 'react-i18next'
-import { createWebApi } from './adapter/web-api'
+import { createWebApi, WORKSPACE_STORAGE_KEY } from './adapter/web-api'
+import { BrowserViewer } from './BrowserViewer'
 import type { WsRpcClient } from '../../electron/src/transport/client'
 
 // Lazy-load the Electron App after window.electronAPI is set up.
@@ -85,22 +86,24 @@ export default function App() {
       const { wsUrl } = await configRes.json() as { wsUrl: string }
       if (!wsUrl) throw new Error('Server did not return a WebSocket URL')
 
-      // 2. Determine workspace — check URL params first
+      // 2. Determine workspace — explicit ?workspace= wins, then what this tab remembers,
+      // then the server's default (the first workspace)
       const params = new URLSearchParams(window.location.search)
-      let workspaceId = params.get('workspace') ?? undefined
+      let workspaceId = params.get('workspace') ?? sessionStorage.getItem(WORKSPACE_STORAGE_KEY) ?? undefined
 
-      // If no workspace in URL, fetch the default from the server
-      // so we can include it in the WebSocket handshake
-      if (!workspaceId) {
-        try {
-          const wsRes = await fetch('/api/config/workspaces', { credentials: 'same-origin' })
-          if (wsRes.ok) {
-            const { defaultWorkspaceId } = await wsRes.json() as { defaultWorkspaceId?: string }
-            if (defaultWorkspaceId) workspaceId = defaultWorkspaceId
+      // Validate against the server's list — a remembered workspace may have been removed since
+      try {
+        const wsRes = await fetch('/api/config/workspaces', { credentials: 'same-origin' })
+        if (wsRes.ok) {
+          const { defaultWorkspaceId, workspaceIds } = await wsRes.json() as {
+            defaultWorkspaceId?: string | null
+            workspaceIds?: string[]
           }
-        } catch {
-          // Non-fatal — workspace will be set via switchWorkspace later
+          const known = workspaceIds ? workspaceIds.includes(workspaceId ?? '') : !!workspaceId
+          if (!known) workspaceId = defaultWorkspaceId ?? undefined
         }
+      } catch {
+        // Non-fatal — workspace will be set via switchWorkspace later
       }
 
       // 3. Create web API adapter
@@ -144,6 +147,8 @@ export default function App() {
   return (
     <Suspense fallback={<LoadingScreen />}>
       <ElectronApp />
+      {/* The web UI has no browser window of its own; this watches the hub's (docs/browser-view-streaming.md). */}
+      <BrowserViewer />
     </Suspense>
   )
 }

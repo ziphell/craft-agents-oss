@@ -4,13 +4,13 @@
   "defaults": {
     "notificationsEnabled": true,
     "colorTheme": "default",
-    "autoCapitalisation": true,
     "sendMessageKey": "enter",
     "spellCheck": false,
     "keepAwakeWhileRunning": false,
     "richToolDescriptions": true,
     "extendedPromptCache": false,
     "browserToolEnabled": true,
+    "computerUseEnabled": false,
     "allowRemoteEvaluate": true
   },
   "workspaceDefaults": {

@@ -1,3 +1,4 @@
+import { join } from 'path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
@@ -6,13 +7,67 @@ import type { HandlerDeps } from '../handler-deps'
 export const HANDLED_CHANNELS = [
   RPC_CHANNELS.projects.GET,
   RPC_CHANNELS.projects.GET_ONE,
+  RPC_CHANNELS.projects.LAYERS,
+  RPC_CHANNELS.projects.PROVENANCE,
+  RPC_CHANNELS.projects.FILES,
   RPC_CHANNELS.projects.CREATE,
   RPC_CHANNELS.projects.UPDATE,
   RPC_CHANNELS.projects.DELETE,
   RPC_CHANNELS.projects.LIST_ASSETS,
   RPC_CHANNELS.projects.UPLOAD_ASSET,
   RPC_CHANNELS.projects.DELETE_ASSET,
+  RPC_CHANNELS.projects.LIBRARY,
+  RPC_CHANNELS.projects.UPDATE_ASSET_META,
 ] as const
+
+/**
+ * Recursive file tree of a folder, for the session info panel's project files tab.
+ *
+ * Everything in the folder is listed — hidden entries and the app's own top-level names
+ * (`config.json`, `MEMORY.md`, `assets/`) included. Whether a file is the app's bookkeeping or the
+ * author's is a fact the layers report answers (`layers.ts`); the tree answers a different
+ * question, "what is in this folder", and the answer is all of it. An empty directory is listed
+ * too. Each level is ordered directories-first then by name — the same shape the session file
+ * tree uses (`sessions.ts`), so both render through one view.
+ */
+async function scanProjectDirectory(dirPath: string): Promise<import('@craft-agent/shared/protocol').SessionFile[]> {
+  const { readdir, stat } = await import('fs/promises')
+  const entries = await readdir(dirPath, { withFileTypes: true })
+  const files: import('@craft-agent/shared/protocol').SessionFile[] = []
+
+  for (const entry of entries) {
+    const fullPath = join(dirPath, entry.name)
+
+    if (entry.isDirectory()) {
+      files.push({
+        name: entry.name,
+        path: fullPath,
+        type: 'directory',
+        children: await scanProjectDirectory(fullPath),
+      })
+      continue
+    }
+
+    // A link is listed, not followed (no walking out of the folder or back into it).
+    let stats
+    try {
+      stats = await stat(fullPath)
+    } catch {
+      continue
+    }
+
+    if (stats.isDirectory()) {
+      files.push({ name: entry.name, path: fullPath, type: 'directory', children: [] })
+    } else {
+      files.push({ name: entry.name, path: fullPath, type: 'file', size: stats.size })
+    }
+  }
+
+  return files.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+}
 
 export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): void {
   const log = deps.platform.logger
@@ -43,6 +98,45 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
       ?? loadProjectById(workspace.rootPath, projectIdOrSlug)
   })
 
+  // Read one project's work report — its goal, specs and plans — from its own folder
+  server.handle(RPC_CHANNELS.projects.LAYERS, async (_ctx, workspaceId: string, projectSlug: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) return null
+    const { buildProjectLayers } = await import('@craft-agent/shared/projects')
+    return buildProjectLayers(workspace.rootPath, projectSlug)
+  })
+
+  // What this project's files were made from — the notes beside them, read as they are
+  server.handle(RPC_CHANNELS.projects.PROVENANCE, async (_ctx, workspaceId: string, projectSlug: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) return { dir: '', records: [] }
+    const { loadProject } = await import('@craft-agent/shared/projects')
+    const project = loadProject(workspace.rootPath, projectSlug)
+    if (!project) return { dir: '', records: [] }
+    const { readGenerationRecords } = await import('@craft-agent/shared/provenance/storage')
+    try {
+      return { dir: project.folderPath, records: readGenerationRecords(project.folderPath) }
+    } catch (error) {
+      log.error('Failed to read provenance:', error)
+      return { dir: project.folderPath, records: [] }
+    }
+  })
+
+  // List one project folder's files (recursive tree) for the session info panel
+  server.handle(RPC_CHANNELS.projects.FILES, async (_ctx, workspaceId: string, projectSlug: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) return []
+    const { loadProject } = await import('@craft-agent/shared/projects')
+    const project = loadProject(workspace.rootPath, projectSlug)
+    if (!project) return []
+    try {
+      return await scanProjectDirectory(project.folderPath)
+    } catch (error) {
+      log.error('Failed to get project files:', error)
+      return []
+    }
+  })
+
   // Create a new project
   server.handle(RPC_CHANNELS.projects.CREATE, async (_ctx, workspaceId: string, input: import('@craft-agent/shared/projects').CreateProjectInput) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
@@ -70,7 +164,9 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { updateProject } = await import('@craft-agent/shared/projects')
+
     const updated = updateProject(workspace.rootPath, projectSlug, patch)
+
     await broadcastChanged(workspaceId, workspace.rootPath)
     return updated
   })
@@ -89,11 +185,9 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
 
     const { unbindProjectFromSessions } = await import('@craft-agent/shared/sessions')
     const touched = await unbindProjectFromSessions(workspace.rootPath, project.config.id)
-    const { unbindProjectFromPages } = await import('@craft-agent/shared/pages')
-    const touchedPages = unbindProjectFromPages(workspace.rootPath, project.config.id)
     deleteProject(workspace.rootPath, projectSlug)
     await broadcastChanged(workspaceId, workspace.rootPath)
-    log.info(`Deleted project ${projectSlug} (unbound ${touched} sessions, ${touchedPages} pages)`)
+    log.info(`Deleted project ${projectSlug} (unbound ${touched} sessions)`)
   })
 
   // List assets in a project
@@ -132,5 +226,42 @@ export function registerProjectsHandlers(server: RpcServer, deps: HandlerDeps): 
     const { deleteProjectAsset } = await import('@craft-agent/shared/projects')
     deleteProjectAsset(workspace.rootPath, projectSlug, filename)
     await broadcastChanged(workspaceId, workspace.rootPath)
+  })
+
+  // The asset library: files on disk, annotated by the tags people and agents wrote.
+  server.handle(RPC_CHANNELS.projects.LIBRARY, async (_ctx, workspaceId: string, projectSlug: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) return { assets: [], facets: [] }
+    const { listProjectLibrary } = await import('@craft-agent/shared/projects')
+    return listProjectLibrary(workspace.rootPath, projectSlug)
+  })
+
+  // Change one asset's tags, note or board layout. Only the library index is written.
+  server.handle(RPC_CHANNELS.projects.UPDATE_ASSET_META, async (
+    _ctx,
+    workspaceId: string,
+    projectSlug: string,
+    assetPath: string,
+    patch: { tags?: string[]; note?: string; layout?: import('@craft-agent/shared/library').AssetLayout | null },
+  ) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    const {
+      listProjectLibrary,
+      setProjectAssetTags,
+      setProjectAssetNote,
+      setProjectAssetLayout,
+    } = await import('@craft-agent/shared/projects')
+    if (Array.isArray(patch?.tags)) {
+      setProjectAssetTags(workspace.rootPath, projectSlug, assetPath, patch.tags, 'human')
+    }
+    if (typeof patch?.note === 'string') {
+      setProjectAssetNote(workspace.rootPath, projectSlug, assetPath, patch.note, 'human')
+    }
+    if (patch?.layout !== undefined) {
+      setProjectAssetLayout(workspace.rootPath, projectSlug, assetPath, patch.layout, 'human')
+    }
+    await broadcastChanged(workspaceId, workspace.rootPath)
+    return listProjectLibrary(workspace.rootPath, projectSlug)
   })
 }

@@ -2,7 +2,8 @@
  * LLM Connections
  *
  * Named provider configurations that users can add, configure, and switch between.
- * Each session locks to a specific connection after the first message.
+ * Each session is pinned to a connection on its first agent creation (so ambient
+ * config drift can't re-route it), but the user can explicitly switch it later.
  * Workspaces can set a default connection.
  */
 
@@ -105,33 +106,238 @@ export type CustomEndpointApi = 'openai-completions' | 'anthropic-messages';
 /**
  * Custom endpoint protocol config.
  * Set when user configures an arbitrary API endpoint (Ollama, DashScope, vLLM, etc.).
+ *
+ * Deliberately only carries things that belong to the **endpoint**: which
+ * adapter speaks to it, and headers its gateway needs. Model capabilities
+ * (`supportsImages`, context window, …) live per model inside `models[]` —
+ * one endpoint commonly serves models with different capabilities, and a
+ * connection-level default would then be silently inherited by a model that
+ * does not have it.
  */
 export interface CustomEndpointConfig {
   api: CustomEndpointApi;
-  /** Explicit capability hint for arbitrary endpoints — never guessed automatically. */
-  supportsImages?: boolean;
+  /**
+   * Extra request headers for every request to this endpoint (gateway tokens,
+   * routing hints, tenant ids). Values are sent as-is.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
- * Per-connection behavior when the user sends a message while the agent is
- * still streaming/processing a previous turn.
- *
- * - 'steer': Try to deliver the message into the in-flight turn (Pi's native
- *   `.steer()` or Claude's PreToolUse `additionalContext` hook). Falls back to
- *   abort+queue when the backend can't steer.
- * - 'queue': Hold the message; let the current turn finish naturally; replay
- *   as a new turn afterwards. No abort, no destructive interruption.
- *
- * Default is per-`providerType` via {@link defaultMidStreamBehavior}; reads
- * everywhere should go through {@link resolveMidStreamBehavior} so connections
- * created before this field existed still pick up the right default.
+ * Thinking levels a custom endpoint model accepts, mapped to provider-specific
+ * values; `null` marks a level as unsupported. Mirrors the Pi SDK's
+ * `ThinkingLevelMap` so it can be forwarded untouched.
  */
-export type MidStreamBehavior = 'steer' | 'queue';
+export type CustomEndpointThinkingLevelMap = Partial<
+  Record<'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max', string | null>
+>;
+
+/** Per-million-token pricing for a custom endpoint model; unset rates stay 0. */
+export interface CustomEndpointModelCost {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** Request-wide pricing tiers, forwarded to the SDK untouched. */
+  tiers?: Array<{
+    inputTokensAbove: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  }>;
+}
+
+/**
+ * Per-model parameters for a custom endpoint (`pi_compat`) model.
+ *
+ * This one shape is what a user hand-writes in `config.json`
+ * (`llmConnections[].models[]`), what the UI edits, and what pi-agent-server
+ * forwards to the Pi SDK. It used to exist as several near-identical local
+ * copies with different field sets, which is exactly how parameters silently
+ * disappeared between the file and the SDK — keep it single.
+ *
+ * Everything is optional: an unset parameter falls back to
+ * `buildCustomEndpointModelDef`'s default.
+ */
+export interface CustomEndpointModelParams {
+  /** Display name; defaults to the id. */
+  name?: string;
+  /**
+   * Whether the model accepts image input. Defaults to **true** — a custom
+   * endpoint is assumed capable until the user says otherwise, so an explicit
+   * `false` is what disables it. Both the SDK registration and the send-time
+   * attachment filter read this same per-model value.
+   */
+  supportsImages?: boolean;
+  /**
+   * Whether the model has a thinking/reasoning mode. Defaults to **true**, same
+   * rule as `supportsImages` (an explicit `false` turns it off).
+   *
+   * This is the user-facing name, and the only one a config file should carry:
+   * it is what the picker reads (to grey out the thinking control) and what
+   * `buildCustomEndpointModelDef` translates into the SDK's `reasoning` flag at
+   * the single boundary where the SDK's shape is produced.
+   */
+  supportsThinking?: boolean;
+  /** Max context window in tokens. */
+  contextWindow?: number;
+  /** Max output tokens per request. */
+  maxTokens?: number;
+  /** Pricing, when the user knows it (cost display is not wired up today). */
+  cost?: CustomEndpointModelCost;
+  /** Extra request headers for this model. */
+  headers?: Record<string, string>;
+  /**
+   * Compatibility overrides for endpoints that deviate from the OpenAI /
+   * Anthropic spec (`maxTokensField`, `supportsDeveloperRole`, …). Passed
+   * through to the SDK, so its full key set is available without this codebase
+   * enumerating it.
+   */
+  compat?: Record<string, unknown>;
+  /** Which thinking levels the model accepts. */
+  thinkingLevelMap?: CustomEndpointThinkingLevelMap;
+}
+
+/** A custom endpoint model entry as stored in a connection's `models[]`. */
+export interface CustomEndpointModelEntry extends CustomEndpointModelParams {
+  id: string;
+  // Display-only fields. They live on the stored entry (the picker reads them)
+  // but are never forwarded to the SDK — they are deliberately absent from
+  // CUSTOM_ENDPOINT_MODEL_PARAM_SPECS below.
+  shortName?: string;
+  description?: string;
+  descriptionKey?: string;
+}
+
+/**
+ * How a per-model parameter is presented in the connection editor.
+ *
+ * This table is the **only** place the parameter list is written down: the UI
+ * renders its controls from it, and {@link toCustomEndpointModels} forwards
+ * exactly these keys. Adding a parameter therefore means editing this table and
+ * the forwarding chain — never the editor component, and never a second list
+ * that can drift out of sync with the first.
+ */
+export interface CustomEndpointModelParamSpec {
+  key: keyof CustomEndpointModelParams;
+  label: string;
+  control: 'text' | 'number' | 'switch' | 'key-value' | 'json';
+  /** Placeholder or unit hint shown next to the control. */
+  hint?: string;
+  /**
+   * One-click values for a `number` control, e.g. the token sizes endpoints are
+   * actually sold at. The label is written out rather than derived from the
+   * value, because these numbers are quoted in KiB (131072 = "128k") but the
+   * round figure 1000000 = "1M" is quoted in decimal.
+   */
+  presets?: Array<{ label: string; value: number }>;
+}
+
+export const CUSTOM_ENDPOINT_MODEL_PARAM_SPECS: CustomEndpointModelParamSpec[] = [
+  { key: 'name', label: 'Display name', control: 'text', hint: 'defaults to the id' },
+  { key: 'supportsImages', label: 'Image input', control: 'switch' },
+  { key: 'supportsThinking', label: 'Thinking', control: 'switch' },
+  {
+    key: 'contextWindow',
+    label: 'Context window',
+    control: 'number',
+    hint: 'tokens',
+    presets: [
+      { label: '128k', value: 131_072 },
+      { label: '256k', value: 262_144 },
+      { label: '1M', value: 1_000_000 },
+    ],
+  },
+  {
+    key: 'maxTokens',
+    label: 'Max output',
+    control: 'number',
+    hint: 'tokens per request',
+    presets: [
+      { label: '8k', value: 8_192 },
+      { label: '128k', value: 131_072 },
+      { label: '384k', value: 393_216 },
+    ],
+  },
+  { key: 'cost', label: 'Cost', control: 'json', hint: '{"input":0,"output":0}' },
+  { key: 'headers', label: 'Request headers', control: 'key-value' },
+  { key: 'compat', label: 'Compatibility', control: 'json', hint: '{"maxTokensField":"max_tokens"}' },
+  { key: 'thinkingLevelMap', label: 'Thinking levels', control: 'json', hint: '{"high":"high"}' },
+];
+
+/**
+ * Fallbacks for a `pi_compat` parameter the user did not set.
+ *
+ * Declared here rather than inside the SDK-side builder because two consumers
+ * need the same numbers: the builder for a model that has no value, and the
+ * editor, which starts a new row from them so the effective configuration is
+ * visible instead of implicit.
+ */
+export const CUSTOM_ENDPOINT_MODEL_DEFAULTS = {
+  contextWindow: 1_000_000,
+  maxTokens: 393_216,
+} as const;
+
+/**
+ * Whether an entry sets any forwardable parameter.
+ *
+ * Entries without parameters are stored and sent as a bare id, which keeps
+ * `config.json` readable and the IPC payload small.
+ */
+export function customEndpointEntryHasParams(entry: CustomEndpointModelEntry | string): boolean {
+  if (typeof entry === 'string') return false;
+  return CUSTOM_ENDPOINT_MODEL_PARAM_SPECS.some(spec => entry[spec.key] !== undefined);
+}
+
+/**
+ * Ids that appear more than once in a model list.
+ *
+ * A connection's `models[]` is keyed by id at every consumer: storage
+ * de-duplicates on save, pi-agent-server registers them in a Set and keeps
+ * per-model overrides in a Map. A repeated id therefore means the three views
+ * disagree (editor shows both, disk keeps the first, the SDK lets the last
+ * override win), so the editor refuses it rather than letting one row vanish.
+ */
+export function findDuplicateModelIds(entries: ConnectionModelEntry[]): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const entry of entries) {
+    const id = (typeof entry === 'string' ? entry : entry.id).trim();
+    if (!id) continue;
+    if (seen.has(id)) duplicates.add(id);
+    else seen.add(id);
+  }
+  return [...duplicates];
+}
+
+/**
+ * A custom endpoint model as carried through `config.json` and over IPC:
+ * either a bare id (no parameter overrides) or the id plus parameters.
+ */
+export type CustomEndpointModelConfig = string | CustomEndpointModelEntry;
+
+/**
+ * Any entry that can appear in a connection's `models[]`.
+ *
+ * The stored shape is deliberately loose, because three writers put three
+ * different things there: a built-in provider stores full `ModelDefinition`s,
+ * a custom endpoint stores only the parameters the user actually set
+ * ({@link CustomEndpointModelEntry}), and a bare id means "no override at all".
+ */
+export type ConnectionModelEntry = ModelDefinition | CustomEndpointModelEntry | string;
 
 /**
  * LLM Connection configuration.
  * Stored in config.llmConnections array.
  */
+/**
+ * Behavior when a message arrives while the agent is still streaming.
+ * - 'steer': deliver it into the in-flight turn when the backend can.
+ * - 'queue': hold it and replay as its own turn after the current one finishes.
+ */
+export type MidStreamBehavior = 'steer' | 'queue';
+
 export interface LlmConnection {
   /** URL-safe identifier (e.g., 'anthropic-api', 'ollama-local') */
   slug: string;
@@ -154,11 +360,47 @@ export interface LlmConnection {
   /** Authentication mechanism */
   authType: LlmAuthType;
 
-  /** Override available models (for custom endpoints that don't support model listing) */
-  models?: Array<ModelDefinition | string>;
+  /**
+   * Override available models (for custom endpoints that don't support model listing).
+   *
+   * Three shapes are valid and all three appear in the wild: a bare id (nothing
+   * to override), a registry `ModelDefinition` (built-in providers), or a
+   * custom-endpoint entry carrying just the parameters that were set. Only
+   * `id` is required — everything else is an optional parameter.
+   */
+  models?: ConnectionModelEntry[];
 
   /** Default model for this connection */
   defaultModel?: string;
+
+  /**
+   * Explicitly chosen small/fast model — the one used for title generation,
+   * summarization and mini agents. Absent means "not picked": a built-in catalog
+   * then answers with {@link guessSmallModelId} ("haiku" / "mini" / "flash",
+   * otherwise the last entry), a custom endpoint with {@link defaultModel}.
+   */
+  fastModel?: string;
+
+  /**
+   * Explicitly chosen model used to read **images** — the one `call_llm` reaches
+   * for when it is handed pictures. It is the preferred candidate of {@link resolveImageModel};
+   * absent means "not picked", and the connection's small / current model
+   * answer instead if they can see (see that function for the full chain).
+   *
+   * Distinct from {@link fastModel}: that one means "cheap", this one means
+   * "can see". A single id may legitimately hold both roles.
+   */
+  visionModel?: string;
+
+  /**
+   * Explicitly chosen **omni / audio-capable** model — the one `call_llm` reaches
+   * for when it is handed a recording (and, later, a short video). Separate from
+   * `visionModel` because the two capabilities rarely live on the same model.
+   *
+   * Absent means "not picked": audio attachments are refused with a sentence
+   * naming this role rather than guessing a model that may not accept audio.
+   */
+  omniModel?: string;
 
   /**
    * Ownership mode for the model list.
@@ -181,12 +423,7 @@ export interface LlmConnection {
    */
   customEndpoint?: CustomEndpointConfig;
 
-  /**
-   * Behavior when the user sends a message while the agent is still streaming.
-   * Optional for backward compat with config.json from before this field existed —
-   * read via {@link resolveMidStreamBehavior} which falls back to a per-provider
-   * default ({@link defaultMidStreamBehavior}).
-   */
+  /** How a message sent mid-turn is delivered; resolved via {@link resolveMidStreamBehavior}. */
   midStreamBehavior?: MidStreamBehavior;
 
   // --- Resolved Anthropic OAuth identity (issue #838) ---
@@ -223,6 +460,24 @@ export interface LlmConnectionWithStatus extends LlmConnection {
   isDefault?: boolean;
 }
 
+/**
+ * Update payload accepted by `updateLlmConnection`.
+ *
+ * Merge semantics — the UI is only ever a view over the same file a user can
+ * hand-edit, so a save must never destroy what the UI does not know about:
+ *
+ * - a key that is **absent** from the payload is left untouched;
+ * - an explicit **`null`** deletes the key from the stored connection;
+ * - `models[]` entries are merged **by id** (a bare string id keeps whatever
+ *   per-model parameters are already on disk for that id, an object entry
+ *   wins as the writer's full intent);
+ * - `customEndpoint` is shallow-merged, so a writer that only knows the
+ *   protocol cannot drop the rest of the endpoint config.
+ */
+export type LlmConnectionUpdate = {
+  [K in keyof Omit<LlmConnection, 'slug'>]?: LlmConnection[K] | null;
+};
+
 // ============================================================
 // Helpers
 // ============================================================
@@ -246,64 +501,33 @@ export function isDeniedMiniModelId(modelId: string, piAuthProvider?: string): b
 }
 
 /**
- * Get the mini/utility model ID for a connection.
- * Provider-aware search:
- *   - Anthropic: find any model with "haiku" in its id/name
- *   - Pi: find any model with "mini" or "flash" in its id/name
- *   - Otherwise: last model in the list
+ * Name-based guess for the small/fast model: "haiku" for Anthropic, "mini" /
+ * "flash" for Pi, all three for aggregator providers; the last allowed entry
+ * when nothing matches.
  *
- * Auth-flavor-aware: skips models that the user's `piAuthProvider` would reject
- * (e.g. `gpt-5.1-codex-mini` under ChatGPT-account auth). See
- * {@link isDeniedMiniModelId}.
+ * **Built-in catalogs only.** A custom endpoint's model list is the user's own,
+ * so its names carry no signal — there is nothing to guess, and the caller
+ * follows the connection's default model instead.
  *
- * Used for mini agent, title generation, and mini completions.
+ * Exported because the connection editor pre-selects this answer: a field that
+ * showed something other than the model actually in use would be worse than
+ * having no field.
  */
-export function getMiniModel(
+export function guessSmallModelId(
   connection: Pick<LlmConnection, 'models' | 'providerType' | 'piAuthProvider'>,
 ): string | undefined {
-  return findSmallModel(connection);
-}
-
-/**
- * Get the summarization model ID for a connection.
- * Same provider-aware logic as getMiniModel(), but separate
- * so summarization and mini agent models can diverge independently.
- *
- * Used for response summarization and API tool summarization.
- */
-export function getSummarizationModel(
-  connection: Pick<LlmConnection, 'models' | 'providerType' | 'piAuthProvider'>,
-): string | undefined {
-  return findSmallModel(connection);
-}
-
-/**
- * Provider-aware small model resolution.
- * Shared implementation for getMiniModel() and getSummarizationModel().
- *
- *   - Anthropic: find "haiku"
- *   - Pi: find "mini" or "flash"
- *   - Otherwise: last model in the list
- *
- * Skips models denied by {@link isDeniedMiniModelId} for the connection's
- * auth flavor.
- */
-function findSmallModel(
-  connection: Pick<LlmConnection, 'models' | 'providerType' | 'piAuthProvider'>,
-): string | undefined {
+  if (isCompatProvider(connection.providerType)) return undefined;
   if (!connection.models || connection.models.length === 0) return undefined;
 
-  const toId = (m: ModelDefinition | string) => typeof m === 'string' ? m : m.id;
+  const toId = (m: ConnectionModelEntry) => typeof m === 'string' ? m : m.id;
 
-  const toSearchStr = (m: ModelDefinition | string) =>
-    typeof m === 'string' ? m.toLowerCase() : `${m.id} ${m.name} ${m.shortName}`.toLowerCase();
+  const toSearchStr = (m: ConnectionModelEntry) =>
+    typeof m === 'string' ? m.toLowerCase() : `${m.id} ${m.name ?? ''} ${m.shortName ?? ''}`.toLowerCase();
 
-  const isAllowedModel = (m: ModelDefinition | string): boolean =>
+  const isAllowedModel = (m: ConnectionModelEntry): boolean =>
     !isDeniedMiniModelId(toId(m), connection.piAuthProvider);
 
-  // Provider-aware keyword search
   const keywords: string[] = [];
-
   if (isAnthropicProvider(connection.providerType)) {
     keywords.push('haiku');
   } else if (isPiProvider(connection.providerType)) {
@@ -313,20 +537,103 @@ function findSmallModel(
     keywords.push('mini', 'haiku', 'flash');
   }
 
-  if (keywords.length > 0) {
-    const match = connection.models.find(m => {
-      if (!isAllowedModel(m)) return false;
-      const searchStr = toSearchStr(m);
-      return keywords.some(k => searchStr.includes(k));
-    });
-    if (match) {
-      return toId(match);
+  const match = connection.models.find(m =>
+    isAllowedModel(m) && keywords.some(k => toSearchStr(m).includes(k)));
+  if (match) return toId(match);
+
+  // Nothing matched by name: last allowed model, otherwise final entry.
+  const fallback = [...connection.models].reverse().find(isAllowedModel);
+  return fallback ? toId(fallback) : toId(connection.models[connection.models.length - 1]!);
+}
+
+/**
+ * Get the mini/utility model ID for a connection.
+ *
+ * `fastModel` when the user picked one; otherwise the name-based guess for a
+ * built-in catalog ({@link guessSmallModelId}) and the connection's
+ * `defaultModel` for a custom endpoint.
+ *
+ * Auth-flavor-aware: a pick the user's `piAuthProvider` would reject is treated
+ * as unusable. See {@link isDeniedMiniModelId}.
+ *
+ * Used for mini agent, title generation, and mini completions.
+ */
+export function getMiniModel(
+  connection: Pick<LlmConnection, 'models' | 'providerType' | 'piAuthProvider' | 'fastModel' | 'defaultModel'>,
+): string | undefined {
+  return findSmallModel(connection);
+}
+
+/**
+ * Get the summarization model ID for a connection.
+ * Same logic as getMiniModel(), but separate so summarization and mini agent
+ * models can diverge independently.
+ *
+ * Used for response summarization and API tool summarization.
+ */
+export function getSummarizationModel(
+  connection: Pick<LlmConnection, 'models' | 'providerType' | 'piAuthProvider' | 'fastModel' | 'defaultModel'>,
+): string | undefined {
+  return findSmallModel(connection);
+}
+
+/**
+ * Small-model resolution. Shared implementation for getMiniModel() and
+ * getSummarizationModel().
+ *
+ * `fastModel` is an explicit pick and nothing else: when it is missing, the
+ * guess (built-in catalogs) or `defaultModel` (custom endpoints) answers. A pick
+ * that names nothing usable — row deleted, or rejected by the auth flavor —
+ * behaves as if it were missing rather than as an error, so the connection keeps
+ * working and the editor can still show the stale value for the user to fix.
+ */
+function findSmallModel(
+  connection: Pick<LlmConnection, 'models' | 'providerType' | 'piAuthProvider' | 'fastModel' | 'defaultModel'>,
+): string | undefined {
+  const pick = connection.fastModel?.trim();
+
+  if (pick) {
+    const toId = (m: ConnectionModelEntry) => typeof m === 'string' ? m : m.id;
+    const namesAKnownModel =
+      !connection.models?.length || connection.models.some(m => toId(m).trim() === pick);
+    if (namesAKnownModel && !isDeniedMiniModelId(pick, connection.piAuthProvider)) {
+      return pick;
     }
   }
 
-  // Fallback: last allowed model in the list, otherwise final entry.
-  const fallback = [...connection.models].reverse().find(isAllowedModel);
-  return fallback ? toId(fallback) : toId(connection.models[connection.models.length - 1]!);
+  return guessSmallModelId(connection)
+    ?? connection.defaultModel?.trim()
+    ?? lastAllowedModelId(connection);
+}
+
+/** Trailing fallback: the last entry the auth flavor does not reject outright. */
+function lastAllowedModelId(
+  connection: Pick<LlmConnection, 'models' | 'piAuthProvider'>,
+): string | undefined {
+  if (!connection.models || connection.models.length === 0) return undefined;
+  const toId = (m: ConnectionModelEntry) => typeof m === 'string' ? m : m.id;
+  const isAllowed = (m: ConnectionModelEntry) => !isDeniedMiniModelId(toId(m), connection.piAuthProvider);
+  const lastAllowed = [...connection.models].reverse().find(isAllowed);
+  return lastAllowed ? toId(lastAllowed) : toId(connection.models[connection.models.length - 1]!);
+}
+
+/**
+ * Display-only mask for a stored API key, e.g. `sk-oct-••••••••5503`.
+ *
+ * A masked value is **not** a credential, and this is the only place that knows
+ * the convention. Use {@link isMaskedCredential} wherever a submitted value
+ * could be one: the setup handler must not store it over the real key, and an
+ * edit form showing it must read an untouched field as "keep the stored key"
+ * rather than testing or saving the mask (which the endpoint rejects as an
+ * invalid header value).
+ */
+export function maskCredential(key: string): string {
+  return key.length > 15 ? `${key.slice(0, 7)}••••••••${key.slice(-4)}` : '••••••••';
+}
+
+/** Whether a value is a {@link maskCredential} placeholder rather than a key. */
+export function isMaskedCredential(value: string | null | undefined): boolean {
+  return !!value?.includes('••');
 }
 
 /**
@@ -462,38 +769,6 @@ export function isPiProvider(providerType: LlmProviderType): boolean {
 }
 
 /**
- * Default mid-stream send behavior for a given provider type.
- *
- * - 'anthropic' → 'queue': Claude's emulated steer (PreToolUse hook injection)
- *   has a real failure mode — if no tool fires before the turn ends, the steer
- *   becomes `steer_undelivered` and gets re-queued anyway, paying for the
- *   original turn's tokens for nothing. Default to queue for predictability.
- * - 'pi' / 'pi_compat' → 'steer': Pi's native `.steer()` is non-destructive
- *   (delivers after the current tool finishes, keeps full context). No
- *   downside to defaulting to immediate steering.
- */
-export function defaultMidStreamBehavior(providerType: LlmProviderType): MidStreamBehavior {
-  return providerType === 'anthropic' ? 'queue' : 'steer';
-}
-
-/**
- * Read the effective mid-stream behavior for a connection.
- *
- * Single source of truth — every call site that needs to decide steer-vs-queue
- * should go through here so legacy connections (created before the field
- * existed) and connections with corrupt/unexpected values fall through to the
- * provider-appropriate default.
- */
-export function resolveMidStreamBehavior(
-  connection: Pick<LlmConnection, 'midStreamBehavior' | 'providerType'>,
-): MidStreamBehavior {
-  if (connection.midStreamBehavior === 'steer' || connection.midStreamBehavior === 'queue') {
-    return connection.midStreamBehavior;
-  }
-  return defaultMidStreamBehavior(connection.providerType);
-}
-
-/**
  * Return a new LlmConnection with the given model's `supportsImages` override set.
  *
  * Centralizes the string-vs-object normalization for `connection.models[]`:
@@ -516,7 +791,7 @@ export function setModelSupportsImages(
   enabled: boolean,
 ): LlmConnection {
   if (!connection.models) return connection;
-  const idOf = (m: ModelDefinition | string) => (typeof m === 'string' ? m : m.id);
+  const idOf = (m: ConnectionModelEntry) => (typeof m === 'string' ? m : m.id);
   const idx = connection.models.findIndex(m => idOf(m) === modelId);
   if (idx === -1) return connection;
 
@@ -532,33 +807,229 @@ export function setModelSupportsImages(
 }
 
 /**
- * Resolve whether a given model on a connection accepts image input.
+ * The model entry's explicit image capability, or `undefined` when it says nothing.
  *
- * For `pi_compat` (custom-endpoint) connections this mirrors the precedence used
- * by Pi's `buildCustomEndpointModelDef`:
- *   per-model `supportsImages` override
- *   ?? connection-level `customEndpoint.supportsImages` default
- *   ?? false
- *
- * For non-`pi_compat` connections the renderer doesn't own the catalog — Pi SDK's
- * bundled provider definitions and Anthropic's API do. This helper conservatively
- * returns `true` there (we don't know better; the upstream decides). The
- * pre-flight banner gates on `pi_compat` separately, so this just reports what
- * the renderer can know with confidence.
+ * Callers that need a positive statement (rather than the permissive default) use this directly.
  */
-export function modelSupportsImages(
-  connection: Pick<LlmConnection, 'providerType' | 'models' | 'customEndpoint'>,
+function imageSupportOf(
+  connection: Pick<LlmConnection, 'models'>,
   modelId: string,
-): boolean {
-  if (!isCompatProvider(connection.providerType)) return true;
-
+): boolean | undefined {
   const entry = connection.models?.find(m =>
     (typeof m === 'string' ? m : m.id) === modelId,
   );
   if (entry && typeof entry !== 'string' && typeof entry.supportsImages === 'boolean') {
     return entry.supportsImages;
   }
-  return connection.customEndpoint?.supportsImages ?? false;
+  return undefined;
+}
+
+/**
+ * Resolve whether a given model on a connection accepts image input.
+ *
+ * The model entry is the only place this can be set, and an explicit value
+ * always wins — `true` and `false` alike, whatever the connection type. Only
+ * when the entry says nothing do we fall back to "supported", because built-in
+ * catalogs are owned upstream (Pi SDK's bundled provider definitions,
+ * Anthropic's API) and we have no better information there.
+ *
+ * This mirrors {@link modelSupportsThinking} exactly, and matches what the SDK
+ * is told (`buildCustomEndpointModelDef` defaults `input` to
+ * `['text', 'image']`), so the picker, the pre-flight banner and the request
+ * agree.
+ */
+export function modelSupportsImages(
+  connection: Pick<LlmConnection, 'models'>,
+  modelId: string,
+): boolean {
+  return imageSupportOf(connection, modelId) ?? true;
+}
+
+/**
+ * Explicitly picked vision model, if it is usable.
+ *
+ * Returns the stored `visionModel` only when it is still one of the
+ * connection's models and its entry says it accepts images; otherwise
+ * `undefined`. Three cases collapse to "no pick": unset, an id no longer in
+ * the list, and a pick the user has themselves flagged `supportsImages: false`
+ * (a contradiction we refuse to act on rather than send images into a 400).
+ *
+ * The name-based guess is deliberately **not** applied here — a built-in
+ * catalog carries no reliable "can see" signal, and guessing is exactly what
+ * {@link resolveImageModel} avoids.
+ */
+export function getVisionModel(
+  connection: Pick<LlmConnection, 'models' | 'visionModel'>,
+): string | undefined {
+  const pick = connection.visionModel?.trim();
+  if (!pick) return undefined;
+  const namesAKnownModel =
+    !connection.models?.length || connection.models.some(m => (typeof m === 'string' ? m : m.id).trim() === pick);
+  if (!namesAKnownModel) return undefined;
+  if (!modelSupportsImages(connection, pick)) return undefined;
+  return pick;
+}
+
+/**
+ * Whether a connection's wire can carry an omni call.
+ *
+ * Omni audio/video is sent as an OpenAI-style `chat/completions` body
+ * (`input_audio` / `video_url`), so only an OpenAI-compatible endpoint can
+ * serve it. Anthropic-protocol connections — built-in or a custom endpoint
+ * that speaks `anthropic-messages` — cannot, whatever model is picked.
+ *
+ * Kept here beside the other role resolvers so the settings UI, the picker and
+ * the request itself agree; the omni role means "listens", and a connection
+ * that cannot listen treats the pick as no pick rather than failing later.
+ */
+export function canServeOmni(connection: {
+  providerType?: string;
+  customEndpoint?: { api?: string };
+  piAuthProvider?: string;
+}): boolean {
+  if (connection.customEndpoint?.api?.includes('anthropic')) return false;
+  if (connection.piAuthProvider === 'anthropic') return false;
+  if (connection.providerType === 'anthropic') return false;
+  return true;
+}
+
+/**
+ * Explicitly picked omni model, if it is usable.
+ *
+ * Two checks, the same shape as {@link getVisionModel}: the connection's wire must be able to
+ * carry audio, and the pick must still be one of its listed models. The second catches a pick left
+ * behind after the model list changed, or a configuration written outside Settings. There is no
+ * per-model "accepts audio" flag to consult, so only membership is checked — the wire is the real
+ * capability constraint.
+ */
+export function getOmniModel(
+  connection: {
+    omniModel?: string;
+    models?: Array<string | { id: string }>;
+    providerType?: string;
+    customEndpoint?: { api?: string };
+    piAuthProvider?: string;
+  },
+): string | undefined {
+  const pick = connection.omniModel?.trim();
+  if (!pick) return undefined;
+  if (!canServeOmni(connection)) return undefined;
+  const namesAKnownModel =
+    !connection.models?.length || connection.models.some(m => (typeof m === 'string' ? m : m.id).trim() === pick);
+  if (!namesAKnownModel) return undefined;
+  return pick;
+}
+
+/**
+ * Which model reads images / video frames when one is needed and the caller
+ * named none.
+ *
+ * A capability-checked candidate chain — the first entry that can actually see
+ * wins, so the callers never hand pictures to a model that cannot accept them
+ * (the failure this replaces was a provider 400):
+ *
+ *   1. `visionModel` ({@link getVisionModel}) — the explicit pick;
+ *   2. the connection's small model ({@link getMiniModel}) — the small role means "cheap", so it
+ *      is trusted only where the metadata is definite. On a custom endpoint an unmarked entry is
+ *      still a "yes": this app builds that model's definition with image input on by default
+ *      (`buildCustomEndpointModelDef`), so the request carries the picture either way. A built-in
+ *      catalog is owned upstream, where an absent flag is no evidence — only `true` counts;
+ *   3. `mainModel` — the model this session is actually on (falling back to the
+ *      connection's `defaultModel`). This is what makes "the main model can
+ *      see, the small one cannot" work with no extra configuration.
+ *
+ * The omni role is deliberately **not** a candidate: it means "reads sound and
+ * video", and a picture question belongs to the vision chain. A person who
+ * wants an omni model to read pictures names it as `visionModel` — one id may
+ * legitimately hold both roles.
+ *
+ * `undefined` means no candidate can see — the caller (`call_llm`) then rejects a picture it cannot
+ * read rather than handing it to a model that will answer about nothing.
+ */
+export function resolveImageModel(
+  connection: LlmConnection,
+  mainModel?: string,
+): string | undefined {
+  const explicit = getVisionModel(connection);
+  if (explicit) return explicit;
+
+  const small = getMiniModel(connection);
+  if (small) {
+    const smallSees = isCompatProvider(connection.providerType)
+      ? modelSupportsImages(connection, small)
+      : imageSupportOf(connection, small) === true;
+    if (smallSees) return small;
+  }
+
+  const main = mainModel?.trim() || connection.defaultModel?.trim();
+  if (main && modelSupportsImages(connection, main)) return main;
+  return undefined;
+}
+
+/**
+ * Resolve whether a model has a thinking/reasoning mode.
+ *
+ * Same rule as {@link modelSupportsImages}: only an explicit `false` turns it
+ * off; unset means supported — which is what the SDK is told
+ * (`reasoning: overrides?.supportsThinking ?? true`).
+ */
+export function modelSupportsThinking(entry: ConnectionModelEntry | undefined): boolean {
+  const explicit = entry && typeof entry !== 'string' ? entry.supportsThinking : undefined;
+  return explicit ?? true;
+}
+
+/**
+ * Context window written on the connection's model entry, if any.
+ *
+ * This is the **model layer**, and it is read first: for a custom endpoint it
+ * is exactly the value we register with the SDK
+ * (`buildCustomEndpointModelDef`), so it is available before the SDK has
+ * reported a usage event — and the static registry never knows custom models at
+ * all. Built-in connections store registry-derived entries, so reading them
+ * first cannot disagree with the registry unless the user edited the list on
+ * purpose.
+ */
+export function modelContextWindow(
+  connection: Pick<LlmConnection, 'models'> | null | undefined,
+  modelId: string,
+): number | undefined {
+  const entry = connection?.models?.find(m =>
+    (typeof m === 'string' ? m : m.id) === modelId,
+  );
+  if (!entry || typeof entry === 'string') return undefined;
+  return typeof entry.contextWindow === 'number' ? entry.contextWindow : undefined;
+}
+
+/**
+ * Project a connection's `models[]` into the payload pi-agent-server registers
+ * with the Pi SDK.
+ *
+ * Single projection for every writer (the Pi driver, SessionManager's runtime
+ * refresh) so the forwarded field set cannot drift between them, and it reads
+ * the parameter list from {@link CUSTOM_ENDPOINT_MODEL_PARAM_SPECS} so the
+ * editor and the wire cannot disagree either.
+ *
+ * Entries that carry no forwardable parameter collapse to a bare id string —
+ * that keeps the IPC payload small and lets pi-agent-server tell "no override"
+ * apart from "explicitly empty".
+ */
+export function toCustomEndpointModels(
+  models: LlmConnection['models'],
+): Array<CustomEndpointModelEntry | string> {
+  return (models ?? []).map(model => {
+    if (typeof model === 'string') return model;
+
+    const params: Record<string, unknown> = {};
+    const source = model as unknown as Record<string, unknown>;
+    for (const spec of CUSTOM_ENDPOINT_MODEL_PARAM_SPECS) {
+      const value = source[spec.key];
+      if (value !== undefined) params[spec.key] = value;
+    }
+
+    return Object.keys(params).length > 0
+      ? ({ id: model.id, ...params } as CustomEndpointModelEntry)
+      : model.id;
+  });
 }
 
 /**
@@ -689,7 +1160,7 @@ export function getDefaultModelForConnection(providerType: LlmProviderType, piAu
  * Resolve the effective LLM connection slug from available fallbacks.
  *
  * Single source of truth for the fallback chain used everywhere in the UI:
- *   1. Explicit session connection (locked after first message)
+ *   1. Explicit session connection (pinned on first agent creation)
  *   2. Workspace-level default override
  *   3. Global default (isDefault flag on a connection)
  *   4. First available connection
@@ -1128,4 +1599,19 @@ export function migrateLlmConnection(legacy: {
     createdAt: legacy.createdAt,
     lastUsedAt: legacy.lastUsedAt,
   };
+}
+
+/** The per-provider default when a connection predates `midStreamBehavior`. */
+export function defaultMidStreamBehavior(providerType: LlmProviderType): MidStreamBehavior {
+  return providerType === 'anthropic' ? 'queue' : 'steer';
+}
+
+/** Read the effective mid-stream behavior for a connection. */
+export function resolveMidStreamBehavior(
+  connection: Pick<LlmConnection, 'midStreamBehavior' | 'providerType'>,
+): MidStreamBehavior {
+  if (connection.midStreamBehavior === 'steer' || connection.midStreamBehavior === 'queue') {
+    return connection.midStreamBehavior;
+  }
+  return defaultMidStreamBehavior(connection.providerType);
 }

@@ -1,2 +1,9 @@
 #!/bin/sh
-exec "$CRAFT_UV" run --python 3.12 "$CRAFT_SCRIPTS/ical_tool.py" "$@"
+# ical-tool — see apps/electron/resources/cli-tools/ical-tool.ts. Bun, so no Python and no uv on any host.
+BUN="${CRAFT_BUN:-bun}"
+DIR="${CRAFT_CLI_TOOLS:-$(dirname "$0")/../cli-tools/dist}"
+if [ ! -f "$DIR/ical-tool.mjs" ]; then
+  echo "ical-tool: not built (run: bun run build:cli-tools)" >&2
+  exit 2
+fi
+exec "$BUN" run "$DIR/ical-tool.mjs" "$@"

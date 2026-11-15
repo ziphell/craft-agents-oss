@@ -7,6 +7,7 @@ import { bundledLanguages } from 'shiki'
 import { Check, ChevronDown, Copy } from 'lucide-react'
 import { SimpleDropdown, SimpleDropdownItem } from '../ui/SimpleDropdown'
 import { TiptapHoverActions, TiptapHoverActionButton } from './TiptapHoverActions'
+import { isPreviewBlockLanguage } from './fences'
 import { cn } from '../../lib/utils'
 
 interface TiptapCodeBlockViewProps {
@@ -20,7 +21,7 @@ type CodeLanguageOption = {
   searchTerms: string[]
 }
 
-const EXCLUDED_LANGUAGES = new Set(['mermaid', 'latex', 'math', 'tex', 'katex'])
+const EXCLUDED_LANGUAGES = new Set(['mermaid', 'mindmap', 'latex', 'math', 'tex', 'katex'])
 const PRIORITY_LANGUAGES = [
   'typescript',
   'javascript',
@@ -289,10 +290,11 @@ export const tiptapCodeBlock = CodeBlockShiki.extend({
   parseMarkdown: (token: any, helpers: any) => {
     const lang = (token.lang ?? '').toLowerCase()
 
-    // Dedicated rich block nodes handle these fenced languages.
-    if (lang === 'mermaid' || lang === 'latex' || lang === 'math' || lang === 'tex' || lang === 'katex') {
-      return []
-    }
+    // Dedicated rich block nodes handle these fenced languages. This node is the fallback for
+    // "a fence nobody else claims", so it has to let both lists through: the visual blocks
+    // below, and the ones with a component of their own in `PreviewBlock`.
+    if (EXCLUDED_LANGUAGES.has(lang)) return []
+    if (isPreviewBlockLanguage(lang)) return []
 
     return helpers.createNode(
       'codeBlock',

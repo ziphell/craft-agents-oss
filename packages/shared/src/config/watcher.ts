@@ -43,7 +43,14 @@ import {
 import { permissionsConfigCache, getAppPermissionsDir } from '../agent/permissions-config.ts';
 import { getWorkspacePath, getWorkspaceSourcesPath, getWorkspaceSkillsPath } from '../workspaces/storage.ts';
 import type { LoadedSkill } from '../skills/types.ts';
-import { loadWorkspacePages } from '../pages/storage.ts';
+import { loadWorkspaceTweaks, readTweakSources } from '../tweaks/storage.ts';
+import { toTweakSummary } from '../tweaks/summary.ts';
+import {
+  TWEAK_CONFIG_FILENAME,
+  TWEAK_CSS_FILENAME,
+  TWEAK_JS_FILENAME,
+  type LoadedTweak,
+} from '../tweaks/types.ts';
 import { loadSkill, loadAllSkills, invalidateSkillsCache, skillNeedsIconDownload, downloadSkillIcon } from '../skills/storage.ts';
 import {
   loadStatusConfig,
@@ -154,13 +161,21 @@ export interface ConfigWatcherCallbacks {
   /** Called when automations.json changes */
   onAutomationsConfigChange?: (workspaceId: string) => void;
 
-  // Page callbacks
+  // Tweak callbacks
   /**
-   * Called when any pages/{slug}/page.json changes (create/delete/refresh
-   * completion). page.json is the completion marker of a refresh run, so
-   * data/ churn (sqlite, snapshot tmp files) is deliberately NOT watched.
+   * Called when a tweak changes on disk: its record (created, edited, deleted), or the code
+   * beside it. A tweak **is** the record plus the code, so both are what the list and the
+   * installer have to follow — the fresh list is handed over because that is what the app's
+   * own list shows.
+   *
+   * What counts as a change is judged by the tweaks themselves, not by which path moved: the
+   * watcher follows the three files **and** the folder they sit in (on this platform a plain
+   * write to a file that already existed is reported only as a folder change), then compares a
+   * signature of the record and the code. Only a real change is delivered, which is what keeps
+   * the applier's own `hits.json` write — and the folder event its atomic write raises — from
+   * re-installing the rules it has just run.
    */
-  onPagesListChange?: (pages: import('../pages/types.ts').LoadedPage[]) => void;
+  onTweaksListChange?: (tweaks: import('../tweaks/summary.ts').TweakSummary[]) => void;
 
   // Session callbacks
   /** Called when a session's JSONL header is modified externally (labels, name, flags, etc.) */
@@ -223,6 +238,11 @@ export class ConfigWatcher {
 
   // Track LLM connections for change detection (JSON string for deep comparison)
   private lastLlmConnectionsHash: string = '';
+
+  // The last tweaks signature seen. A tweak's record plus its code, as one string, so a write
+  // that does not change what a tweak *is* — the applier's own `hits.json`, or the folder event
+  // an atomic write raises — is not mistaken for a change to the rules.
+  private lastTweaksSignature: string | null = null;
 
   // Computed paths
   private workspaceDir: string;
@@ -305,6 +325,13 @@ export class ConfigWatcher {
 
     this.scanAppThemes();
     span.mark('scanAppThemes');
+
+    // Seed the tweaks signature so the first event is compared against the state as it is now,
+    // rather than against nothing — otherwise the applier's own startup install would look like
+    // a change on the first write that lands in a tweak's folder.
+    if (this.callbacks.onTweaksListChange) {
+      this.lastTweaksSignature = tweaksSignature(this.workspaceDir);
+    }
 
     // Initialize LLM connections hash for change detection
     this.initLlmConnectionsHash();
@@ -481,14 +508,25 @@ export class ConfigWatcher {
       return;
     }
 
-    // Pages changes: pages/{slug}/page.json is the ONLY trigger — a refresh
-    // run's last write is page.json, so reacting to it (and nothing else)
-    // means observers never see a half-written data/ directory. Slug-dir
-    // add/remove also fires (page created/deleted externally).
-    if (parts[0] === 'pages' && parts.length >= 2) {
+    // Tweaks changes: the record and the code beside it are together what a tweak *is*, so an
+    // out-of-band edit to any of them (the agent's own tools, or a hand edit) is what the app
+    // has to follow.
+    //
+    // Those three files, **and** the folder they sit in. The folder event is not noise to skip:
+    // a plain write to a file that already existed is reported here only as a change to the
+    // folder, so following the files alone silently misses an edit to a tweak written in an
+    // earlier run. What keeps that from re-installing over the applier's own `hits.json` write
+    // (which also raises the folder event) is not the path filter but the signature compared in
+    // {@link handleTweaksChange} — only a change to the record or the code is passed on.
+    if (parts[0] === 'tweaks' && parts.length >= 2) {
       const file = parts[2];
-      if (parts.length === 2 || file === 'page.json') {
-        this.debounce('pages-dir', () => this.handlePagesChange());
+      const relevant =
+        parts.length === 2 ||
+        (parts.length === 3 &&
+          (file === TWEAK_CONFIG_FILENAME || file === TWEAK_CSS_FILENAME || file === TWEAK_JS_FILENAME));
+      if (relevant) {
+        debug('[ConfigWatcher] tweak path changed:', relativePath);
+        this.debounce('tweaks-dir', () => this.handleTweaksChange());
       }
       return;
     }
@@ -968,22 +1006,30 @@ export class ConfigWatcher {
   }
 
   // ============================================================
-  // Page Handlers
+  // Tweak Handlers
   // ============================================================
 
   /**
-   * Handle a pages change (any page.json touched, or a page folder
-   * added/removed). Coarse by design: reload the full list once per
-   * debounce window.
+   * A tweak changed on disk: its record, or the code beside it. The list is re-derived from the
+   * record and handed to the callback — that is what the app's own lists show — and the code
+   * files are left to whoever installs the tweak, which reads them from disk itself.
+   *
+   * The signature check is what keeps "something moved in the folder" from meaning "the rules
+   * changed": the event that got us here may be the applier's own `hits.json` write, and passing
+   * that on would re-install the rules that just ran, forever. Only a change to the record or the
+   * code gets through.
    */
-  private handlePagesChange(): void {
-    if (!this.callbacks.onPagesListChange) return;
+  private handleTweaksChange(): void {
+    if (!this.callbacks.onTweaksListChange) return;
     try {
-      const pages = loadWorkspacePages(this.workspaceDir);
-      debug('[ConfigWatcher] pages changed:', this.workspaceId, `(${pages.length} pages)`);
-      this.callbacks.onPagesListChange(pages);
+      const tweaks = loadWorkspaceTweaks(this.workspaceDir);
+      const signature = tweaksSignature(this.workspaceDir, tweaks);
+      if (signature === this.lastTweaksSignature) return;
+      this.lastTweaksSignature = signature;
+      debug('[ConfigWatcher] tweaks changed:', this.workspaceId, `(${tweaks.length} tweaks)`);
+      this.callbacks.onTweaksListChange(tweaks.map(toTweakSummary));
     } catch (error) {
-      debug('[ConfigWatcher] Failed to reload pages:', error);
+      debug('[ConfigWatcher] Failed to reload tweaks:', error);
     }
   }
 
@@ -1151,6 +1197,27 @@ export class ConfigWatcher {
     const allThemes = loadPresetThemes();
     this.callbacks.onPresetThemesListChange?.(allThemes);
   }
+}
+
+// ============================================================
+// Tweak signature
+// ============================================================
+
+/**
+ * A workspace's tweaks, as one comparable string: every tweak's record plus the code beside it.
+ *
+ * Its job is to tell a change to the rules from an event that only moved inside a tweak's folder
+ * — the applier writing `hits.json` right after an install. It reads the code rather than trusting
+ * an mtime, because the question is whether the bytes changed, not when.
+ */
+function tweaksSignature(workspaceDir: string, tweaks?: LoadedTweak[]): string {
+  const list = tweaks ?? loadWorkspaceTweaks(workspaceDir);
+  return list
+    .map((tweak) => {
+      const sources = readTweakSources(tweak);
+      return `${JSON.stringify(tweak.config)}\u0000${sources.css ?? ''}\u0000${sources.js ?? ''}`;
+    })
+    .join('\u0001');
 }
 
 // ============================================================

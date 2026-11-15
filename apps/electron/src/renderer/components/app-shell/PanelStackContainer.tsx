@@ -22,7 +22,7 @@
  * feel rather than a CSS reflow.
  */
 
-import { useRef, useEffect } from 'react'
+import { Fragment, useRef, useEffect } from 'react'
 import { useAtomValue } from 'jotai'
 import { motion } from 'motion/react'
 import { cn } from '@/lib/utils'
@@ -43,9 +43,6 @@ import {
 /** Spring transition matching AppShell's sidebar/navigator animation */
 const PANEL_SPRING = { type: 'spring' as const, stiffness: 600, damping: 49 }
 
-/** Visual breathing room between the fixed compact TopBar and the first panel. */
-const COMPACT_PANEL_TOP_GAP = 8
-
 interface PanelStackContainerProps {
   sidebarSlot: React.ReactNode
   sidebarWidth: number
@@ -53,6 +50,16 @@ interface PanelStackContainerProps {
   navigatorWidth: number
   isSidebarAndNavigatorHidden: boolean
   isRightSidebarVisible?: boolean
+  /**
+   * A column pinned immediately to the **right of the Craft Bot panel** — the assistant's
+   * workbench.
+   *
+   * Not the window's right edge: work the assistant started belongs next to the conversation that
+   * started it, and a panel opened later belongs to the right of both. So it is a sibling in this
+   * row, after whichever entry is the assistant, and it does not take part in the proportion
+   * maths — its width is its own.
+   */
+  botDockSlot?: React.ReactNode
   /** Compact mode: single-panel, list/content toggle (mobile or narrow window) */
   isCompact?: boolean
   isResizing?: boolean
@@ -65,6 +72,7 @@ export function PanelStackContainer({
   navigatorWidth,
   isSidebarAndNavigatorHidden,
   isRightSidebarVisible,
+  botDockSlot,
   isCompact = false,
   isResizing,
 }: PanelStackContainerProps) {
@@ -128,7 +136,13 @@ export function PanelStackContainer({
           marginBlock: -PANEL_STACK_VERTICAL_OVERFLOW,
           marginBottom: -6,
           paddingBottom: 6,
-          '--compact-panel-stack-top': `${PANEL_STACK_VERTICAL_OVERFLOW + COMPACT_PANEL_TOP_GAP}px`,
+          // Compact panels run flush under the fixed TopBar (desktop does the
+          // same): the panel's own hairline — shadow-middle's 1px ring — is what
+          // divides bar from content. Adding a gap here made the bar read 8px
+          // taller AND left that hairline floating as a second separator line.
+          // This is the stack's content-box top: paddingBlock/marginBlock cancel
+          // out around the overflow room reserved for the panel shadows.
+          '--compact-panel-stack-top': `${PANEL_STACK_VERTICAL_OVERFLOW}px`,
         } as React.CSSProperties}
       >
         {/* Navigator slot — full width, slides left to -30% when detail focused. */}
@@ -136,8 +150,9 @@ export function PanelStackContainer({
           <CompactPanelTransition role="navigator" isDetailActive={hasSelectedContent}>
             <div
               data-panel-role="navigator"
+              data-compact="true"
               className={cn(
-                'h-full w-full overflow-hidden relative',
+                'h-full w-full overflow-clip relative',
                 'bg-background shadow-middle',
               )}
               style={{
@@ -229,7 +244,7 @@ export function PanelStackContainer({
           }}
           transition={transition}
           className={cn(
-            'h-full overflow-hidden relative shrink-0 z-[2]',
+            'h-full overflow-clip relative shrink-0 z-[2]',
             'bg-background shadow-middle',
           )}
           style={{
@@ -248,15 +263,21 @@ export function PanelStackContainer({
         {visiblePanels.length === 0 ? (
           <div className="flex-1 flex items-center justify-center" />
         ) : (
-          visiblePanels.map((entry, index) => (
+          visiblePanels.map((entry, index) => {
+            const isAssistantPanel = parseRouteToNavigationState(entry.route)?.navigator === 'bot'
+            return (
+            <Fragment key={entry.id}>
             <PanelSlot
-              key={entry.id}
               entry={entry}
               isOnly={visiblePanels.length === 1}
               isFocusedPanel={isMultiPanel ? entry.id === focusedPanelId : true}
               isSidebarAndNavigatorHidden={isSidebarAndNavigatorHidden}
               isAtLeftEdge={index === 0 && isLeftEdge}
-              isAtRightEdge={index === visiblePanels.length - 1 && !isRightSidebarVisible}
+              isAtRightEdge={
+                index === visiblePanels.length - 1
+                && !isRightSidebarVisible
+                && !(isAssistantPanel && botDockSlot)
+              }
               proportion={entry.proportion}
               isCompact={false}
               sash={index > 0 ? (
@@ -266,7 +287,10 @@ export function PanelStackContainer({
                 />
               ) : undefined}
             />
-          ))
+            {isAssistantPanel && botDockSlot}
+            </Fragment>
+            )
+          })
         )}
       </motion.div>
     </div>

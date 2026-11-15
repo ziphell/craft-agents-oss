@@ -17,10 +17,15 @@ import {
   writeFileSync,
   unlinkSync,
   readFileSync,
+  copyFileSync,
+  linkSync,
 } from 'fs';
-import { basename, extname, join } from 'path';
+import { basename, extname, join, relative } from 'path';
 import { randomUUID } from 'crypto';
 import { atomicWriteFileSync, readJsonFileSync, getMimeType } from '../utils/files.ts';
+import { kindOfPath } from '../library/merge.ts';
+import { readGenerationRecord, writeGenerationRecord } from '../provenance/storage.ts';
+import { toPosix } from '../provenance/paths.ts';
 import { generateUniqueSlug } from '../utils/slug.ts';
 import { debug } from '../utils/debug.ts';
 import { expandPath, toPortablePath } from '../utils/paths.ts';
@@ -31,6 +36,16 @@ import type {
   LoadedProject,
   CreateProjectInput,
 } from './types.ts';
+
+/**
+ * Short-lived cache for `loadProjectById`.
+ *
+ * Browser routing asks the same question on every command, and resolving an id means scanning the
+ * workspace's projects. Writes through this module clear the cache; the TTL only bounds staleness
+ * from a config.json edited outside the app.
+ */
+const projectByIdCache = new Map<string, { readAt: number; project: LoadedProject | null }>();
+const PROJECT_BY_ID_TTL_MS = 1_000;
 
 // ============================================================
 // Directory Utilities
@@ -137,6 +152,7 @@ export function saveProjectConfig(workspaceRootPath: string, config: ProjectConf
   }
 
   atomicWriteFileSync(join(dir, 'config.json'), JSON.stringify(storageConfig, null, 2));
+  projectByIdCache.clear();
 }
 
 // ============================================================
@@ -216,13 +232,23 @@ export function loadProject(
  * Load a project by id (scans workspace projects for a matching id).
  * Slugs are unique within a workspace, but callers may persist the project id
  * on a session (more stable across renames).
+ *
+ * Cached briefly: browser routing asks for the same project on every command, and the scan reads
+ * every project's config.json. Writes through this module invalidate the cache, so a settings
+ * change is visible immediately; the TTL only bounds staleness from edits made outside the app.
  */
 export function loadProjectById(
   workspaceRootPath: string,
   projectId: string,
 ): LoadedProject | null {
-  const projects = loadWorkspaceProjects(workspaceRootPath);
-  return projects.find((p) => p.config.id === projectId) ?? null;
+  const key = `${workspaceRootPath}\u0000${projectId}`;
+  const now = Date.now();
+  const cached = projectByIdCache.get(key);
+  if (cached && now - cached.readAt < PROJECT_BY_ID_TTL_MS) return cached.project;
+
+  const project = loadWorkspaceProjects(workspaceRootPath).find((p) => p.config.id === projectId) ?? null;
+  projectByIdCache.set(key, { readAt: now, project });
+  return project;
 }
 
 /**
@@ -293,6 +319,18 @@ export function createProject(
 }
 
 /**
+ * Optional text on a project that a person can clear.
+ *
+ * A clear travels as `''`, not `undefined`: the RPC transport is JSON, which drops keys
+ * whose value is undefined, so a removed key would arrive as "no change at all" and the
+ * old value would survive the save. An empty string is never a meaningful value for any
+ * of these — stored, it would read back as *set* (`workingDirectory: ''` is not nullish,
+ * so it would beat the project folder) — so `''` is the clear, and the empty string is
+ * dropped here rather than written.
+ */
+const CLEARABLE_TEXT_FIELDS = ['description', 'details', 'color', 'workingDirectory', 'browserProfile'] as const;
+
+/**
  * Update a project's config with a partial patch.
  * `id` and `slug` cannot be changed.
  */
@@ -315,6 +353,12 @@ export function updateProject(
     updatedAt: Date.now(),
   };
 
+  for (const field of CLEARABLE_TEXT_FIELDS) {
+    if (updated[field] === '') {
+      delete updated[field];
+    }
+  }
+
   saveProjectConfig(workspaceRootPath, updated);
   return updated;
 }
@@ -328,6 +372,7 @@ export function deleteProject(workspaceRootPath: string, projectSlug: string): v
   if (existsSync(dir)) {
     rmSync(dir, { recursive: true });
   }
+  projectByIdCache.clear();
 }
 
 /**
@@ -396,6 +441,121 @@ export interface UploadProjectAssetInput {
   text?: string;
   /** Absolute source path on disk; copied into the assets folder */
   sourcePath?: string;
+  /**
+   * Prefer a hard link when the source is on the same volume, so a generated file already in the
+   * project costs no second copy. Falls back to a copy on filesystems that do not support links.
+   */
+  link?: boolean;
+}
+
+export interface AddedProjectAsset {
+  asset: ProjectAsset;
+  /** True when `assets/<name>` is a hard link to the source: no bytes were copied. */
+  linked: boolean;
+}
+
+/**
+ * Put the source bytes in the library.
+ *
+ * A hard link is the cheap path: the generation and the library entry are one file with two names,
+ * so the same media is not stored twice. It only works on the same volume and a filesystem that
+ * supports links; anything else falls back to a copy rather than failing the add.
+ *
+ * **Only media is linked.** A picture, a clip or a recording is treated as immutable once it was
+ * made, so sharing its bytes with the history is safe. A document is not: editing it in place
+ * through either path would write through the link and change the other name too, so an editable
+ * format is always copied. (An atomic save — temp file + rename — would break the link by itself,
+ * but not every editor saves that way, and a rule that depends on the editor is not a rule.)
+ */
+function placeSourceFile(sourcePath: string, targetPath: string, link: boolean): boolean {
+  if (link) {
+    try {
+      linkSync(sourcePath, targetPath);
+      return true;
+    } catch (error) {
+      debug('[uploadProjectAsset] Hard link unavailable; copying instead:', sourcePath, error);
+    }
+  }
+  copyFileSync(sourcePath, targetPath);
+  return false;
+}
+
+/** Media the app treats as immutable. Everything else may be edited, so it is not linked. */
+function mayHardLink(sourcePath: string): boolean {
+  const kind = kindOfPath(sourcePath);
+  return kind === 'image' || kind === 'video' || kind === 'audio';
+}
+
+/**
+ * A generated file's note follows it into the library.
+ *
+ * The note is what makes a file an *asset with a source* rather than a copy with a name. It is
+ * rewritten to point at the asset's own path, so provenance and the library agree on one spelling.
+ * A note that cannot be written is a lost line of history, never a failed copy.
+ */
+function carryGenerationRecord(sourcePath: string, targetPath: string, projectPath: string): void {
+  try {
+    const record = readGenerationRecord(sourcePath)
+    if (!record) return
+    writeGenerationRecord(targetPath, {
+      ...record,
+      file: toPosix(relative(projectPath, targetPath)),
+    })
+  } catch (error) {
+    debug('[writeProjectAsset] Failed to carry generation record:', sourcePath, error)
+  }
+}
+
+function writeProjectAsset(
+  workspaceRootPath: string,
+  projectSlug: string,
+  input: UploadProjectAssetInput,
+): AddedProjectAsset {
+  if (!projectExists(workspaceRootPath, projectSlug)) {
+    throw new Error(`Project not found: ${projectSlug}`);
+  }
+  return writeAssetToContentRoot(getProjectPath(workspaceRootPath, projectSlug), input);
+}
+
+/**
+ * The folder-level form: copy a file into `<contentRoot>/assets/`, note included.
+ *
+ * A project's root is its folder; a conversation outside a project has a root too (its session
+ * folder), so the library's `add` works in both without a second copy of this logic.
+ */
+function writeAssetToContentRoot(contentRoot: string, input: UploadProjectAssetInput): AddedProjectAsset {
+  const assetsDir = join(contentRoot, 'assets');
+  if (!existsSync(assetsDir)) mkdirSync(assetsDir, { recursive: true });
+
+  const safeName = sanitizeAssetFilename(input.filename);
+  const targetPath = resolveUniqueAssetPath(assetsDir, safeName);
+
+  let linked = false;
+  if (input.base64 !== undefined) {
+    writeFileSync(targetPath, Buffer.from(input.base64, 'base64'));
+  } else if (input.text !== undefined) {
+    writeFileSync(targetPath, input.text, 'utf-8');
+  } else if (input.sourcePath) {
+    if (!existsSync(input.sourcePath)) {
+      throw new Error(`Source file does not exist: ${input.sourcePath}`);
+    }
+    linked = placeSourceFile(input.sourcePath, targetPath, input.link === true && mayHardLink(input.sourcePath));
+    carryGenerationRecord(input.sourcePath, targetPath, contentRoot);
+  } else {
+    throw new Error('uploadProjectAsset requires one of: base64, text, sourcePath');
+  }
+
+  const stats = statSync(targetPath);
+  return {
+    asset: {
+      filename: basename(targetPath),
+      sizeBytes: stats.size,
+      mimeType: getMimeType(targetPath),
+      uploadedAt: stats.mtimeMs,
+      absolutePath: targetPath,
+    },
+    linked,
+  };
 }
 
 /**
@@ -408,38 +568,26 @@ export function uploadProjectAsset(
   projectSlug: string,
   input: UploadProjectAssetInput,
 ): ProjectAsset {
-  if (!projectExists(workspaceRootPath, projectSlug)) {
-    throw new Error(`Project not found: ${projectSlug}`);
-  }
+  return writeProjectAsset(workspaceRootPath, projectSlug, input).asset;
+}
 
-  ensureProjectAssetsDir(workspaceRootPath, projectSlug);
-
-  const safeName = sanitizeAssetFilename(input.filename);
-  const assetsDir = getProjectAssetsPath(workspaceRootPath, projectSlug);
-  const targetPath = resolveUniqueAssetPath(assetsDir, safeName);
-
-  if (input.base64 !== undefined) {
-    writeFileSync(targetPath, Buffer.from(input.base64, 'base64'));
-  } else if (input.text !== undefined) {
-    writeFileSync(targetPath, input.text, 'utf-8');
-  } else if (input.sourcePath) {
-    if (!existsSync(input.sourcePath)) {
-      throw new Error(`Source file does not exist: ${input.sourcePath}`);
-    }
-    const data = readFileSync(input.sourcePath);
-    writeFileSync(targetPath, data);
-  } else {
-    throw new Error('uploadProjectAsset requires one of: base64, text, sourcePath');
-  }
-
-  const stats = statSync(targetPath);
-  return {
-    filename: basename(targetPath),
-    sizeBytes: stats.size,
-    mimeType: getMimeType(targetPath),
-    uploadedAt: stats.mtimeMs,
-    absolutePath: targetPath,
-  };
+/**
+ * Add an existing project file — a generation, a download — to the asset library.
+ *
+ * This is the explicit bridge from history to library. The source stays where it is; when the
+ * volume allows it the library entry is a hard link, so no second copy of a large clip is made.
+ */
+export function addProjectAssetFromPath(
+  workspaceRootPath: string,
+  projectSlug: string,
+  sourcePath: string,
+  filename = basename(sourcePath),
+): AddedProjectAsset {
+  return writeProjectAsset(workspaceRootPath, projectSlug, {
+    filename,
+    sourcePath,
+    link: true,
+  });
 }
 
 /**

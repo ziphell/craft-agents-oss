@@ -1,4 +1,6 @@
 import * as React from 'react'
+import { useTranslation } from 'react-i18next'
+import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CHAT_LAYOUT } from '@/config/layout'
 import { flattenLabels, type LabelConfig } from '@craft-agent/shared/labels'
@@ -8,6 +10,8 @@ import type { BackgroundTask } from '../ActiveTasksBar'
 import { ActiveOptionBadges } from '../ActiveOptionBadges'
 import { InputContainer } from './InputContainer'
 import { InputErrorBoundary } from './InputErrorBoundary'
+import { QueuedMessagesTray } from './QueuedMessagesTray'
+import type { Message } from '../../../../shared/types'
 
 interface ChatInputZoneProps {
   compactMode?: boolean
@@ -26,6 +30,19 @@ interface ChatInputZoneProps {
   currentSessionStatus?: string
   onSessionStatusChange?: (stateId: string) => void
   className?: string
+  /** The person's messages waiting behind the running turn. */
+  queuedMessages?: Message[]
+  /** Messages other conversations sent while this turn was running — not the person's text. */
+  queuedFromAgents?: Message[]
+  /** The message the person is answering, if they picked one. */
+  replyTo?: { messageId: string; role: string; excerpt: string } | null
+  onClearReply?: () => void
+  onDiscardQueuedFromAgent?: (message: Message) => void
+  onEditQueued?: (message: Message) => void
+  onRemoveQueued?: (message: Message) => void
+  onSendQueuedNow?: (message: Message) => void
+  onReorderQueued?: (messageId: string, toIndex: number) => void
+  onReorderQueuedExpired?: () => void
   inputProps: React.ComponentProps<typeof InputContainer>
 }
 
@@ -46,8 +63,19 @@ export function ChatInputZone({
   currentSessionStatus = 'todo',
   onSessionStatusChange,
   className,
+  queuedMessages,
+  queuedFromAgents,
+  onDiscardQueuedFromAgent,
+  onEditQueued,
+  onRemoveQueued,
+  onSendQueuedNow,
+  onReorderQueued,
+  onReorderQueuedExpired,
+  replyTo,
+  onClearReply,
   inputProps,
 }: ChatInputZoneProps) {
+  const { t } = useTranslation()
   const [autoOpenLabelId, setAutoOpenLabelId] = React.useState<string | null>(null)
   const shouldShowOptionBadges = showOptionBadges ?? !compactMode
   const inputResetKey = `${sessionId}::${inputProps.structuredInput?.type ?? 'freeform'}`
@@ -76,6 +104,42 @@ export function ChatInputZone({
       compactMode ? 'px-2 pb-3' : 'px-3 @xs/panel:px-4 pb-4',
       className,
     )}>
+      {/* What this message answers, above the input. The strip is the whole state: no reply
+          selected, no strip — a permanent empty "replying to…" row would be furniture. */}
+      {replyTo && (
+        <div className="mb-1.5 flex items-start gap-2 rounded-md border border-border bg-foreground/[0.03] px-2 py-1.5">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] text-muted-foreground">
+              {replyTo.role === 'user'
+                ? t('chat.replyingToYourself', { defaultValue: 'Replying to your message' })
+                : t('chat.replyingToAssistant', { defaultValue: 'Replying to an earlier answer' })}
+            </div>
+            <div className="truncate text-[11px] text-foreground/70">{replyTo.excerpt}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClearReply}
+            title={t('chat.cancelReply', { defaultValue: 'Cancel reply' })}
+            className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+      {((queuedMessages && queuedMessages.length > 0) || (queuedFromAgents && queuedFromAgents.length > 0)) && onEditQueued && onRemoveQueued && onSendQueuedNow && onReorderQueued && onReorderQueuedExpired && (
+        <QueuedMessagesTray
+          messages={queuedMessages ?? []}
+          fromAgents={queuedFromAgents}
+          onDiscardFromAgent={onDiscardQueuedFromAgent}
+          isProcessing={!!inputProps.isProcessing}
+          onEdit={onEditQueued}
+          onRemove={onRemoveQueued}
+          onSendNow={onSendQueuedNow}
+          onReorder={onReorderQueued}
+          onReorderExpired={onReorderQueuedExpired}
+        />
+      )}
+
       {shouldShowOptionBadges && (
         <ActiveOptionBadges
           permissionMode={permissionMode}

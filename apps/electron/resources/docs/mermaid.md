@@ -14,6 +14,34 @@ graph LR
     A --> B
 ```
 
+## Mind Maps
+
+**Header:** `mindmap` — use a `mindmap` fence, or a `mermaid` fence whose first line is `mindmap`. Both draw the same picture.
+
+Indentation defines the hierarchy, and there is exactly one root node.
+
+```mermaid
+mindmap
+  root((Product))
+    Discovery
+      Interviews
+      Surveys
+    Delivery
+      Design
+      Build
+```
+
+**Node shapes:** `root((circle))`, `id(rounded)`, `id[square]`, `id{{hexagon}}`, `id)cloud(`, `id))bang((`, `id>asymmetric]`. A bare label is a rounded node.
+**Line breaks:** `<br/>` inside a label starts a new line.
+**Quoted labels:** `"a [label] with brackets"` is text, not a shape.
+**Decoration:** `::icon(...)` and `:::class` are accepted and ignored.
+**Drawing:** the root sits at the centre and branches run left and right, balanced by subtree size.
+
+**Notes:**
+- A shape's id must touch the delimiter: `id[square]`. `id [square]` is text, and an unquoted label that merely contains brackets stays text too — quote it (`"Node (note)"`) when in doubt.
+- `cloud` and `bang` are approximations: an ellipse, and a rectangle with bowed sides.
+- Branch colours step through six hues and then repeat; past 800 nodes the source is shown instead of a drawing.
+
 ## Flowcharts
 
 **Header:** `graph LR` (left-right, preferred) or `graph TD` (top-down)
