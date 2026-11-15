@@ -124,7 +124,8 @@ export const RetrySchema = z.object({
       max: z.number().positive().optional(),
     })
     .optional(),
-  when: z.enum(RETRY_WHEN).optional(),
+  /** Which failure class(es) the policy retries: one, a list, or (absent) any. */
+  when: z.union([z.enum(RETRY_WHEN), z.array(z.enum(RETRY_WHEN)).min(1)]).optional(),
 });
 
 export const TaskParamSchema = z.object({

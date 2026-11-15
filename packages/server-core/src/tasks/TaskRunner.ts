@@ -676,38 +676,15 @@ class ActiveRun {
     if (evt.reason === 'complete') {
       const text = evt.finalText ?? this.deps.host.getSessionFinalText(evt.sessionId) ?? '';
 
-      // A clean turn-completion is not proof of success: a node that declared `outputs` but
-      // produced no text delivered nothing. Treat that as a failure (retry/needs-review) instead
-      // of silently marking it done. Nodes with no declared outputs keep the lenient behavior.
-      const node = this.spec.nodes.find((n) => n.id === nodeId);
-      if ((node?.outputs?.length ?? 0) > 0 && text.trim() === '') {
-        this.failNode(nodeId, 'completed without producing declared output', evt.sessionId, 'empty');
-        return;
-      }
-
-      // Declared outputs are the fields a downstream node's `${nodes.<id>.output.<field>}` —
-      // and a `when:` condition — reads. A missing or malformed field fails the node (the
-      // `retry` policy can re-dispatch it via `when: invalid`) rather than letting the token
-      // stay unresolved in the next prompt, where nothing downstream could tell it apart from
-      // real content.
-      const parsed = parseDeclaredOutputs(text, node?.outputs);
-      if (parsed.problems.length > 0) {
-        this.failNode(
-          nodeId,
-          `declared output contract not met: ${parsed.problems.join('; ')}`,
-          evt.sessionId,
-          'invalid',
-        );
-        return;
-      }
-
-      const output: NodeOutput = parsed.params ? { text: parsed.body, params: parsed.params } : { text: parsed.body };
-
+      // Ask how the turn ended before holding it to the output contract: a child that asked a
+      // question (or gave up) has no contract block either, and failing it as `invalid` would
+      // both retry the wrong thing and hide the more accurate reason. Only a turn the model
+      // calls finished is judged against `outputs`.
       if (this.deps.classifyNodeOutcome && (this.deps.classifyNodeOutcome.isActive?.() ?? true)) {
-        void this.finishNodeAfterOutcomeCheck(nodeId, evt.sessionId, output);
+        void this.finishNodeAfterOutcomeCheck(nodeId, evt.sessionId, text);
         return;
       }
-      this.markNodeDone(nodeId, evt.sessionId, output);
+      this.completeNode(nodeId, evt.sessionId, text);
     } else if (evt.reason === 'interrupted') {
       // Externally aborted while running → cancelled (re-dispatched on resume). We do not
       // auto-retry here to avoid a stop/retry loop.
@@ -735,14 +712,37 @@ class ActiveRun {
   }
 
   /**
+   * Validate the declared-output contract (when the node declares one) and mark the node done.
+   *
+   * A clean turn-completion is not proof of success: a node that declared `outputs` but produced
+   * no text delivered nothing. A missing or malformed block fails the node — the `retry` policy
+   * can re-dispatch it via `when: empty|invalid` — rather than letting the token stay unresolved
+   * in the next prompt, where nothing downstream could tell it apart from real content.
+   */
+  private completeNode(nodeId: string, sessionId: string, text: string): void {
+    const node = this.spec.nodes.find((n) => n.id === nodeId);
+    if ((node?.outputs?.length ?? 0) > 0 && text.trim() === '') {
+      this.failNode(nodeId, 'completed without producing declared output', sessionId, 'empty');
+      return;
+    }
+    const parsed = parseDeclaredOutputs(text, node?.outputs);
+    if (parsed.problems.length > 0) {
+      this.failNode(nodeId, `declared output contract not met: ${parsed.problems.join('; ')}`, sessionId, 'invalid');
+      return;
+    }
+    const output: NodeOutput = parsed.params ? { text: parsed.body, params: parsed.params } : { text: parsed.body };
+    this.markNodeDone(nodeId, sessionId, output);
+  }
+
+  /**
    * Ask the decision model how the child's turn ended before marking it done. The node stays
    * `running` meanwhile; if the run was stopped or the node re-dispatched during the await, the
-   * answer is dropped.
+   * answer is dropped. A turn the model calls finished is then held to the output contract.
    */
-  private async finishNodeAfterOutcomeCheck(nodeId: string, sessionId: string, output: NodeOutput): Promise<void> {
+  private async finishNodeAfterOutcomeCheck(nodeId: string, sessionId: string, text: string): Promise<void> {
     let outcome: 'finished' | 'needs_input' | 'blocked' | null = null;
     try {
-      outcome = await this.deps.classifyNodeOutcome!(output.text, { slug: this.slug, runId: this.runId, nodeId });
+      outcome = await this.deps.classifyNodeOutcome!(text, { slug: this.slug, runId: this.runId, nodeId });
     } catch {
       outcome = null;
     }
@@ -756,7 +756,7 @@ class ActiveRun {
       } else if (outcome === 'blocked') {
         this.failNode(nodeId, 'reported that it could not finish', sessionId);
       } else {
-        this.markNodeDone(nodeId, sessionId, output);
+        this.completeNode(nodeId, sessionId, text);
       }
     } catch (err) {
       // Same reporting channel as the synchronous completion listener; the async hop would
@@ -1187,16 +1187,18 @@ function skillsPreamble(skills: string[] | undefined): string {
 }
 
 /**
- * Whether a node's `retry.when` trigger covers a given failure class. An absent `when`
- * defaults to retrying on `error` (the common "transient failure" case); `empty`/`invalid`
- * are opt-in — they are produced by the declared-output checks, so a node that wants a
- * second attempt at an incomplete answer asks for it explicitly.
+ * Whether a node's `retry.when` trigger covers a given failure class.
+ *
+ * An absent `when` covers every class: a node that declares no `outputs` can only ever fail as
+ * `error`, so nothing changes for it, while a node that does declare them retries a contract
+ * miss without having to spell out `when`. A single class or a list can narrow it.
  */
 function retryMatches(
-  when: 'error' | 'empty' | 'invalid' | undefined,
+  when: 'error' | 'empty' | 'invalid' | readonly ('error' | 'empty' | 'invalid')[] | undefined,
   failure: 'error' | 'empty' | 'invalid',
 ): boolean {
-  return (when ?? 'error') === failure;
+  if (when === undefined) return true;
+  return typeof when === 'string' ? when === failure : when.includes(failure);
 }
 
 /**

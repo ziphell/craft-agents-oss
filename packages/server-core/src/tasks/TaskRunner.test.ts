@@ -1162,6 +1162,28 @@ describe('TaskRunner (Conductor)', () => {
       expect(runner.getRunState('ask', 'r1')!.status).toBe('completed');
     });
 
+    it('judges a turn the model calls needs_input before the output contract', async () => {
+      saveTaskSpec(
+        root,
+        specOf({
+          id: 'ask-contract',
+          title: 'Ask contract',
+          goal: 'g',
+          nodes: [{ id: 'a', prompt: 'do a', outputs: [{ name: 'score' }], retry: { limit: 1, when: 'invalid' } }],
+        }),
+      );
+      const runner = makeRunner({ classifyNodeOutcome: async () => 'needs_input' });
+      runner.run('ask-contract', { runId: 'r1' });
+      await tick();
+
+      // A question has no contract block either. The model's answer is the accurate failure,
+      // so this must not be retried as `invalid` by the output contract.
+      host.complete('a', { finalText: 'Which colour should the button be?' });
+      await settle();
+      expect(host.created.filter((c) => c.options.name === 'a')).toHaveLength(1);
+      expect(runner.getRunState('ask-contract', 'r1')!.status).toBe('failed');
+    });
+
     it('fails a child that reports it is blocked when no retry budget remains', async () => {
       saveTaskSpec(root, specOf({ id: 'blk', title: 'Blk', goal: 'g', nodes: [{ id: 'a', prompt: 'a' }] }));
       const runner = makeRunner({ classifyNodeOutcome: async () => 'blocked' });
@@ -1374,6 +1396,30 @@ describe('TaskRunner (Conductor)', () => {
     host.complete('report', { finalText: 'Done.\n\n```params\n{"score": 1}\n```' });
     await tick();
     expect(runner.getRunState('retry-class', 'r1')!.status).toBe('completed');
+  });
+
+  it('retries a contract miss by default when a node declares outputs', async () => {
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'retry-default',
+        title: 'Retry default',
+        goal: 'g',
+        nodes: [{ id: 'report', prompt: 'Report', outputs: [{ name: 'score' }], retry: { limit: 1 } }],
+      }),
+    );
+    const runner = makeRunner();
+    runner.run('retry-default', { runId: 'r1' });
+    await tick();
+
+    // No `retry.when`: a declared-output contract miss is retried without spelling it out.
+    host.complete('report', { finalText: 'I forgot the block.' });
+    await tick();
+    expect(host.dispatchedNames()).toEqual(['report', 'report']);
+
+    host.complete('report', { finalText: 'Done.\n\n```params\n{"score": 1}\n```' });
+    await tick();
+    expect(runner.getRunState('retry-default', 'r1')!.status).toBe('completed');
   });
 
   it('parks at an approval gate and takes the branch the person chooses', async () => {
