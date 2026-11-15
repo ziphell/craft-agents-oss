@@ -1,5 +1,8 @@
 # 预览框架：按 MiniMax / OpenReel 的节点逐个复刻
 
+> **状态：已实现。** 四个节点均已落地：`preview/master-clock.ts`、`audio-graph.ts`、`frame-source.ts`、`stage.tsx`；`canvas-compositor.ts` 已抽出并被预览与导出共用。本文是实施记录，不是待办计划。
+
+
 ## Context
 
 先回答「现状是出于什么计划设计的」：**不是**照 OpenReel/MiniMax 的预览节点设计的。

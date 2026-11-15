@@ -1,4 +1,15 @@
-# 本地转写独立成 audio-tool（本期不做云端 ASR）
+# 本地转写独立成 asr-tool（迁移记录）
+
+> **状态：部分落地，后续演进。** 本文是当时的迁移决策记录，不是当前实施说明。
+>
+> 实际落地后的差异：
+> - CLI 最终叫 `asr-tool`，不是 `audio-tool`（`apps/electron/resources/cli-tools/asr-tool.ts`、`resources/bin/asr-tool(.cmd)`）。
+> - **云端 ASR 已经回来**：`asr_tool` 按设置走本地模型或云端提供商，不再受「本期只做本地」限制。
+> - 转写扩展到**音频库**：音频详情面板可转成文本或 SRT，写入 `assets/<name>-<stamp>.txt|.srt`。
+> - 模型下载 UI 已存在；`asr_tool` 只在转写真正可用时出现。
+>
+> 下面的配置契约、RPC 与 UI 迁移仍与代码一致；名称与云端范围以上面为准。
+
 
 ## Context
 
