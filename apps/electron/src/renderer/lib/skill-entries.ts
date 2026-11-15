@@ -2,7 +2,7 @@
  * A skill's **entry**: the automations that run it on its own.
  *
  * A playbook is a skill plus an entry — a matcher whose prompt mentions it with
- * `[skill:slug]` (see `docs/playbooks-plan.md`). "Has an entry" is **computed here, at
+ * `[skill:slug]` (see `docs/design/playbooks-design.md`). "Has an entry" is **computed here, at
  * display time**, from `automations.json`: never stored, so it cannot go stale, and the
  * skill file carries no marker to keep in sync.
  *

@@ -1888,7 +1888,7 @@ export async function executeOfficeToolCommand(
   const cliPath = resolveGenofficeCli()
   if (!cliPath) {
     // No paths and no build steps: the reader is a person in a conversation, and the only thing it
-    // can act on is that this build cannot touch a document. A maintainer has `docs/office-embed.md`.
+    // can act on is that this build cannot touch a document. A maintainer has `docs/requirements/office-embed.md`.
     return say('This build has no document engine, so it cannot make or change Word, Excel or PowerPoint files.')
   }
 

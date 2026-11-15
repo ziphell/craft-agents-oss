@@ -54,7 +54,7 @@ const VALUE_MAX = 200
  *
  * The `ElementRef` it builds is deliberately coarse — tag, role, name — and **not** a CSS
  * selector: the two must agree with what a playbook declares, and that vocabulary is still being
- * settled (`docs/playbooks-plan.md` §5.2④). Recording the coarse one now is honest; inventing a
+ * settled (`docs/design/playbooks-design.md` §5.2④). Recording the coarse one now is honest; inventing a
  * selector grammar the reader would later have to translate is not.
  */
 export function buildRecordingObserverSource(): string {

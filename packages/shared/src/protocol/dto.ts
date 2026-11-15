@@ -1446,7 +1446,7 @@ export interface BrowserInstanceInfo {
 }
 
 /**
- * One frame of a watched tab — see docs/browser-view-streaming.md.
+ * One frame of a watched tab — see docs/requirements/browser-view-streaming.md.
  *
  * A viewer that is not the window the tab lives in subscribes to these; the frame is the tab's
  * page, not the desktop, so nothing outside that page is ever in it.

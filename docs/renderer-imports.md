@@ -1,17 +1,19 @@
 # 渲染层的导入边界（Craft Agents）
 
 > 覆盖：`apps/electron/src/renderer/**` 允许 import 什么、不允许 import 什么，为什么，以及怎么在提交前自查。
-> 配套文档：[开发环境运行指南](dev-environment.md)（monorepo 结构、依赖模型、开发命令）
+> 配套文档：[开发环境运行指南](./dev-environment.md)（monorepo 结构、依赖模型、开发命令）
 
 ## 1. 规矩
 
 **渲染层从 `@craft-agent/shared` 取「类型」不受限制（含 barrel）；取「值」只能从两类模块：`*/types`，或已确认浏览器安全的叶子模块。**
 
+当前 renderer 已经从几十个 shared 子路径取值，所以下表的「例子」不是全量清单——**判据比名单重要**。
+
 | 你要的 | 允许 | 说明 |
 |---|---|---|
 | **类型** | `import type { X } from '@craft-agent/shared/<任意路径>'` | 含 barrel。`import type` 在编译期整体擦除，不进包 |
-| **值** | 只从 `*/types` 模块取 | 约定是**只允许出现 `import type`**，不允许任何值依赖。列入白名单的这几个目前连值依赖都没有：`config/types`、`projects/types`、`sources/types`（与 `packages/shared/package.json` 的 `exports` 一一对应） |
-| **值** | 只从浏览器安全的叶子模块取 | 现有：`@craft-agent/shared/agent/modes`（`mode-types.ts`，唯一依赖是 zod）、`@craft-agent/shared/agent/thinking-levels`（无 import） |
+| **值** | 只从 `*/types` 模块取 | 约定是**只允许出现 `import type`**，不允许任何值依赖。`config/types`、`projects/types`、`sources/types` 与 `packages/shared/package.json` 的 `exports` 一一对应 |
+| **值** | 只从浏览器安全的叶子模块取 | 判据是**它和它的传递依赖都不碰 node-only 代码**，不是一张手工维护的名单。当前例子：`agent/modes`（`mode-types.ts`，唯一依赖 zod）、`agent/thinking-levels`（无 import）、`config/client-config`、`sessions/message-page`、`labels`、`colors`、`protocol`。新增前用 §4 的依赖扫描确认，不要只看它自己的 import |
 | **值** | **barrel（`index.ts`）一律不行** | `@craft-agent/shared`、`@craft-agent/shared/workspaces` 等 barrel 会把整个家族（含 workspace / config storage）拉进浏览器包，哪怕你只要一个字符串常量 |
 
 ## 2. 为什么：一次真实事故（2026-09-15）
@@ -23,7 +25,7 @@
 1: import { __vitePreload } from "vite/preload-helper.js";#!/usr/bin/env node
 ```
 
-`__vitePreload` 被注入到 shebang **之前**，于是 rollup 在文件中间撞上 `#!` 直接解析失败。注入的前提是：这个文件在浏览器包里。实际链路（用 vite 自己的依赖扫描器确认，不是推测）。事故当时的触发点是从 `renderer/components/prototypes/CreatePrototypeDialog.tsx` 取 `@craft-agent/shared/prototypes` 这个 barrel（该 subpath 已随原型家族删除，见 [项目分层](project-layers.md) §4）；**这条链现在仍然从任何一个 barrel 走得到**，下面用今天存在的那个写：
+`__vitePreload` 被注入到 shebang **之前**，于是 rollup 在文件中间撞上 `#!` 直接解析失败。注入的前提是：这个文件在浏览器包里。实际链路（用 vite 自己的依赖扫描器确认，不是推测）。事故当时的触发点是从 `renderer/components/prototypes/CreatePrototypeDialog.tsx` 取 `@craft-agent/shared/prototypes` 这个 barrel（该 subpath 已随原型家族删除，见 [项目分层](./requirements/project-layers.md) §4）；**这条链在 shared 内部仍然存在，只是 renderer 今天没有直接走它**（已经不再从 `@craft-agent/shared/workspaces` 或根 barrel 取值）。下面把它当作一条潜在回归路径写：
 
 ```
 renderer/** 的一个组件
@@ -34,6 +36,8 @@ renderer/** 的一个组件
   → import('../agent/session-scoped-tools.ts')        ← 惰性，但打包器照走
   → @anthropic-ai/claude-agent-sdk                    ← node-only，进不了浏览器包
 ```
+
+一旦有人为了一个常量从 `workspaces` barrel 取值，这条链就会重新出现在浏览器包里。
 
 三个放大因素，缺一个都不会这么难查：
 
@@ -74,4 +78,4 @@ dir apps/electron/node_modules/.vite/deps
 
 ## 5. 现状：没有自动守卫
 
-目前**没有** lint 规则拦住"渲染层从 barrel 取值"，这份文档是约定唯一的载体。可行的补法是 eslint 的 `no-restricted-imports`：在 `apps/electron/src/renderer/**` 上禁掉对 `@craft-agent/shared` 及其 `index` 的**值**导入（`import type` 放行），白名单 `*/types` 与已知叶子模块。**未做**。
+目前**没有** lint 规则拦住"渲染层从 barrel 取值"——现有的 `no-restricted-imports` 只覆盖 `react-hotkeys-hook` 与 main 进程的后端边界（`src/main/**` 禁止直连 provider SDK），不覆盖这条边界；这份文档仍是约定唯一的载体。可行的补法是 eslint 的 `no-restricted-imports`：在 `apps/electron/src/renderer/**` 上禁掉对 `@craft-agent/shared` 及其 `index` 的**值**导入（`import type` 放行），白名单 `*/types` 与已知叶子模块。**未做**。

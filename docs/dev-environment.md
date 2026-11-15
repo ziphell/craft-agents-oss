@@ -1,7 +1,7 @@
 # 开发环境运行指南（Craft Agents）
 
 > 覆盖：monorepo 结构、各子组件如何消费依赖、开发命令与执行目录、常见坑。
-> 配套文档：[macOS 安装包构建指南](build-macos.md)、[Windows 安装包构建指南](build-windows.md)、[渲染层的导入边界](renderer-imports.md)
+> 配套文档：[macOS 安装包构建指南](build-macos.md)、[Windows 安装包构建指南](build-windows.md)、[渲染层的导入边界](./renderer-imports.md)
 
 ## 1. 仓库结构（bun workspaces monorepo）
 
@@ -23,6 +23,8 @@ packages/
   pi-agent-server/      Pi agent 子进程服务（独立构建 dist，bun 运行）
   messaging-gateway/    Telegram/WhatsApp 网关（TS 源包）
   messaging-whatsapp-worker/ WhatsApp worker（独立构建 dist/worker.cjs）
+  office-host/          Office 文档宿主（TS 源包）
+  render-host/          打印/导出宿主（TS 源包；另有 dist/cli.mjs 预构建）
   ui/                   共享 React UI 组件（TS 源包）
 ```
 
@@ -32,7 +34,7 @@ packages/
 
 - `bun install` **必须在仓库根执行**（hoisting 到根 node_modules）。
 - TS 类型检查靠各 tsconfig 的 `paths` 映射到源码（如 [apps/electron/tsconfig.json](file:///c:/Users/Ryan/code/craft-agents-oss/apps/electron/tsconfig.json#L23-L28)、[packages/shared/tsconfig.json](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/tsconfig.json#L25-L30)）。
-- **例外：需要预构建成 dist 的独立进程**（见第 3 节）：`pi-agent-server`、`messaging-whatsapp-worker` 以及 electron 的 `main.cjs` / `interceptor.cjs`。这些在启动前必须构建。
+- **例外：需要预构建成 dist 的独立进程**（见第 3 节）：`pi-agent-server`、`messaging-whatsapp-worker`、`render-host` 的 `dist/cli.mjs`，以及 electron 的 `main.cjs` / `interceptor.cjs`。这些在启动前必须构建。
 - 第三方依赖：ESM-only 或原生模块按需 external（见各子组件说明）。
 
 ## 3. 各子组件依赖处理明细
@@ -53,7 +55,7 @@ packages/
 
 ### 3.3 packages/pi-agent-server（特殊：bun 运行时产物）
 
-- 构建：`bun build src/index.ts --outdir=dist --target=bun --format=esm --external koffi`（[package.json](file:///c:/Users/Ryan/code/craft-agents-oss/packages/pi-agent-server/package.json#L12)）。
+- 构建：`bun build src/index.ts --outdir=dist --target=bun --format=esm --external koffi --external electron --external electron-log`，随后由 `scripts/build/photon-wasm.ts` 把 Photon wasm 注入 `dist/index.js`（[package.json](file:///c:/Users/Ryan/code/craft-agents-oss/packages/pi-agent-server/package.json#L12)）。
 - 产物 **只能用 bun 跑**（Electron 内嵌 Node 会报 `__require is not a function`）。
 - `koffi` 外置：打包时拷到 `resources/pi-agent-server/node_modules/koffi`（`scripts/build/common.ts` 的 `copyPiAgentServer`）；dev 下靠根 node_modules 解析。
 - 启动运行时由 [runtime-resolver.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/agent/backend/internal/runtime-resolver.ts) 解析：`CRAFT_BUN` → `vendor/bun` → PATH 上的 `bun`。
@@ -68,9 +70,10 @@ packages/
 - `server` 入口直接 `bun run src/index.ts`；`server-core` 是纯 TS 源包被 bundle。
 - 产物形态：`server:build` 用 `scripts/build-server.ts` 产出自带 `vendor/bun` + `resources/bin` 的独立目录（服务器侧无 node）。
 
-### 3.7 其余（apps/webui、viewer、cli、packages/ui、core、session-tools-core、messaging-gateway）
+### 3.7 其余（apps/webui、viewer、cli、packages/ui、core、session-tools-core、messaging-gateway、office-host）
 
-- 全部 TS 源包 / vite 应用，无预构建；按正常 vite/bun 方式消费。
+- `office-host` 与其余包一样是纯 TS 源包，无预构建；按正常 vite/bun 方式消费。
+- 例外是 `render-host`：包的入口仍是 `src/index.ts`，但服务端打印/导出用的是 `bun run --cwd packages/render-host build:cli` 产出的 `dist/cli.mjs`，改它之后需要重新构建。
 
 ## 4. 开发命令与执行目录
 
@@ -128,7 +131,7 @@ bun run validate:dev                     # 全量校验：typecheck + shared 测
 3. **多份 React**：必须保留 vite 里 react/react-dom 指向根 node_modules 的 alias + dedupe。
 4. **`.env`**：electron-dev / electron-build-main 会自动读取根 `.env`（不存在则跳过）；OAuth ID/Secret 通过 esbuild `--define` 注入构建。
 5. **端口冲突**：5173/5174/5175 被占用时 dev 会失败，先停掉旧进程。
-6. **渲染层从共享包 barrel 取「值」**：会把 node-only 依赖（Claude Agent SDK 等）顺链条拖进浏览器包——`electron:dev` 照跑不误，`electron:build` 才炸在 `sdk.mjs` 上。规矩、链路与自查命令见[渲染层的导入边界](renderer-imports.md)。
+6. **渲染层从共享包 barrel 取「值」**：会把 node-only 依赖（Claude Agent SDK 等）顺链条拖进浏览器包——`electron:dev` 照跑不误，`electron:build` 才炸在 `sdk.mjs` 上。规矩、链路与自查命令见[渲染层的导入边界](./renderer-imports.md)。
 
 ## 6. 远程模式（headless server + Web UI）
 

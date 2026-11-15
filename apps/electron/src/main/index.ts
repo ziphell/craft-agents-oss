@@ -793,7 +793,7 @@ async function createInitialWindows(): Promise<void> {
 app.whenReady().then(async () => {
   // A losing second instance called app.quit() at the top of this file, but that quit
   // is asynchronous — this callback can still run. Nothing may be created here: above
-  // all not a second tray (see docs/tray-plan.md §3.6).
+  // all not a second tray (see docs/requirements/tray.md §3.6).
   if (!gotTheLock) return
 
   // Export packaged state as env var so logger.ts (and headless Bun) don't need 'electron'

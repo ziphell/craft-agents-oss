@@ -5,7 +5,7 @@
  * source text — `<kbd>`, `<div>`, `<details>`, an angle-bracket autolink. In the editor that is the right answer: the
  * text is visible, it can be typed in, and it round-trips to the same bytes. In a document nobody can type in it is
  * the wrong one — the reading face has always *drawn* that markup, so a preview showing `按 <kbd>Ctrl</kbd> 保存` as
- * source would be a regression, not a conservative choice (measured: `docs/video-understanding-plan.md`).
+ * source would be a regression, not a conservative choice (measured: `docs/design/video-understanding-design.md`).
  *
  * So the reading face builds those blocks as this node: an atom whose only content is the block's own bytes. **What
  * draws it is the host's**, through `fence-view-context` (`renderLiteral`) — the reading face answers with `Markdown`,

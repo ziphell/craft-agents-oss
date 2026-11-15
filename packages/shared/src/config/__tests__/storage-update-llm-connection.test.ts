@@ -120,7 +120,7 @@ describe('updateLlmConnection – merge semantics', () => {
   /**
    * The whole point of the merge contract: the UI is a view over the same file
    * a user can hand-edit, so a save must not destroy what the UI never saw.
-   * See docs/custom-endpoint-plan.md §6 阶段 1.
+   * See docs/design/custom-endpoint-design.md §6 阶段 1.
    */
   it('keeps connection keys the code does not know about', () => {
     const { runUpdate, readConnection } = setup([

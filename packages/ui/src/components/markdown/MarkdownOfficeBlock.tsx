@@ -12,7 +12,7 @@
  *
  * Cost, stated so it is not discovered later: each block mounts its own editor bundle (~27 MB of
  * assets for Docs, cached by the host). A conversation that quotes five documents is five
- * frames — see §"Performance" in `docs/office-embed.md`.
+ * frames — see §"Performance" in `docs/requirements/office-embed.md`.
  */
 
 import * as React from 'react'

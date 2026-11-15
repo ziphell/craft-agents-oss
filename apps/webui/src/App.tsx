@@ -147,7 +147,7 @@ export default function App() {
   return (
     <Suspense fallback={<LoadingScreen />}>
       <ElectronApp />
-      {/* The web UI has no browser window of its own; this watches the hub's (docs/browser-view-streaming.md). */}
+      {/* The web UI has no browser window of its own; this watches the hub's (docs/requirements/browser-view-streaming.md). */}
       <BrowserViewer />
     </Suspense>
   )

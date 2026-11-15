@@ -1422,7 +1422,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * A stream is a **viewer**, not a capture: two people watching one tab share the tab's
    * screencast (`viewCaptures`) and each keeps its own stream id, control flag and frame
    * callback, because `stream-control` and `stream-input` are per client.
-   * See docs/browser-view-streaming.md.
+   * See docs/requirements/browser-view-streaming.md.
    */
   private viewStreams: Map<string, ViewStream> = new Map()
   /**
@@ -3700,7 +3700,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Watching is not controlling. A free tab is claimed as soon as the stream exists; a tab the
    * agent **holds** is refused, because its turn is using the page. That refusal is not a dead
    * end: the person's lock button dismisses their half of the overlay, after which this is
-   * allowed even though the agent's claim remains (docs/browser-view-streaming.md §5.5).
+   * allowed even though the agent's claim remains (docs/requirements/browser-view-streaming.md §5.5).
    * Control ends with the stream, so a closed viewer cannot leave a tab claimed.
    */
   async setViewStreamControl(streamId: string, clientId: string, controlled: boolean): Promise<void> {

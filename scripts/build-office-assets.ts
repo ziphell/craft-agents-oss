@@ -182,7 +182,7 @@ function checkInstallation(): boolean {
   for (const fix of [...new Set(failing.map((r) => r.fix).filter(Boolean))]) {
     console.log(`  ${fix}`)
   }
-  console.log('\nSee docs/office-embed.md §3 for the full build order and §7 for the acceptance checklist.')
+  console.log('\nSee docs/requirements/office-embed.md §3 for the full build order and §7 for the acceptance checklist.')
   return false
 }
 
@@ -197,7 +197,7 @@ function checkInstallation(): boolean {
  */
 if (!existsSync(join(GENOFFICE, 'apps', 'docs', 'out', 'renderer'))) {
   console.error(`The checkout at ${GENOFFICE} has no built editors (apps/docs/out/renderer is missing).`)
-  console.error('Build them in that checkout first — docs/office-embed.md §3:')
+  console.error('Build them in that checkout first — docs/requirements/office-embed.md §3:')
   console.error('  cd <checkout> && npm install')
   console.error('  npm run build -w @genoffice/docs -w @genoffice/pdf -w @genoffice/slides')
   console.error('  npx electron-vite build -w @genoffice/sheets    # or `npm run build` with a Rust toolchain')

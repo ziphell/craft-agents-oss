@@ -14,7 +14,7 @@ type PiModel<T = any> = ReturnType<PiModelRegistry['find']>;
  *
  * The connection's model entry is the user's statement about the model, and it wins
  * over whatever the SDK's own definition says — a built-in provider's catalog entry
- * included (`docs/custom-endpoint-plan.md` D8: the rule does not depend on the
+ * included (`docs/design/custom-endpoint-design.md` D8: the rule does not depend on the
  * connection type). For a custom endpoint the same parameters are already baked into
  * the definition we registered, so this is a no-op there; for a catalog model it is
  * what makes an explicit `supportsImages` / context window / thinking flag stick —

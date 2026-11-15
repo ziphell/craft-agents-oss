@@ -77,7 +77,7 @@ function applyOurPatches(): void {
   reportPatches(outcomes, 'vendor/genoffice')
   if (hasUnresolved(outcomes)) {
     console.error('\nA patch no longer applies to this GenOffice revision.')
-    console.error('Update scripts/patches/ (see docs/README-office-creations.md), then re-run this script.')
+    console.error('Update scripts/patches/ (see docs/office-creations-index.md), then re-run this script.')
     process.exit(1)
   }
 }

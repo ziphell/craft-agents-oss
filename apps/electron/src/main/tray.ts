@@ -8,7 +8,7 @@
  *
  * Main-process only: no RPC, no renderer. The menu is rebuilt each time it is
  * opened, so it always reflects the windows and workspaces that exist now — there
- * is no config file and nothing to keep in sync (see docs/tray-plan.md).
+ * is no config file and nothing to keep in sync (see docs/requirements/tray.md).
  */
 
 import { Tray, Menu, app, nativeImage, type MenuItemConstructorOptions } from 'electron'
@@ -135,7 +135,7 @@ function buildMenu(windowManager: WindowManager, options: TrayOptions): Menu {
 
 /**
  * Create the tray, once. Subsequent calls are a no-op (the app is single-instance,
- * but this is the belt to that suspenders — see docs/tray-plan.md §3.6).
+ * but this is the belt to that suspenders — see docs/requirements/tray.md §3.6).
  *
  * @returns whether a tray is now present. The caller only makes the app resident
  *   when there is a way back to it — a tray that could not be created means closing

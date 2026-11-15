@@ -3074,7 +3074,7 @@ export function applyLlmConnectionUpdate(existing: LlmConnection, updates: LlmCo
 /**
  * Update an existing LLM connection.
  *
- * Merge semantics (see docs/custom-endpoint-plan.md D2): keys absent from
+ * Merge semantics (see docs/design/custom-endpoint-design.md D2): keys absent from
  * `updates` are left untouched, an explicit `null` deletes a key, `models[]`
  * merges by id and `customEndpoint` shallow-merges. A save therefore cannot
  * erase parameters a user wrote by hand into config.json.

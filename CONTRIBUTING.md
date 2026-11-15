@@ -111,7 +111,7 @@ craft-agents/
 - **MCP Integration**: `packages/shared/src/mcp/`
 - **UI Components**: `packages/ui/src/`
 - **Electron App**: `apps/electron/`
-- **Office documents** (Word/Excel/PowerPoint/PDF in a frame): [docs/office-embed.md](docs/office-embed.md) —
+- **Office documents** (Word/Excel/PowerPoint/PDF in a frame): [docs/requirements/office-embed.md](docs/requirements/office-embed.md) —
   the architecture, the three build steps, the twelve failures that shaped the code, and the
   real-machine checklist to run after any upstream bump. Its build artifacts are **not** committed,
   so a fresh checkout has no editors until you run those steps (`bun scripts/build-office-assets.ts --check`

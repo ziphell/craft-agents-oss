@@ -1439,7 +1439,7 @@ export interface ElectronAPI {
     /**
      * Watch one tab from outside its window — a viewer in webui, or another machine.
      *
-     * Frames arrive on `onStreamFrame`, only to the client that asked (docs/browser-view-streaming.md).
+     * Frames arrive on `onStreamFrame`, only to the client that asked (docs/requirements/browser-view-streaming.md).
      * One capture per tab, one stream per viewer: a second viewer joins the same capture rather
      * than starting another. A tab that is being recorded is refused — the recorder owns a
      * second CDP session, and the manager does not hand out a viewer on top of it.

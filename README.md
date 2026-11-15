@@ -387,7 +387,7 @@ engines. Their build artifacts are not committed: a fresh checkout has no editor
 `bun scripts/build-office-assets.ts` (editors + CLI) and `bun scripts/build-office-engine.ts`
 (engine bundles) have run, and `bun scripts/build-office-assets.ts --check` says what is missing.
 The architecture, the reasons behind it, and the real-machine checklist live in
-[docs/office-embed.md](docs/office-embed.md).
+[docs/requirements/office-embed.md](docs/requirements/office-embed.md).
 
 ### Environment Variables
 

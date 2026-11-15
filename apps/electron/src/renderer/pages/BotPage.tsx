@@ -21,7 +21,7 @@ import { BotHeaderMenu } from '@/components/app-shell/bot/BotHeaderMenu'
  *
  * What is left here is a conversation, a running count, and the switch.
  *
- * The interaction is specified in `docs/craft-bot-interaction.md`.
+ * The interaction is specified in `docs/pending/craft-bot-interaction.md`.
  */
 export function BotPage() {
   const { t } = useTranslation()

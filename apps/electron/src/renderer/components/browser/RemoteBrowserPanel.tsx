@@ -3,7 +3,7 @@
  *
  * A remote window's browser is the workspace's browser on **its server**, like its shell: the
  * hub owns the window and its tabs, and this client only draws the frames and sends pointer and
- * keyboard back (see docs/browser-view-streaming.md). There is nothing to raise on this machine,
+ * keyboard back (see docs/requirements/browser-view-streaming.md). There is nothing to raise on this machine,
  * which is why the top bar opens the full-screen viewer instead of an OS window.
  *
  * The viewer itself is `BrowserStreamViewer` — shared with the web UI, which has the same server

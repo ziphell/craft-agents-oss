@@ -385,7 +385,7 @@ export class WindowManager {
     })
 
     // Show window when first paint is ready (faster perceived startup). A restored
-    // window is shown too: opening the app means seeing it (see docs/tray-plan.md §3.4).
+    // window is shown too: opening the app means seeing it (see docs/requirements/tray.md §3.4).
     window.once('ready-to-show', () => {
       window.show()
     })
@@ -654,7 +654,7 @@ export class WindowManager {
     // Only the **last** main window is put away (hidden) — the app lives in the tray,
     // and that window keeps its state for when it is brought back. Every other main
     // window really closes (is destroyed) one by one: a workspace no longer keeps a
-    // hidden window (see docs/tray-plan.md §3.7).
+    // hidden window (see docs/requirements/tray.md §3.7).
     window.on('close', (event) => {
       // During app quit, let the native close flow run (Cmd+Q means quit, not hide).
       // This preserves expected Cmd+Q semantics (quit app instead of closing overlays/panels first).

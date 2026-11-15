@@ -2,7 +2,7 @@
  * The browser a viewer sees, full screen.
  *
  * A remote window's browser — and the web UI's — is the workspace's browser on **its server**
- * (see docs/browser-view-streaming.md). There is nothing to raise on this machine, so a tab is
+ * (see docs/requirements/browser-view-streaming.md). There is nothing to raise on this machine, so a tab is
  * watched as a stream of frames and input goes back over the same socket.
  *
  * One tab at a time: Chromium's screencast is one stream per CDP session, and the manager fans

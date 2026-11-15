@@ -5,7 +5,7 @@
  * only thing that drops that entry is the window property
  * `System.AppUserModel.PreventPinning`, and Electron does not expose it — its
  * `BrowserWindow.setAppDetails()` covers only `appId` and the relaunch properties
- * (see `AppDetailsOptions` in electron.d.ts, and docs/browser-taskbar-plan.md).
+ * (see `AppDetailsOptions` in electron.d.ts, and docs/requirements/browser-taskbar.md).
  * So the property is written here, through the Win32 `IPropertyStore` directly.
  *
  * Windows-only and best-effort by design: every other platform is a no-op, koffi

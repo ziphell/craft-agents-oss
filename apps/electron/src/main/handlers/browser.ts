@@ -163,7 +163,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
     //
     // Whether the window is *shown* follows the requester: a person at this machine is sitting in
     // front of the screen it would appear on; a remote window's person watches the tab through the
-    // frame viewer instead (docs/browser-view-streaming.md), so a window on the hub's desktop is
+    // frame viewer instead (docs/requirements/browser-view-streaming.md), so a window on the hub's desktop is
     // noise. The caller gets the tab back so it can open the viewer on it.
     const local = !ctx.clientId || (server.isLocalClient?.(ctx.clientId) ?? true)
     const instanceId = windowWithTab({ ...ctx, workspaceId }, {
@@ -242,7 +242,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
   })
 
   /**
-   * Watch one tab from outside its window (docs/browser-view-streaming.md).
+   * Watch one tab from outside its window (docs/requirements/browser-view-streaming.md).
    *
    * Frames go to **the client that asked** and nobody else: a stream is a viewer's, not a
    * broadcast, and the page in it may be signed in. `streamStop` is the other half; the manager
@@ -264,7 +264,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
 
   /**
    * Watching is not controlling: input is refused until the viewer takes over, and taking over
-   * is refused while the agent holds the tab (docs/browser-view-streaming.md §5.5).
+   * is refused while the agent holds the tab (docs/requirements/browser-view-streaming.md §5.5).
    */
   server.handle(RPC_CHANNELS.browserPane.STREAM_CONTROL, async (ctx, streamId: string, controlled: boolean) => {
     await browserPaneManager.setViewStreamControl(streamId, ctx.clientId, !!controlled)
@@ -367,7 +367,7 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
    * Give a watched tab the viewport its viewer draws at.
    *
    * The viewer knows its pane's size; the page should reflow to it rather than be drawn small
-   * inside a bigger window (docs/browser-view-streaming.md). Clamped and answered by the manager:
+   * inside a bigger window (docs/requirements/browser-view-streaming.md). Clamped and answered by the manager:
    * a tab on screen can only be sized with its window, so the answer may be smaller than asked.
    */
   server.handle(

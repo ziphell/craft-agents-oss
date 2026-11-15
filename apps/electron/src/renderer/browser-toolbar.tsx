@@ -486,7 +486,7 @@ function TabRail({
                 would mean covering the rows sliding under it, and a cover drawn over the
                 column's own half-tint is a flatter grey — the column is translucent so the
                 window's material can read through it, and a second translucent layer on
-                top is the third grey nobody chose (`docs/browser-window-chrome.md`). The
+                top is the third grey nobody chose (`docs/requirements/browser-window-chrome.md`). The
                 name is worth less than the column being one piece; the hairline and the
                 step in already say where a section starts.
 
