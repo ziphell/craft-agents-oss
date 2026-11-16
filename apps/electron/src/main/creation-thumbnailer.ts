@@ -201,7 +201,7 @@ async function captureSource(input: CreationThumbInput): Promise<Buffer | null> 
       // The app's **reading face**, at the card's width — not a second markdown dialect in main. See
       // `markdown-poster.ts`: the window loads this bundle with `?mdPoster=1` and mounts the same
       // `TiptapMarkdownEditor` a `.md` file is read with (`presentation`).
-      return captureMarkdownPoster(await readFile(input.path, 'utf8'), undefined, input.path, { pixelRatio: 2 })
+      return captureMarkdownPoster(await readFile(input.path, 'utf8'), undefined, input.path)
 
     case 'drawio-engine':
       return captureDrawio(await readFile(input.path, 'utf8'))

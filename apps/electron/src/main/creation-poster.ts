@@ -37,10 +37,12 @@ export const DIAGRAM_CANVAS_HEIGHT = 900
  * while a page's scripts were refused (a script-built page photographed as its skeleton), `/9` the
  * 800 px ones that were stretched on a high-density display, `/10` the 16:9-cropped ones whose
  * crop belongs to the card (CSS), not to the stored picture, `/11` the diagrams drawn at 2× (this
- * route is 1× on a 1600×900 logical page). The string is part of the file name, so a bump retires
- * them in place — no migration, no orphan.
+ * route is 1× on a 1600×900 logical page), `/12` the markdown posters captured at 2× — a window
+ * sized from the primary display's density is only 2× on that display, so the picture is back to
+ * one CSS px per layout px, at whatever density the window is drawn on. The string is part of the
+ * file name, so a bump retires them in place — no migration, no orphan.
  */
-const POSTER_RECIPE = 'poster/11'
+const POSTER_RECIPE = 'poster/12'
 
 /**
  * A poster belongs to a **document**, and its name says so.
@@ -248,56 +250,8 @@ export function blendOnWhite(pixels: Uint8Array, width: number, height: number):
   return flat
 }
 
-/** The card's logical width: the poster is laid out at 800 CSS px and captured at 2× (1600). */
+/** The card's width: the poster is laid out at 800 CSS px and captured 1:1. */
 export const MARKDOWN_POSTER_WIDTH = 800
-
-/** The window a poster is captured in: its content size in DIP, and the page zoom to match. */
-export interface PosterCaptureWindow {
-  width: number
-  height: number
-  zoom: number
-}
-
-/**
- * A window whose CSS viewport is `logical` and whose capture is `logical × pixelRatio`, on any
- * display.
- *
- * Electron has **no per-window device scale factor** — only the app-wide
- * `--force-device-scale-factor`, which would change every window in the app. So the density stays
- * whatever the screen reports, and the two numbers that *are* ours are solved instead:
- *
- *   physical = DIP × displayScale     CSS = DIP ÷ zoom
- *
- * → `DIP = logical × pixelRatio ÷ displayScale`, `zoom = pixelRatio ÷ displayScale`.
- *
- * On a 1× screen that is literally "density 1 + zoom 2" (a 1600×900 window); on a 2× screen the
- * density already supplies the extra pixels, so it is "density 2 + zoom 1" (an 800×450 window) —
- * forcing zoom 2 there would photograph 3200 px only to throw half of them away.
- *
- * A window cannot exceed the screen: when it does, the zoom is lowered so the whole logical width
- * stays visible and the poster settles for fewer physical pixels instead of a cropped layout.
- */
-export function posterCaptureWindow(
-  logical: { width: number; height: number },
-  pixelRatio: number,
-  displayScale: number,
-  area: { width: number; height: number },
-  margin = 40,
-): PosterCaptureWindow {
-  const density = displayScale > 0 ? displayScale : 1
-  const wanted = {
-    width: (logical.width * pixelRatio) / density,
-    height: (logical.height * pixelRatio) / density,
-  }
-  const width = Math.max(1, Math.min(Math.round(wanted.width), area.width - margin))
-  const height = Math.max(1, Math.min(Math.round(wanted.height), area.height - margin))
-  const zoom = Math.min(
-    pixelRatio / density,
-    width / Math.max(1, logical.width),
-    height / Math.max(1, logical.height),
-  )
-  return { width, height, zoom }
-}
 
 /** Base64url of a UTF-8 string, which is what `decodePosterText` in the renderer reads back. */
 export function encodeBase64Url(source: string): string {

@@ -249,7 +249,7 @@ pdf                 → 直接就绪
 | html | 隐藏窗口直接加载该文件的 `file://`，**跑脚本**截屏（等 load + 图片/字体 + 700 ms 静默 + 一次复核） |
 | drawio | 内置 viewer 画好后截屏 |
 
-- **海报：逻辑 800（CSS）px，物理 1600 px。** 版面按 800×450 CSS 排版，截图时用窗口尺寸 + zoom 把它变成 1600×900 物理像素（`capture-surface` 的 `zoom` 与 `markdown-poster` 的 `pixelRatio`），和显示器自身缩放无关；海报**保持内容原始比例**，卡片槽是 `aspect-video`，裁切交给 CSS `object-fit: cover`（`object-top`），不把 16:9 焊进海报里。其它文档格式按各自版面（A4 / 16:9 演示 / 1000–1280 CSS）截图，物理长边上限 1600；唯一例外是 drawio：**1× 渲染、逻辑 1600px**，整张画放在 1600×900 白底上（`contain`，超过才缩小），不做密度缩放，因为图形被裁掉一侧就不是"更小的图"，而是错图。
+- **海报：版面 800×450 CSS px，按 1× 截图。** md 等页面用 800 CSS px 排版、窗口即 800 DIP、不叠 zoom，图片分辨率随截图窗口所在显示器的缩放（1× 屏得 800、2× 屏得 1600），不按主屏密度反推窗口大小；海报**保持内容原始比例**，卡片槽是 `aspect-video`，裁切交给 CSS `object-fit: cover`（`object-top`），不把 16:9 焊进海报里。其它文档格式按各自版面（A4 / 16:9 演示 / 1000–1280 CSS）截图，物理长边上限 1600；唯一例外是 drawio：**1× 渲染、逻辑 1600px**，整张画放在 1600×900 白底上（`contain`，超过才缩小），不做密度缩放，因为图形被裁掉一侧就不是"更小的图"，而是错图。
 - 缓存键 `(path, mtime, bytes, POSTER_RECIPE)`；换几何或换渲染路线就改 `POSTER_RECIPE`，旧图自动变成"另一个版本"并被 `siblingPostersToDelete` 删掉。
 - **不要在对话里内联 office 预览**：一个块 = 整个编辑器应用（xlsx 入口 20.3 MB）+ 一次读盘，而会话是 `turns.map(...)` 全量渲染。`office-preview` 围栏因此下线（`fences.ts` 的 `RETIRED_FENCES`）。
 
