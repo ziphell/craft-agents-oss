@@ -745,7 +745,7 @@
   "crash.somethingWentWrong": "出错了",
   "creations.allFormats": "全部",
   "creations.copyPath": "复制路径",
-  "creations.emptyBody": "当智能体在对话里写出文档、生成图片/视频/音频，或修改剪辑，它会带着产出它的那一轮出现在这里。打开一个就能用对应的编辑器阅读或修改。",
+  "creations.emptyBody": "当智能体在对话里写出文档、生成图片/视频/音频，它会带着产出它的那一轮出现在这里。打开一个就能用对应的编辑器阅读或修改。",
   "creations.emptyTitle": "还没有产物",
   "creations.exportDocx": "导出为 Word",
   "creations.exportHtml": "导出为单文件 HTML",

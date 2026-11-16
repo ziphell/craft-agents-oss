@@ -100,10 +100,18 @@ export interface SurfaceRequest {
    * begins at a negative `y`, the capture is clamped to the window's top, and the poster comes back
    * as the editor's ribbon over an empty pagef — a picture of the wrong thing that no caller can
    * detect. Zooming the page to fit makes the box lie inside the window at any screen size, which is
-   * what a poster wants anyway: a card shows 800×450, so a page drawn at 70% is still more than it
-   * can show.
+   * what a poster wants anyway: a card is a 16:9 slot and the poster keeps up to 1600 px on its
+   * long edge, so a page drawn at 70% is still more than it can show.
    */
   fit?: SurfaceSize
+  /**
+   * The page's own zoom — 1 unless the caller wants logical and physical pixels to be independent.
+   *
+   * The markdown poster asks for 2 raster px per CSS px (`2 / displayScale`, lowered only when the
+   * screen cannot hold the window) and sizes its window to match, so an 800 CSS px layout is
+   * captured as 1600 raster px on a 1× screen as well as on a Retina one.
+   */
+  zoom?: number
 }
 
 /**
@@ -207,19 +215,24 @@ export async function captureSurface(request: SurfaceRequest): Promise<SurfaceCa
     else throw new Error('a surface needs a url or a load')
     await loaded
 
-    // A capture window runs at 100%, always. Chromium remembers a zoom **per origin**, so an editor
-    // somebody zoomed out once left `craft-local://office` at 78% for every window after it — and the
-    // page's own idea of its width (1601 CSS px in a 1252 px window) then disagreed with the window
-    // the picture is taken from. A poster's geometry is measured in the page and cropped in the
-    // window; those two have to be the same units.
-    win.webContents.setZoomFactor(1)
+    // A capture window runs at the caller's zoom — 1 unless it asked for a pixel ratio (the markdown
+    // poster does, so 800 logical px can be 1600 physical on any display). Chromium remembers a zoom
+    // **per origin**, so an editor somebody zoomed out once left `craft-local://office` at 78% for
+    // every window after it — and the page's own idea of its width then disagreed with the window the
+    // picture is taken from. Setting it explicitly is what keeps those two in the same units.
+    const baseZoom = request.zoom ?? 1
+    win.webContents.setZoomFactor(baseZoom)
+    if (Math.abs(baseZoom - 1) > 0.001) await new Promise((resolve) => setTimeout(resolve, 200))
 
     // A window is never bigger than the screen; the page may be. Fit it before anything is measured.
     if (request.fit) {
       const content = win.getContentBounds()
-      const zoom = Math.min(1, content.width / request.fit.width, content.height / request.fit.height)
-      if (zoom < 0.999) {
-        win.webContents.setZoomFactor(zoom)
+      // CSS pixels, not DIP: the window's own zoom decides how many DIP one CSS pixel takes.
+      const cssWidth = content.width / baseZoom
+      const cssHeight = content.height / baseZoom
+      const fitZoom = Math.min(1, cssWidth / request.fit.width, cssHeight / request.fit.height)
+      if (fitZoom < 0.999) {
+        win.webContents.setZoomFactor(baseZoom * fitZoom)
         await new Promise((resolve) => setTimeout(resolve, 200))
       }
     }

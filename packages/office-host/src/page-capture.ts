@@ -56,9 +56,9 @@ const SHEETS_CHROME_PX = 146
  * **A workbook is the one that does arithmetic**, because its picture is a *grid*: the card is 16:9,
  * so the grid area under the ribbon is what has to be 16:9 — not the window. 1250 px of width leaves
  * 703 px of grid once the chrome is out, which is exactly 16:9, and fits a 1440×960 desktop without
- * the OS shrinking the window. The capture then downsamples into the card's 800×450 — sharper than
+ * the OS shrinking the window. The capture then downsamples to the poster's 1600 px long edge — sharper than
  * photographing 800 px of window and enlarging it: an 800-wide window holds 306 px of grid, so that
- * poster is a 1.5× blow-up with no room for the column letters.
+ * poster is a blow-up with no room for the column letters.
  */
 export const OFFICE_PAGE_WINDOW: Record<'docs' | 'sheets' | 'slides', { width: number; height: number }> = {
   docs: { width: 1000, height: 1400 },

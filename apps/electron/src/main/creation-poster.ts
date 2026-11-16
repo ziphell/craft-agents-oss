@@ -8,15 +8,15 @@
 import { createHash } from 'node:crypto'
 
 /**
- * Poster geometry: 16:9, the shape the cards are drawn at.
+ * The white page a **diagram** is shown whole on — logical pixels, 1×.
  *
- * 16:9 is not arbitrary: a presentation page is 16:9, so a deck's poster fits its card exactly —
- * no crop, no bars. A portrait page (a document, a markdown page) is shown **from the top at the
- * card's width**, which is what a page lying on the card looks like; scaling it down to fit the
- * whole sheet would leave white either side and shrink the text to a texture.
+ * A page keeps its own shape and the card crops it with CSS; a diagram does not — its shape is
+ * its content, and a flowchart cut down the middle is not a smaller diagram, it is a wrong one.
+ * So the one `contain` route gets a 1600×900 page to sit on, at the engine's own 1× size: this
+ * route has no density step, and the drawing is only shrunk when it is larger than the page.
  */
-export const THUMB_WIDTH = 800
-export const THUMB_HEIGHT = 450
+export const DIAGRAM_CANVAS_WIDTH = 1600
+export const DIAGRAM_CANVAS_HEIGHT = 900
 
 /**
  * Bumped whenever a poster would come out looking different: geometry, the markdown page, the
@@ -34,10 +34,13 @@ export const THUMB_HEIGHT = 450
  * the office ones made before the capture waited for the document, `/5` the white ones, `/6` the
  * ones taken in a window smaller than the page, `/7` the two printed documents (a Word page and a
  * slide, drawn from the PDF instead of photographed in an editor), `/8` every html poster made
- * while a page's scripts were refused (a script-built page photographed as its skeleton). The string
- * is part of the file name, so a bump retires them in place — no migration, no orphan.
+ * while a page's scripts were refused (a script-built page photographed as its skeleton), `/9` the
+ * 800 px ones that were stretched on a high-density display, `/10` the 16:9-cropped ones whose
+ * crop belongs to the card (CSS), not to the stored picture, `/11` the diagrams drawn at 2× (this
+ * route is 1× on a 1600×900 logical page). The string is part of the file name, so a bump retires
+ * them in place — no migration, no orphan.
  */
-const POSTER_RECIPE = 'page-16x9/8'
+const POSTER_RECIPE = 'poster/11'
 
 /**
  * A poster belongs to a **document**, and its name says so.
@@ -245,8 +248,56 @@ export function blendOnWhite(pixels: Uint8Array, width: number, height: number):
   return flat
 }
 
-/** The card's width: the poster is drawn at the size the card shows it at. */
+/** The card's logical width: the poster is laid out at 800 CSS px and captured at 2× (1600). */
 export const MARKDOWN_POSTER_WIDTH = 800
+
+/** The window a poster is captured in: its content size in DIP, and the page zoom to match. */
+export interface PosterCaptureWindow {
+  width: number
+  height: number
+  zoom: number
+}
+
+/**
+ * A window whose CSS viewport is `logical` and whose capture is `logical × pixelRatio`, on any
+ * display.
+ *
+ * Electron has **no per-window device scale factor** — only the app-wide
+ * `--force-device-scale-factor`, which would change every window in the app. So the density stays
+ * whatever the screen reports, and the two numbers that *are* ours are solved instead:
+ *
+ *   physical = DIP × displayScale     CSS = DIP ÷ zoom
+ *
+ * → `DIP = logical × pixelRatio ÷ displayScale`, `zoom = pixelRatio ÷ displayScale`.
+ *
+ * On a 1× screen that is literally "density 1 + zoom 2" (a 1600×900 window); on a 2× screen the
+ * density already supplies the extra pixels, so it is "density 2 + zoom 1" (an 800×450 window) —
+ * forcing zoom 2 there would photograph 3200 px only to throw half of them away.
+ *
+ * A window cannot exceed the screen: when it does, the zoom is lowered so the whole logical width
+ * stays visible and the poster settles for fewer physical pixels instead of a cropped layout.
+ */
+export function posterCaptureWindow(
+  logical: { width: number; height: number },
+  pixelRatio: number,
+  displayScale: number,
+  area: { width: number; height: number },
+  margin = 40,
+): PosterCaptureWindow {
+  const density = displayScale > 0 ? displayScale : 1
+  const wanted = {
+    width: (logical.width * pixelRatio) / density,
+    height: (logical.height * pixelRatio) / density,
+  }
+  const width = Math.max(1, Math.min(Math.round(wanted.width), area.width - margin))
+  const height = Math.max(1, Math.min(Math.round(wanted.height), area.height - margin))
+  const zoom = Math.min(
+    pixelRatio / density,
+    width / Math.max(1, logical.width),
+    height / Math.max(1, logical.height),
+  )
+  return { width, height, zoom }
+}
 
 /** Base64url of a UTF-8 string, which is what `decodePosterText` in the renderer reads back. */
 export function encodeBase64Url(source: string): string {

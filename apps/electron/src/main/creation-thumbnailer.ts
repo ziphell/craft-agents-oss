@@ -46,8 +46,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
-  THUMB_HEIGHT,
-  THUMB_WIDTH,
+  DIAGRAM_CANVAS_HEIGHT,
+  DIAGRAM_CANVAS_WIDTH,
   orphanPostersToDelete,
   blendOnWhite,
   posterFileName,
@@ -68,10 +68,13 @@ import { renderDrawio } from './drawio-render'
 
 const JPEG_QUALITY = 82
 /**
- * The page is drawn rather wider than the card so the picture survives a large window and a
- * high-density screen. Measured: ~130 ms at this width, against ~90 ms at 600.
+ * The longest edge a poster keeps: 2× the widest card it is shown in.
+ *
+ * A page is drawn at this width, so pdfium and the print fallback give the card real pixels
+ * instead of an enlarged 800. A capture larger than this is scaled down; a smaller one is left
+ * alone, and the ratio is never changed here — the card crops with CSS.
  */
-const POSTER_PX_WIDTH = 1000
+const POSTER_MAX_EDGE = 1600
 /** A document too large to open for a picture is not worth a picture. */
 const MAX_SOURCE_BYTES = 48 * 1024 * 1024
 const CAPTURE_TIMEOUT_MS = 20_000
@@ -127,6 +130,8 @@ async function captureDocument(
  * and this is the app's own answer to that question.
  */
 async function captureDrawio(xml: string): Promise<Buffer | null> {
+  // 1×, the engine's own size. This route has no density step: the drawing is placed on the
+  // 1600×900 logical page as it is, and only shrunk if it is larger than that page.
   const rendered = await renderDrawio({ xml, format: 'png' })
   return rendered.bytes.length > 0 ? Buffer.from(rendered.bytes) : null
 }
@@ -151,7 +156,7 @@ async function captureSource(input: CreationThumbInput): Promise<Buffer | null> 
       // Its own page, drawn by pdfium in 60 ms — asking an editor to open the file first would be a
       // second of work for a worse answer.
       const bytes = new Uint8Array(await readFile(input.path))
-      const png = await renderPagePng({ bytes, pageIndex: 0, pxWidth: POSTER_PX_WIDTH })
+      const png = await renderPagePng({ bytes, pageIndex: 0, pxWidth: POSTER_MAX_EDGE })
       return Buffer.from(png)
     }
 
@@ -166,7 +171,7 @@ async function captureSource(input: CreationThumbInput): Promise<Buffer | null> 
         { app: source.app, path: input.path, bytes, timeoutMs: CAPTURE_TIMEOUT_MS },
         { firstPageOnly: true },
       )
-      const png = await renderPagePng({ bytes: pdf, pageIndex: 0, pxWidth: POSTER_PX_WIDTH })
+      const png = await renderPagePng({ bytes: pdf, pageIndex: 0, pxWidth: POSTER_MAX_EDGE })
       return Buffer.from(png)
     }
 
@@ -183,7 +188,7 @@ async function captureSource(input: CreationThumbInput): Promise<Buffer | null> 
         { app: source.app, path: input.path, bytes, timeoutMs: CAPTURE_TIMEOUT_MS },
         { firstPageOnly: true },
       )
-      const png = await renderPagePng({ bytes: pdf, pageIndex: 0, pxWidth: POSTER_PX_WIDTH })
+      const png = await renderPagePng({ bytes: pdf, pageIndex: 0, pxWidth: POSTER_MAX_EDGE })
       return Buffer.from(png)
     }
 
@@ -196,7 +201,7 @@ async function captureSource(input: CreationThumbInput): Promise<Buffer | null> 
       // The app's **reading face**, at the card's width — not a second markdown dialect in main. See
       // `markdown-poster.ts`: the window loads this bundle with `?mdPoster=1` and mounts the same
       // `TiptapMarkdownEditor` a `.md` file is read with (`presentation`).
-      return captureMarkdownPoster(await readFile(input.path, 'utf8'), undefined, input.path)
+      return captureMarkdownPoster(await readFile(input.path, 'utf8'), undefined, input.path, { pixelRatio: 2 })
 
     case 'drawio-engine':
       return captureDrawio(await readFile(input.path, 'utf8'))
@@ -224,7 +229,7 @@ async function toPosterJpeg(source: Buffer, whole: boolean): Promise<Buffer> {
   const image = flattenOnWhite(decoded)
   const { width, height } = image.getSize()
   if (!width || !height) throw new Error('the capture has no size')
-  const fitted = whole ? containOnWhite(image, width, height) : coverFromTop(image, width, height)
+  const fitted = whole ? containOnWhite(image, width, height) : fitWithin(image)
   return fitted.toJPEG(JPEG_QUALITY)
 }
 
@@ -236,41 +241,48 @@ function flattenOnWhite(image: NativeImage): NativeImage {
 
 /** The whole picture, centred on white — sharp's `fit: 'contain'` with a background. */
 function containOnWhite(image: NativeImage, width: number, height: number): NativeImage {
-  const scale = Math.min(THUMB_WIDTH / width, THUMB_HEIGHT / height)
+  // A diagram is drawn 1:1 on a 1600×900 logical page: no density scaling, no enlargement. Only a
+  // drawing larger than the page is shrunk to fit it.
+  const scale = Math.min(1, DIAGRAM_CANVAS_WIDTH / width, DIAGRAM_CANVAS_HEIGHT / height)
   const scaled = image.resize({
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale)),
     quality: 'best',
   })
   const size = scaled.getSize()
-  const left = Math.round((THUMB_WIDTH - size.width) / 2)
-  const top = Math.round((THUMB_HEIGHT - size.height) / 2)
+  const left = Math.round((DIAGRAM_CANVAS_WIDTH - size.width) / 2)
+  const top = Math.round((DIAGRAM_CANVAS_HEIGHT - size.height) / 2)
   // nativeImage has no compositor, so the white page is a bitmap the picture is blitted onto. `0xff`
   // throughout is opaque white in BGRA. A straight copy, because `toPosterJpeg` has already flattened
   // the picture onto that same white — this only has to place it.
-  const canvas = Buffer.alloc(THUMB_WIDTH * THUMB_HEIGHT * 4, 0xff)
+  const canvas = Buffer.alloc(DIAGRAM_CANVAS_WIDTH * DIAGRAM_CANVAS_HEIGHT * 4, 0xff)
   const pixels = scaled.toBitmap()
   const rowBytes = size.width * 4
   for (let y = 0; y < size.height; y++) {
-    pixels.copy(canvas, ((top + y) * THUMB_WIDTH + left) * 4, y * rowBytes, y * rowBytes + rowBytes)
+    pixels.copy(canvas, ((top + y) * DIAGRAM_CANVAS_WIDTH + left) * 4, y * rowBytes, y * rowBytes + rowBytes)
   }
-  return nativeImage.createFromBitmap(canvas, { width: THUMB_WIDTH, height: THUMB_HEIGHT })
+  return nativeImage.createFromBitmap(canvas, { width: DIAGRAM_CANVAS_WIDTH, height: DIAGRAM_CANVAS_HEIGHT })
 }
 
-/** The picture filled to the card, cut from the top — sharp's `fit: 'cover', position: 'top'`. */
-function coverFromTop(image: NativeImage, width: number, height: number): NativeImage {
-  const scale = Math.max(THUMB_WIDTH / width, THUMB_HEIGHT / height)
-  const scaled = image.resize({
-    width: Math.max(THUMB_WIDTH, Math.round(width * scale)),
-    height: Math.max(THUMB_HEIGHT, Math.round(height * scale)),
+/**
+ * The picture as it was captured, only bounded in size — **no ratio, no crop**.
+ *
+ * The card is a 16:9 slot and crops with CSS `object-fit: cover` at the display's own pixel
+ * density. Baking that ratio in here meant a second resample (and, for a small picture, an
+ * upscale) before the browser ever saw it, which is what made covers look soft. Keeping the
+ * capture's own shape means exactly one scale, at the resolution the card is actually drawn at.
+ *
+ * `POSTER_MAX_EDGE` bounds the file: 1600 px is 2× the widest card, and a tall page is bounded by
+ * its height instead of being cropped to fit.
+ */
+function fitWithin(image: NativeImage): NativeImage {
+  const { width, height } = image.getSize()
+  const scale = Math.min(1, POSTER_MAX_EDGE / Math.max(width, height))
+  if (scale === 1) return image
+  return image.resize({
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
     quality: 'best',
-  })
-  const size = scaled.getSize()
-  return scaled.crop({
-    x: Math.max(0, Math.round((size.width - THUMB_WIDTH) / 2)),
-    y: 0,
-    width: THUMB_WIDTH,
-    height: THUMB_HEIGHT,
   })
 }
 

@@ -4,6 +4,7 @@ import {
   markdownPosterQuery,
   MAX_POSTER_TEXT,
   orphanPostersToDelete,
+  posterCaptureWindow,
   posterFitScale,
   posterFileName,
   posterStem,
@@ -11,6 +12,34 @@ import {
   surfaceClipFrom,
   siblingPostersToDelete,
 } from '../creation-poster'
+
+describe('a poster window', () => {
+  const logical = { width: 800, height: 450 }
+  const desktop = { width: 1920, height: 1080 }
+
+  it('is 800×450 at zoom 1 on a 2× display: the density already supplies the pixels', () => {
+    expect(posterCaptureWindow(logical, 2, 2, desktop)).toEqual({ width: 800, height: 450, zoom: 1 })
+  })
+
+  it('is 1600×900 at zoom 2 on a 1× display: density 1, zoom 2', () => {
+    expect(posterCaptureWindow(logical, 2, 1, desktop)).toEqual({ width: 1600, height: 900, zoom: 2 })
+  })
+
+  it('keeps the CSS viewport at 800×450 on a 1.5× display', () => {
+    const window = posterCaptureWindow(logical, 2, 1.5, desktop)
+    expect(window.zoom).toBeCloseTo(4 / 3, 5)
+    // Integer DIP rounding leaves at most a pixel of slack.
+    expect(window.width / window.zoom).toBeCloseTo(800, 0)
+    expect(window.height / window.zoom).toBeCloseTo(450, 0)
+  })
+
+  it('keeps the whole logical layout when the screen cannot hold 1600 physical px', () => {
+    const window = posterCaptureWindow(logical, 2, 1, { width: 1366, height: 768 })
+    expect(window.width / window.zoom).toBeGreaterThanOrEqual(800 - 0.5)
+    expect(window.height / window.zoom).toBeGreaterThanOrEqual(450 - 0.5)
+    expect(window.width).toBeLessThanOrEqual(1366)
+  })
+})
 
 describe('poster file names', () => {
   it('puts the document first and the version second', () => {

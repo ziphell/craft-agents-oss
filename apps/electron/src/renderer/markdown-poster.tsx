@@ -10,9 +10,9 @@
  *
  * Three decisions, all of them about a picture rather than a page:
  *
- * - **800 px is the card's width**, not A4's 794. The card is 800×450 and takes the page *from its
- *   top at card width*, so drawing at the width it is shown at means the screenshot is already the
- *   poster — no rescale, no blur from a page laid out for paper.
+ * - **800 px is the card's layout width**, not A4's 794. The card is a 16:9 slot and takes the page
+ *   *from its top at card width*, so drawing at the width it is shown at means the layout matches
+ *   the card — the capture's own pixel density is what makes it sharp on a high-density screen.
  * - **The blocks that read files are off.** A `drawio-preview` or `html-preview` block asks the
  *   platform for bytes, and this window has no workspace behind it. The pure ones (datatable,
  *   spreadsheet, diff, json, mermaid, latex) stay: they are drawn from the fence alone.

@@ -7,32 +7,64 @@
  * the React one, so the picture is taken **there**: this window loads the app's own bundle with
  * `?mdPoster=1`, that bundle mounts one `<Markdown>`, and the screenshot is the poster.
  *
- * The geometry is the card's, not paper's: 800 px wide (the width the card draws at) and 450 tall
- * (the card's height), so the capture *is* the poster and `toPosterJpeg` has nothing to rescale.
+ * The geometry is the card's, not paper's: **800 logical (CSS) px** wide and 450 tall, so the
+ * layout is the card's top 450 px. The poster is drawn at twice that in physical pixels — 1600×900
+ * — and the window's size/zoom are picked from the display's own scale, so the picture is sharp on
+ * a 1× screen and on a Retina one instead of inheriting whichever density the display happened to
+ * have.
  * A document's top 450 px is what a card shows — a page continues below the fold, and that is what
  * the fold is for.
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
+import { screen } from 'electron'
 import { captureSurface } from './capture-surface'
 import { registerPosterRoot } from './poster-bridge'
 import { getWorkspaces } from '@craft-agent/shared/config'
-import { MARKDOWN_POSTER_WIDTH, markdownPosterQuery } from './creation-poster'
+import { MARKDOWN_POSTER_WIDTH, markdownPosterQuery, posterCaptureWindow } from './creation-poster'
 
-/** The picture, or `null` when the window never drew one. */
+/**
+ * The picture, or `null` when the window never drew one.
+ *
+ * `pixelRatio` separates **logical** from **physical** pixels: the layout is always `size` CSS
+ * pixels (800×450 for a card), and the capture is `size × pixelRatio` raster pixels whatever the
+ * display's own scale is. That is what makes "800 logical, 1600 physical" true on a 1× screen as
+ * well as on a Retina one — the window and its zoom are chosen from the display scale, not assumed.
+ */
 export async function captureMarkdownPoster(
   source: string,
   size: { width: number; height: number } = { width: MARKDOWN_POSTER_WIDTH, height: 450 },
   /** The document's own path, so a picture may read beside it and nowhere else. */
   documentPath?: string,
+  options: { pixelRatio?: number } = {},
 ): Promise<Buffer | null> {
   const query = markdownPosterQuery(source, size.width, documentPath ? dirname(documentPath) : undefined)
   const devServer = process.env.VITE_DEV_SERVER_URL
+  // Physical ÷ display density = window size in DIP; the matching zoom keeps the CSS viewport at
+  // `size`, so the page is laid out at 800 CSS px and photographed at 1600 px. A window cannot be
+  // bigger than the screen, so a small screen gets fewer physical pixels rather than a cropped
+  // layout: the zoom is lowered to keep the whole 800 CSS px visible. At 1× this is the old
+  // behaviour exactly (and needs no display).
+  //
+  // Electron has no per-window device scale factor — `devicePixelRatio` is displayScale × pageZoom —
+  // so `2 / displayScale` is what pins the page's density at exactly 2×. "DPI 1× + zoom 2" is the
+  // same raster result on a 1× screen, but it would need a 1600 DIP window, which does not fit a
+  // 1440 DIP desktop and would be shrunk (cropping the 800 px layout).
+  const pixelRatio = options.pixelRatio ?? 1
+  let zoom = 1
+  let device = size
+  if (pixelRatio !== 1) {
+    const display = screen.getPrimaryDisplay()
+    const window = posterCaptureWindow(size, pixelRatio, display.scaleFactor || 1, display.workAreaSize)
+    device = { width: window.width, height: window.height }
+    zoom = window.zoom
+  }
 
   const capture = await captureSurface({
     // A card's shape by default; a caller asking to *look* at the document says how much it wants.
-    size,
+    size: device,
+    zoom,
     /**
      * **Scripting on**, and it is the one place in the poster code that needs saying twice.
      *

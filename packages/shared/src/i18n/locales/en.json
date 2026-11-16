@@ -745,7 +745,7 @@
   "crash.somethingWentWrong": "Something went wrong",
   "creations.allFormats": "All",
   "creations.copyPath": "Copy Path",
-  "creations.emptyBody": "When the agent writes a document, generates a picture, clip or recording, or edits a cut in a conversation, it appears here with the turn that produced it. Open one to read or edit it in its own editor.",
+  "creations.emptyBody": "When the agent writes a document or generates a picture, clip or recording in a conversation, it appears here with the turn that produced it. Open one to read or edit it in its own editor.",
   "creations.emptyTitle": "Nothing made yet",
   "creations.exportDocx": "Export as Word",
   "creations.exportHtml": "Export as One File (HTML)",
