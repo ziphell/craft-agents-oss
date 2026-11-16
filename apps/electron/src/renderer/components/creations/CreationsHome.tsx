@@ -460,7 +460,11 @@ export const CreationCard = React.memo(function CreationCard({
               aria-hidden
               loading="lazy"
               decoding="async"
-              className="absolute inset-0 h-full w-full object-cover object-top"
+              // Full width, its own height, pinned to the top — the 16:9 box clips the rest. Not
+              // stretched into the box with `object-cover`: that made Chromium sample the picture
+              // at a size and ratio that belong to the box (both fractional), and the result reads
+              // as jaggies at 1× DPI. Laid out at its own ratio it is one plain downscale.
+              className="absolute inset-x-0 top-0 h-auto w-full"
             />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center">
