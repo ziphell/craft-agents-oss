@@ -7,6 +7,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Image } from 'lucide-react'
 import { PreviewOverlay } from './PreviewOverlay'
+import { HEADER_HEIGHT, CONTENT_GUTTER } from './FullscreenOverlayBase'
 import { CopyButton } from './CopyButton'
 import { ItemNavigator } from './ItemNavigator'
 import { ZoomControls } from './ZoomControls'
@@ -47,7 +48,6 @@ export function ImagePreviewOverlay({
 
   const [activeIdx, setActiveIdx] = useState(initialIndex)
   const [contentCache, setContentCache] = useState<Record<string, string>>({})
-  const [dimensionsCache, setDimensionsCache] = useState<Record<string, { width: number; height: number }>>({})
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
@@ -60,7 +60,6 @@ export function ImagePreviewOverlay({
     setIsAnimating,
     zoomByStep,
     zoomToPreset,
-    zoomToFit,
     reset,
     onMouseDown,
     onDoubleClick,
@@ -68,7 +67,6 @@ export function ImagePreviewOverlay({
 
   const activeItem = resolvedItems[activeIdx]
   const activeDataUrl = activeItem ? contentCache[activeItem.src] : null
-  const activeDimensions = activeItem ? dimensionsCache[activeItem.src] : null
 
   useEffect(() => {
     if (isOpen) {
@@ -98,16 +96,6 @@ export function ImagePreviewOverlay({
       .then((url) => {
         if (!cancelled) {
           setContentCache((prev) => ({ ...prev, [activeItem.src]: url }))
-          const img = new window.Image()
-          img.onload = () => {
-            if (cancelled) return
-            if (!img.naturalWidth || !img.naturalHeight) return
-            setDimensionsCache(prev => ({
-              ...prev,
-              [activeItem.src]: { width: img.naturalWidth, height: img.naturalHeight },
-            }))
-          }
-          img.src = url
           setIsLoading(false)
         }
       })
@@ -135,7 +123,7 @@ export function ImagePreviewOverlay({
         onZoomIn={() => zoomByStep('in')}
         onZoomOut={() => zoomByStep('out')}
         onZoomToPreset={zoomToPreset}
-        onZoomToFit={() => zoomToFit(activeDimensions ?? null)}
+        onZoomToFit={reset}
         onReset={reset}
         resetDisabled={isDefaultView}
       />
@@ -161,10 +149,15 @@ export function ImagePreviewOverlay({
     >
       <div
         ref={containerRef}
-        className="min-h-full flex items-center justify-center p-4 select-none"
+        className="flex items-center justify-center p-4 select-none"
         onMouseDown={onMouseDown}
         onDoubleClick={onDoubleClick}
         style={{
+          // The image is capped by this box (`max-h-full`), so the box needs a real height: a
+          // percentage against the auto-height centering wrapper resolves to `none`, which drew a
+          // tall portrait picture at full size with its bottom half cut off. The box is the scroll
+          // viewport's content box — the viewport minus the floating header and the bottom gutter.
+          height: `calc(100vh - ${HEADER_HEIGHT + CONTENT_GUTTER}px)`,
           cursor: isDragging ? 'grabbing' : 'grab',
           overflow: 'hidden',
         }}

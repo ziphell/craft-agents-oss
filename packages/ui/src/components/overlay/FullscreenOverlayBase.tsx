@@ -53,8 +53,8 @@ const Z_FULLSCREEN = 'var(--z-fullscreen, 350)'
 // whose own edge is half-faded reads as a rendering fault). The header is not part of it: content
 // starts directly under the header, which already carries the gap (its badges are 26px in a 48px
 // bar). It used to keep another 24px there — an empty row between the title and what it titled.
-const HEADER_HEIGHT = 48
-const CONTENT_GUTTER = 16
+export const HEADER_HEIGHT = 48
+export const CONTENT_GUTTER = 16
 
 // Edge-to-edge gradient fade mask — starts at y=0, fades over CONTENT_GUTTER at both edges.
 // The floating header covers content behind it; the mask just provides the smooth fade.
