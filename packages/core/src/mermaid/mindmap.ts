@@ -112,6 +112,17 @@ export function parseMindmap(code: string): MindmapNode {
   return root
 }
 
+/**
+ * Parse the body of a `mindmap` fence, where the header is optional.
+ *
+ * The fence already says what the diagram is, so a body that starts straight at the root is the
+ * same source as one beginning `mindmap` — people (and agents) write both. A `mermaid` fence's
+ * body has to be valid Mermaid on its own, so that path keeps calling `parseMindmap` directly.
+ */
+export function parseMindmapFence(code: string): MindmapNode {
+  return isMindmapSource(code) ? parseMindmap(code) : parseMindmap(`mindmap\n${code}`)
+}
+
 function firstMeaningfulLine(code: string): string | null {
   for (const line of stripFrontmatter(code).split(/\r?\n/)) {
     const trimmed = line.trim()

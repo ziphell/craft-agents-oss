@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { parseMindmap } from '@craft-agent/core/mermaid/mindmap'
+import { parseMindmapFence } from '@craft-agent/core/mermaid/mindmap'
 import { useTranslation } from 'react-i18next'
 import { DiagramBlock } from './DiagramBlock'
 import { renderMindmapSVG } from './mindmap-svg'
@@ -37,7 +37,7 @@ export function MarkdownMindmapBlock({
   // A parse failure, or a map past the drawing limit, falls back to the source.
   const svg = React.useMemo(() => {
     try {
-      return renderMindmapSVG(parseMindmap(code))
+      return renderMindmapSVG(parseMindmapFence(code))
     } catch {
       return null
     }
@@ -51,6 +51,7 @@ export function MarkdownMindmapBlock({
       showExpandButton={showExpandButton}
       interactive={interactive}
       minHeight={minHeight}
+      language="mindmap"
       overlayTitle={t('overlay.mindmapDiagram')}
       activateLabel={t('common.viewFullscreen')}
     />

@@ -30,6 +30,8 @@ export interface DiagramBlockProps {
   minHeight?: number
   /** The full-screen window's title. */
   overlayTitle: string
+  /** The language the source is shown as when the drawing could not be made. */
+  language?: string
   /** The accessible name for the press that opens the window. */
   activateLabel?: string
 }
@@ -42,6 +44,7 @@ export function DiagramBlock({
   interactive = true,
   minHeight,
   overlayTitle,
+  language = 'mermaid',
   activateLabel,
 }: DiagramBlockProps) {
   const { t } = useTranslation()
@@ -51,7 +54,7 @@ export function DiagramBlock({
 
   // A drawing that could not be made falls back to the source, not to an empty box.
   if (!svg) {
-    return <CodeBlock code={code} language="mermaid" mode="full" className={className} />
+    return <CodeBlock code={code} language={language} mode="full" className={className} />
   }
 
   return (

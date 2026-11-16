@@ -8,6 +8,7 @@ mock.module('react-i18next', () => ({
 }))
 
 const { MarkdownMermaidBlock } = await import('../MarkdownMermaidBlock')
+const { MarkdownMindmapBlock } = await import('../MarkdownMindmapBlock')
 
 describe('a mind map written as a mermaid diagram', () => {
   it('draws the map instead of falling back to the source', () => {
@@ -36,5 +37,34 @@ describe('a mind map written as a mermaid diagram', () => {
     expect(html).toContain('<svg')
     expect(html).toContain('>A<')
     expect(html).toContain('>B<')
+  })
+})
+
+describe('a `mindmap` fence', () => {
+  it('draws a body that starts straight at the root', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownMindmapBlock, {
+        code: '根节点\n  子节点1\n    孙节点1.1\n  子节点2',
+        interactive: false,
+        showExpandButton: false,
+      }),
+    )
+
+    expect(html).toContain('<svg')
+    expect(html).toContain('>根节点<')
+    expect(html).toContain('>孙节点1.1<')
+  })
+
+  it('shows an unreadable body as its own source, not as mermaid', () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownMindmapBlock, {
+        code: '',
+        interactive: false,
+        showExpandButton: false,
+      }),
+    )
+
+    expect(html).toContain('mindmap')
+    expect(html).not.toContain('mermaid')
   })
 })

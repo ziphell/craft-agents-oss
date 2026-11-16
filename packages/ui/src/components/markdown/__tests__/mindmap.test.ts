@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { isMindmapSource, parseMindmap } from '@craft-agent/core/mermaid/mindmap'
+import { isMindmapSource, parseMindmap, parseMindmapFence } from '@craft-agent/core/mermaid/mindmap'
 import { renderMindmapSVG } from '../mindmap-svg'
 import { fenceBlockType, fenceChoices, fenceDrawing, fenceSpec } from '../fences'
 
@@ -136,5 +136,14 @@ describe('the mindmap fence', () => {
   it('starts a new block with a body its own parser reads', () => {
     const scaffold = fenceSpec('mindmap')?.scaffold ?? ''
     expect(() => parseMindmap(scaffold)).not.toThrow()
+  })
+
+  it('reads a fence body that starts straight at the root', () => {
+    // The fence already names the diagram, so the header is optional inside one.
+    const root = parseMindmapFence('根节点\n  子节点1\n    孙节点1.1\n  子节点2')
+
+    expect(root.label).toBe('根节点')
+    expect(root.children.map((child) => child.label)).toEqual(['子节点1', '子节点2'])
+    expect(root.children[0]?.children[0]?.label).toBe('孙节点1.1')
   })
 })
