@@ -34,7 +34,9 @@ import {
   type CustomEndpointModelEntry,
   type CustomEndpointModelParamSpec,
   type CustomEndpointModelParams,
+  type CustomEndpointThinkingLevelMap,
 } from '@config/llm-connections'
+import { THINKING_LEVEL_IDS } from '@craft-agent/shared/agent/thinking-levels'
 
 /** Stands in for "no value" in a Select — Radix rejects an empty-string item value. */
 const NO_SELECTION = '__none__'
@@ -578,6 +580,12 @@ function ParamControl({
             placeholder={spec.hint}
             onCommit={onCommit}
           />
+        ) : spec.control === 'thinking-levels' ? (
+          <ThinkingLevelsControl
+            value={value as CustomEndpointThinkingLevelMap | undefined}
+            disabled={disabled}
+            onCommit={onCommit}
+          />
         ) : (
           <div className={cn('rounded-md shadow-minimal bg-foreground-2 focus-within:bg-background')}>
             <Input
@@ -726,6 +734,79 @@ function JsonControl({
         />
       </div>
       {invalid && <p className="text-[11px] text-destructive">Not valid JSON — not saved</p>}
+    </div>
+  )
+}
+
+/**
+ * Per-level thinking overrides, one row per level the chat picker offers.
+ *
+ * A row is either a provider-specific value, "unsupported" (`null`, so the
+ * level is dropped), or empty (no override — the provider's default applies).
+ * The key list comes from `THINKING_LEVEL_IDS`, so the levels a user can
+ * configure here are exactly the ones they can select in chat.
+ */
+function ThinkingLevelsControl({
+  value,
+  disabled,
+  onCommit,
+}: {
+  value: CustomEndpointThinkingLevelMap | undefined
+  disabled?: boolean
+  onCommit: (raw: unknown) => void
+}) {
+  const map = value ?? {}
+
+  const commit = (level: keyof CustomEndpointThinkingLevelMap, next: string | null | undefined) => {
+    // Start from the stored map so keys this control does not render (e.g. a
+    // hand-written `minimal`) survive an edit here.
+    const out: CustomEndpointThinkingLevelMap = { ...map }
+    if (next === undefined) delete out[level]
+    else out[level] = next
+    onCommit(Object.keys(out).length > 0 ? out : undefined)
+  }
+
+  return (
+    <div className="space-y-1">
+      {THINKING_LEVEL_IDS.map(level => {
+        const current = map[level]
+        const unsupported = current === null
+        return (
+          <div key={level} className="flex items-center gap-1.5">
+            <span className="w-14 shrink-0 font-mono text-[11px] text-foreground/45">{level}</span>
+            <div className="rounded-md shadow-minimal bg-foreground-2 focus-within:bg-background flex-1">
+              <Input
+                value={typeof current === 'string' ? current : ''}
+                disabled={disabled || unsupported}
+                placeholder={unsupported ? 'not supported' : 'provider default'}
+                aria-label={`${level} thinking value`}
+                onChange={e => commit(level, e.target.value === '' ? undefined : e.target.value)}
+                className="border-0 bg-transparent shadow-none font-mono text-xs"
+              />
+            </div>
+            <button
+              type="button"
+              disabled={disabled}
+              aria-pressed={unsupported}
+              title={unsupported
+                ? `Let ${level} use the provider default`
+                : `Mark ${level} as unsupported`}
+              onClick={() => commit(level, unsupported ? undefined : null)}
+              className={cn(
+                'rounded px-1.5 py-0.5 text-[11px] transition-colors disabled:opacity-50',
+                unsupported
+                  ? 'bg-foreground/10 text-foreground/80'
+                  : 'text-foreground/40 hover:bg-foreground/5 hover:text-foreground/70',
+              )}
+            >
+              unsupported
+            </button>
+          </div>
+        )
+      })}
+      <p className="text-[11px] text-foreground/25">
+        Empty = the provider's default · "unsupported" hides the level.
+      </p>
     </div>
   )
 }

@@ -222,7 +222,7 @@ export interface CustomEndpointModelEntry extends CustomEndpointModelParams {
 export interface CustomEndpointModelParamSpec {
   key: keyof CustomEndpointModelParams;
   label: string;
-  control: 'text' | 'number' | 'switch' | 'key-value' | 'json';
+  control: 'text' | 'number' | 'switch' | 'key-value' | 'json' | 'thinking-levels';
   /** Placeholder or unit hint shown next to the control. */
   hint?: string;
   /**
@@ -263,7 +263,7 @@ export const CUSTOM_ENDPOINT_MODEL_PARAM_SPECS: CustomEndpointModelParamSpec[] =
   { key: 'cost', label: 'Cost', control: 'json', hint: '{"input":0,"output":0}' },
   { key: 'headers', label: 'Request headers', control: 'key-value' },
   { key: 'compat', label: 'Compatibility', control: 'json', hint: '{"maxTokensField":"max_tokens"}' },
-  { key: 'thinkingLevelMap', label: 'Thinking levels', control: 'json', hint: '{"high":"high"}' },
+  { key: 'thinkingLevelMap', label: 'Thinking levels', control: 'thinking-levels' },
 ];
 
 /**
