@@ -178,6 +178,34 @@ If lock-screen control ever becomes a requirement it is a separate component: a 
 privileged helper (a LaunchDaemon on macOS, a service on Windows), explicit user opt-in, and the
 security review any remote-control product needs.
 
+## Elevated windows and UAC
+
+Desktop control runs at this app's own integrity; the packaged build is `asInvoker` (Windows
+Medium). Windows does not let a Medium process read or drive a High/System window: UIPI drops posted
+input, and the accessibility proxy returns a partial tree. The manager asks before the driver acts
+instead of interpreting a one-element snapshot as a complete window.
+
+**Before an action.** The target pid's token is read with
+`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetTokenInformation(TokenIntegrityLevel)` and
+compared with this process's own RID.
+A higher target is refused with both levels and the one remedy — restart this app as administrator,
+or use a non-elevated copy. `snapshot` answers `source=none` with the same sentence instead of the
+single `TitleBar` the driver can still see; `screenshot` keeps working. `status` says
+`Elevated windows: refused — this app runs at medium integrity` (or `drivable` when the app itself
+was started elevated). A process Windows will not even let this app inspect is treated the same way.
+
+**UAC and the lock screen.** Both run on a desktop other than `Default`; the manager asks Win32's
+`OpenInputDesktop` which desktop currently receives input. While it is not `Default`, every command
+except `status` is refused with a sentence naming the UAC prompt, and the lease is not renewed — it
+pauses and then expires. This also catches `launch_app` when the target needs elevation: the process
+sits suspended behind the consent dialog, so the manager reports "waiting for administrator
+approval" instead of polling for a window that cannot appear. `status` still answers, names the
+desktop in its `permissions` lines, and makes `injectedInput` say why it is unavailable.
+
+The UAC dialog itself remains out of reach — it belongs to the Winlogon secure desktop, which a
+user-session process cannot capture or inject into. The correct response is a sentence for the
+person at the machine, not a retry.
+
 ## Enabling the driver
 
 `@trycua/cua-driver` is an **optional** dependency (its native payload is ~25 MB per platform):

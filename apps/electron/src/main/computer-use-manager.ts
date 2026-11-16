@@ -44,6 +44,14 @@ import {
   readMacComputerPermissions,
   requestMacComputerPermissions,
 } from './computer-use-permissions'
+import {
+  describeProcessIntegrity,
+  isHigherIntegrity,
+  readInputDesktop as readWindowsInputDesktop,
+  readProcessIntegrity as readWindowsProcessIntegrity,
+  type InputDesktopState,
+  type ProcessIntegrity,
+} from './windows-desktop-state'
 
 /** How long a session may go without touching the desktop before it loses it. */
 const LEASE_MS = 90_000
@@ -66,6 +74,8 @@ function clip(text: unknown): string {
 
 /** The driver's macOS surface is the accessibility API, not a Win32-like window list. */
 const IS_MAC = process.platform === 'darwin'
+/** UIPI and the Winlogon desktop are Windows questions; the other platforms have their own. */
+const IS_WINDOWS = process.platform === 'win32'
 
 /**
  * Whether this process has a desktop to offer, as the device link should announce it.
@@ -97,6 +107,14 @@ export interface ComputerUseManagerOptions {
   leaseMs?: number
   /** Fired when the lease starts or ends — the hook a visible indicator hangs on. */
   onLeaseChange?: (sessionId: string | null) => void
+  /**
+   * Windows-only probes, injectable so tests never have to own a token or a desktop.
+   *
+   * The defaults read the live machine (`windows-desktop-state.ts`); a platform without them
+   * answers `unsupported`, which turns both checks off.
+   */
+  readProcessIntegrity?: (pid: number) => ProcessIntegrity
+  readInputDesktop?: () => InputDesktopState
 }
 
 export class ComputerDesktopBusyError extends Error {
@@ -152,12 +170,19 @@ export class ComputerUseManager {
   private readonly leaseMs: number
   private readonly loadDriver: NonNullable<ComputerUseManagerOptions['loadDriver']>
   private readonly onLeaseChange: (sessionId: string | null) => void
+  private readonly readProcessIntegrity: (pid: number) => ProcessIntegrity
+  private readonly readInputDesktop: () => InputDesktopState
 
   private driver: any = null
   private driverState: 'unknown' | 'loading' | 'ready' | 'absent' = 'unknown'
   private loading: Promise<unknown | null> | null = null
 
+  /** This process's own integrity, read once: a token's level does not change while it lives. */
+  private selfIntegrity: ProcessIntegrity | null = null
+
   private leaseSession: string | null = null
+  /** Whether `onLeaseChange(sessionId)` has fired for the current lease. */
+  private leaseAnnounced = false
   /**
    * Whether the driver's own agent cursor is on screen.
    *
@@ -180,6 +205,8 @@ export class ComputerUseManager {
     this.leaseMs = options.leaseMs ?? LEASE_MS
     this.loadDriver = options.loadDriver ?? (async () => null)
     this.onLeaseChange = options.onLeaseChange ?? (() => {})
+    this.readProcessIntegrity = options.readProcessIntegrity ?? readWindowsProcessIntegrity
+    this.readInputDesktop = options.readInputDesktop ?? readWindowsInputDesktop
   }
 
   /** True when this build can drive a desktop. Cheap after the first call. */
@@ -266,6 +293,7 @@ export class ComputerUseManager {
   private async takeLease(sessionId: string, driver: any): Promise<void> {
     if (this.leaseSession && this.leaseSession !== sessionId) throw new ComputerDesktopBusyError()
     const changed = this.leaseSession !== sessionId
+    if (changed) this.leaseAnnounced = false
     // The driver's own session is what keeps two applications from driving one pointer. Our local
     // lease only covers this process, so announce the session here as well. A driver that refuses
     // for another reason (a half-granted TCC, for one) must not take `status` away with it.
@@ -278,9 +306,26 @@ export class ComputerUseManager {
       })
     }
     this.leaseSession = sessionId
-    this.renewLease()
-    if (changed) this.onLeaseChange(sessionId)
-    void this.showAgentCursor(true, sessionId)
+    // A secure desktop owns the machine: keep the session so `status` can explain, but do not
+    // renew it on every retry and do not paint the agent cursor on a desktop nobody can drive. The
+    // lease expires on its own, which is the pause.
+    const secure = this.secureDesktop().secure
+    if (secure) {
+      if (!this.leaseTimer) this.renewLease()
+      // The pill says "this desktop is being driven"; while a UAC prompt owns it, that is false.
+      if (this.leaseAnnounced) {
+        this.leaseAnnounced = false
+        this.onLeaseChange(null)
+      }
+      this.log('computer-use: lease paused on a secure desktop')
+    } else {
+      this.renewLease()
+      void this.showAgentCursor(true, sessionId)
+    }
+    if (!secure && !this.leaseAnnounced) {
+      this.leaseAnnounced = true
+      this.onLeaseChange(sessionId)
+    }
   }
 
   private renewLease(): void {
@@ -296,8 +341,10 @@ export class ComputerUseManager {
     if (this.leaseTimer) clearTimeout(this.leaseTimer)
     this.leaseTimer = null
     const had = this.leaseSession
+    const announced = this.leaseAnnounced
     this.leaseSession = null
-    if (had) this.onLeaseChange(null)
+    this.leaseAnnounced = false
+    if (had && announced) this.onLeaseChange(null)
   }
 
   /**
@@ -327,9 +374,57 @@ export class ComputerUseManager {
     }
   }
 
-  private assertLease(sessionId: string): void {
+  /**
+   * The answer to "may this app drive that window?" before the driver tries.
+   *
+   * A higher-integrity target is not a normal failure: Windows drops the posted message and the
+   * accessibility surface is partial, so the driver can report success while nothing happens. The
+   * refusal names both levels and the one action that changes the answer.
+   */
+  private assertWindowDrivable(window: RawWindow): void {
+    const reason = this.elevationRefusal(window)
+    if (reason) throw new Error(reason)
+  }
+
+  /** The refusal for a window above this process's integrity, or `null` when it is drivable. */
+  private elevationRefusal(window: RawWindow): string | null {
+    if (!IS_WINDOWS) return null
+    const target = this.readProcessIntegrity(window.pid)
+    if (target.kind === 'denied') {
+      return (
+        `Windows did not allow this app to inspect the process behind ${describeWindow(window)}. ` +
+        'It may be elevated or protected. Restart this app as administrator to try, or use a ' +
+        'non-elevated copy of the app.'
+      )
+    }
+    if (target.kind !== 'level') return null
+    const self = this.selfIntegrityState()
+    if (!isHigherIntegrity(target, self)) return null
+    return (
+      `${describeWindow(window)} belongs to an elevated process (${describeProcessIntegrity(target)}); ` +
+      `this app runs at ${describeProcessIntegrity(self)}. Windows blocks accessibility and input ` +
+      'across that boundary, so a click or key would report success while doing nothing. Restart ' +
+      'this app as administrator to drive it, or use a non-elevated copy of the app.'
+    )
+  }
+
+  private selfIntegrityState(): ProcessIntegrity {
+    if (this.selfIntegrity === null) this.selfIntegrity = this.readProcessIntegrity(process.pid)
+    return this.selfIntegrity
+  }
+
+  /** The secure desktop in front, if any. Cheap enough for every command. */
+  private secureDesktop(): InputDesktopState {
+    return this.readInputDesktop()
+  }
+
+  private assertLease(sessionId: string, allowWhenSecure = false): void {
     if (this.disposed) throw new Error('This application is shutting down.')
     if (this.leaseSession !== sessionId) throw new ComputerDesktopBusyError()
+    if (!allowWhenSecure) {
+      const desktop = this.secureDesktop()
+      if (desktop.secure) throw secureDesktopRefusal(desktop)
+    }
     this.renewLease()
   }
 
@@ -369,7 +464,11 @@ export class ComputerUseManager {
   // --------------------------------------------------------------------------
 
   private buildFns(driver: any, sessionId: string, injectedInput: boolean): ComputerPaneFns {
-    const guard = () => this.assertLease(sessionId)
+    // Every command is refused while a secure desktop is in front, except `status`, which is the
+    // one read that can explain why. The lease is not renewed on that path, so it pauses and then
+    // expires on its own rather than holding the desktop through a UAC prompt.
+    const guard = (options?: { allowWhenSecure?: boolean }) =>
+      this.assertLease(sessionId, options?.allowWhenSecure === true)
     /**
      * The pid of the app the person is actually in, as the driver reports it (`list_apps.active`).
      *
@@ -492,6 +591,19 @@ export class ComputerUseManager {
               ? 'No window other than this app is on screen to read.'
               : 'No window is on screen to read.')
         }
+        // An elevated window's UIA tree is partial at best and its input is blocked by UIPI. The
+        // honest answer is "no accessibility tree", not the single TitleBar the driver may still
+        // read — and it keeps `screenshot`, which does work, as the visible route.
+        const elevated = this.elevationRefusal(window)
+        if (elevated) {
+          return {
+            snapshotId: '',
+            window: toWindowInfo(window, false),
+            source: 'none',
+            note: `${elevated} Use \`screenshot\` to see the window; there is no readable accessibility tree.`,
+            elements: [],
+          }
+        }
         // A capped walk is what keeps a full tree out of the context; a **filtered** read must not
         // be capped, because the cap cuts the walk itself (measured on one window: `query Craft`
         // finds 48 nodes uncapped, 20 under a 400 cap) — a search that silently misses matches is
@@ -513,6 +625,7 @@ export class ComputerUseManager {
       clickElement: async (target, options) => {
         guard()
         const owner = this.requireToken(target)
+        this.assertWindowDrivable(owner.window)
         const call = await tool(driver, 'click', {
           ...scopeOf(owner.window),
           element_token: target.token,
@@ -524,6 +637,7 @@ export class ComputerUseManager {
       invoke: async (target, action) => {
         guard()
         const owner = this.requireToken(target)
+        this.assertWindowDrivable(owner.window)
         const chosen = elementAction(action)
         if (chosen === 'raise') {
           // macOS exposes `AXRaise` on windows; the element-action surface has no raise verb.
@@ -549,6 +663,7 @@ export class ComputerUseManager {
       setValue: async (target, value) => {
         guard()
         const owner = this.requireToken(target)
+        this.assertWindowDrivable(owner.window)
         const call = await tool(driver, 'set_value', {
           ...scopeOf(owner.window),
           element_token: target.token,
@@ -569,6 +684,7 @@ export class ComputerUseManager {
         if (!owner && options?.excludeSelf === true) {
           throw new Error('No window other than this app is on screen to click in.')
         }
+        if (owner) this.assertWindowDrivable(owner)
         await tool(driver, 'click', {
           ...(owner ? scopeOf(owner) : {}),
           x: point.x,
@@ -584,6 +700,7 @@ export class ComputerUseManager {
         const window = options?.token
           ? this.requireToken({ token: options.token }).window
           : this.windowFor(options?.windowId)
+        if (window) this.assertWindowDrivable(window)
         await tool(driver, 'type_text', {
           ...(window ? scopeOf(window) : {}),
           text,
@@ -597,6 +714,7 @@ export class ComputerUseManager {
         if (!options?.windowId) throw untargetedInput('key')
         const { key, modifiers } = normalizeKeyCombo(keys)
         const owner = this.windowFor(options?.windowId)
+        if (owner) this.assertWindowDrivable(owner)
         await tool(driver, 'press_key', {
           ...(owner ? scopeOf(owner) : {}),
           key,
@@ -607,6 +725,7 @@ export class ComputerUseManager {
       scroll: async (direction, amount, options) => {
         guard()
         const owner = this.windowFor(options?.windowId)
+        if (owner) this.assertWindowDrivable(owner)
         await tool(driver, 'scroll', {
           ...(owner ? scopeOf(owner) : {}),
           direction,
@@ -670,7 +789,10 @@ export class ComputerUseManager {
       },
 
       status: async () => {
-        guard()
+        // The one command that still answers while a secure desktop is in front: it is how the
+        // model learns that a UAC prompt — not a broken driver — is why nothing can be driven.
+        guard({ allowWhenSecure: true })
+        const desktop = this.secureDesktop()
         const meta = (await Promise.resolve(driver.metadata?.())) ?? {}
         const permissions = await tool(driver, 'check_permissions', {})
           .then((call) => call.text.split('\n').map((line) => line.trim()).filter(Boolean))
@@ -681,16 +803,41 @@ export class ComputerUseManager {
           const mac = await readMacComputerPermissions()
           if (mac) permissions.push(...macPermissionGuidance(mac))
         }
+        if (IS_WINDOWS) {
+          const self = this.selfIntegrityState()
+          if (self.kind === 'level') {
+            const elevated = self.name === 'high' || self.name === 'system'
+            permissions.push(
+              elevated
+                ? `Elevated windows: drivable (this app runs at ${self.name} integrity).`
+                : `Elevated windows: refused — this app runs at ${self.name} integrity; restart it ` +
+                  'as administrator to drive them.',
+            )
+          }
+        }
+        if (desktop.secure) {
+          permissions.push(
+            `Secure desktop: ${desktop.name ? `"${desktop.name}"` : 'not readable'} in front — ` +
+            'a UAC prompt or lock screen; ask the person to respond.',
+          )
+        }
         // Three questions, three probes. They are not the same question and they do not fail
         // together: a window can be captured while the desktop cannot, and a session can capture
         // everything while accepting no input at all (no foreground window). One probe standing in
         // for another is how a machine ends up telling the model "cannot screenshot" when it can.
-        const desktopCapture = await tool(driver, 'get_desktop_state', {})
+        // A secure desktop is the one case where all three are known to be unavailable without
+        // asking: the driver would capture the desktop behind the prompt, which is not the screen.
+        const secureCapture = desktop.secure
+          ? desktop.name
+            ? 'unavailable: a UAC prompt or lock screen is in front'
+            : 'unavailable: no readable input desktop (UAC, lock screen, or a disconnected session)'
+          : null
+        const desktopCapture = secureCapture ?? await tool(driver, 'get_desktop_state', {})
           .then(() => 'available')
           .catch((error: unknown) => `unavailable: ${String((error as Error).message ?? error).slice(0, 160)}`)
         if (this.windowIndex.size === 0) await listWindows()
         const captureTarget = activeWindow(this.windowIndex)
-        const windowCapture = captureTarget
+        const windowCapture = secureCapture ?? (captureTarget
           ? await tool(driver, 'get_window_state', {
               ...scopeOf(captureTarget),
               include_accessibility_tree: false,
@@ -699,10 +846,13 @@ export class ComputerUseManager {
             })
               .then(() => 'available')
               .catch((error: unknown) => `unavailable: ${String((error as Error).message ?? error).slice(0, 160)}`)
-          : 'unavailable: no window to capture'
-        const injected = (await probeInjectedInput(driver))
-          ? 'available'
-          : 'unavailable (no interactive desktop: use element actions)'
+          : 'unavailable: no window to capture')
+        const injected = desktop.secure
+          ? `unavailable (${desktop.name ? `input desktop "${desktop.name}"` : 'no readable input desktop'}: ` +
+            'a UAC prompt, lock screen, or disconnected session is in front)'
+          : (await probeInjectedInput(driver))
+            ? 'available'
+            : 'unavailable (no interactive desktop: use element actions)'
         const listed = [...this.windowIndex.values()].filter(isWindowSurface).length
         return {
           driver: {
@@ -729,6 +879,11 @@ export class ComputerUseManager {
           window_id?: number
           windowId?: number
         }>(driver, 'launch_app', { name })
+        // A launch that needs elevation puts the UAC consent dialog on the Winlogon desktop while
+        // the process stays suspended. The driver cannot answer it, and the window will not appear
+        // until the person does — say that instead of reporting a launch with no window.
+        const afterLaunch = this.secureDesktop()
+        if (afterLaunch.secure) throw uacWaitRefusal(name, afterLaunch)
         const pid = typeof answer.pid === 'number' ? answer.pid : null
         // macOS launches in the background and may report a window that is not created yet. Poll a
         // little, then choose the app's real window rather than its menu-bar strip.
@@ -744,11 +899,21 @@ export class ComputerUseManager {
         }
         if (!window && pid != null) {
           for (let attempt = 0; attempt < 10 && !window; attempt += 1) {
+            const waiting = this.secureDesktop()
+            if (waiting.secure) throw uacWaitRefusal(name, waiting)
             await sleep(150)
             const listed = await driver.listWindows({})
             window = chooseWindow(
               (listed?.windows ?? []).filter((w: RawWindow) => Number(w.pid) === pid),
             )
+          }
+        }
+        if (!window && pid != null) {
+          // The app is running but produced no window this app can name. If it came up elevated,
+          // the next action would be refused by UIPI anyway; say why now.
+          const target = this.readProcessIntegrity(pid)
+          if (target.kind === 'denied' || isHigherIntegrity(target, this.selfIntegrityState())) {
+            throw elevatedLaunchRefusal(name, target)
           }
         }
         if (window && pid != null && IS_MAC) {
@@ -1183,13 +1348,16 @@ function outcome(
   const mode = call.action.mode === 'foreground' || call.action.mode === 'background'
     ? call.action.mode
     : fallback
+  // The refusal's own sentence is the actionable half. A code alone still beats dropping the
+  // verdict entirely; `background_uipi_blocked` names the boundary even without prose.
+  const note = call.action.refusal?.detail ?? call.action.reason ?? call.action.refusal?.code
   return {
     role: owner.role || 'Element',
     label: owner.label,
     delivered: mode,
     ...(call.action.effect ? { effect: call.action.effect } : {}),
     ...(call.action.route ? { route: call.action.route } : {}),
-    ...(call.action.reason ? { note: call.action.reason } : {}),
+    ...(note ? { note } : {}),
   }
 }
 
@@ -1229,6 +1397,54 @@ function untargetedInput(verb: string): Error {
   )
 }
 
+/** A window named the way a refusal should name it. */
+function describeWindow(window: RawWindow): string {
+  const app = window.appName || 'This window'
+  const title = window.title ? ` — "${clip(window.title)}"` : ''
+  return `${app} (w${window.windowId})${title}`
+}
+
+/**
+ * The refusal while a UAC prompt or lock screen is in front.
+ *
+ * Both run on a desktop other than `Default`; a user-session process can neither read nor inject
+ * into it, and the driver has no primitive that crosses. Naming the state is the only useful answer:
+ * the person at the machine is the one who can dismiss it.
+ */
+function secureDesktopRefusal(desktop: InputDesktopState): Error {
+  const detail = desktop.name
+    ? `Windows is showing a secure desktop (input desktop "${desktop.name}"): a UAC prompt or ` +
+      'the lock screen is in front.'
+    : 'Windows is not exposing an interactive desktop: a UAC prompt or the lock screen may be in ' +
+      'front, or this session has no input desktop.'
+  return new Error(
+    `${detail} Nothing on this desktop can be read or driven until the person answers it. Ask ` +
+    'them to respond, then retry.',
+  )
+}
+
+/** A launch that is waiting on the UAC consent dialog. */
+function uacWaitRefusal(name: string, desktop: InputDesktopState): Error {
+  const where = desktop.name ? ` (input desktop "${desktop.name}")` : ''
+  return new Error(
+    `Windows is waiting for administrator approval to launch "${name}"${where}. This app cannot ` +
+    'answer the UAC dialog or drive the elevated window. Ask the person to approve or cancel it, ' +
+    'then retry.',
+  )
+}
+
+/** A launched app that came up above this process's integrity. */
+function elevatedLaunchRefusal(name: string, target: ProcessIntegrity): Error {
+  const level = target.kind === 'denied'
+    ? 'an integrity level Windows would not disclose'
+    : describeProcessIntegrity(target)
+  return new Error(
+    `"${name}" launched at ${level}, above this app's own integrity. Windows blocks ` +
+    'accessibility and input across that boundary. Restart this app as administrator to drive it, ' +
+    'or use a non-elevated copy.',
+  )
+}
+
 /** `ctrl+shift+s` -> `{ key: 's', modifiers: ['ctrl','shift'] }`. */
 export function parseKeyCombo(combo: string): { key: string; modifiers: string[] } {
   const parts = combo.split('+').map((part) => part.trim()).filter(Boolean)
@@ -1246,6 +1462,19 @@ export interface ActionReport {
   mode?: 'background' | 'foreground' | 'not_applicable' | 'unknown'
   /** Why the driver escalated or gave up, when it did. */
   reason?: string
+  /**
+   * Why the driver declined, when it did.
+   *
+   * `background_uipi_blocked`, `window_minimized`, `stale_element_token` … carry the sentence a
+   * model needs to change course; dropping it leaves only "Refused by the driver".
+   */
+  refusal?: Refusal
+}
+
+/** The driver's machine-readable refusal: a stable code plus its own explanation. */
+export interface Refusal {
+  code?: string
+  detail?: string
 }
 
 /**
@@ -1278,12 +1507,49 @@ function actionReport(data: any, typed: any): ActionReport {
   const route = ordinalName(ROUTE_ORDINALS, source.route ?? typed?.route)
   const mode = ordinalName(DELIVERY_ORDINALS, source.delivery?.mode ?? typed?.delivery?.mode)
   const reason = String(source.escalation?.reason ?? typed?.escalation?.reason ?? '')
+  const refusal = refusalOf(data, typed)
   return {
     ...(effect ? { effect: effect as ComputerActionOutcome['effect'] } : {}),
     ...(route ? { route } : {}),
     ...(mode ? { mode: mode as ActionReport['mode'] } : {}),
     ...(reason ? { reason } : {}),
+    ...(refusal ? { refusal } : {}),
   }
+}
+
+/**
+ * The refusal, read from either shape the driver has used.
+ *
+ * Some replies put it on one field (`{"refusal":"background_uipi_blocked","detail":"UIPI: …"}`),
+ * others nest it (`{"refusal":{"code":"…","detail":"…"}}`); a build that only carries codes still
+ * gets its code through. The detail is the half a model can act on, so it wins over the code.
+ */
+function refusalOf(data: any, typed: any): Refusal | null {
+  const source = data && typeof data === 'object' ? data : {}
+  const raw = source.refusal ?? typed?.refusal
+  const nested = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const code = firstString(
+    typeof raw === 'string' ? raw : undefined,
+    nested.code,
+    source.refusal_code,
+  )
+  const detail = firstString(
+    nested.detail,
+    nested.message,
+    source.refusal_detail,
+    // A bare `detail` belongs to the refusal only when a refusal is present; otherwise it is some
+    // other action detail and must not be reported as why the driver declined.
+    source.refusal || source.refusal_code ? source.detail : undefined,
+    typed?.refusal_detail,
+  )
+  return code || detail ? { ...(code ? { code } : {}), ...(detail ? { detail } : {}) } : null
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
 }
 
 /** The sentence inside a thrown driver error, including the SDK's wrapped `inner` error. */

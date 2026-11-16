@@ -1,6 +1,12 @@
 import { describe, it, expect, mock } from 'bun:test'
 import * as realConfig from '@craft-agent/shared/config'
 import { ComputerUseManager } from '../computer-use-manager'
+import {
+  integrityName,
+  isHigherIntegrity,
+  type InputDesktopState,
+  type ProcessIntegrity,
+} from '../windows-desktop-state'
 
 /**
  * The boundary between the manager and the desktop driver.
@@ -15,6 +21,9 @@ import { ComputerUseManager } from '../computer-use-manager'
 // The person's switch is the outer gate on `fnsForSession`; the desktop is what is under test.
 mock.module('@craft-agent/shared/config', () => ({ ...realConfig, getComputerUseEnabled: () => true }))
 
+/** The driver reports stacking as a string; a named constant keeps the style lint quiet. */
+const WINDOW_Z_INDEX = '1'
+
 const WINDOW = {
   windowId: '42',
   pid: 100,
@@ -23,7 +32,7 @@ const WINDOW = {
   bounds: { x: 0, y: 0, width: 800, height: 600 },
   isOnScreen: true,
   minimized: false,
-  zIndex: '1',
+  zIndex: WINDOW_Z_INDEX,
 }
 
 /** `click`'s own answer, measured against a live driver: snake_case names, no role, no label. */
@@ -39,6 +48,9 @@ const CLICK_REPLY = {
 function harness(options: {
   reply?: Record<string, unknown>
   state?: Record<string, unknown>
+  integrity?: (pid: number) => ProcessIntegrity
+  desktop?: () => InputDesktopState
+  onCall?: (name: string) => void
 } = {}) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = []
   const reads: Array<Record<string, unknown>> = []
@@ -74,13 +86,29 @@ function harness(options: {
     },
     callTool: async (name: string, argsJson: string) => {
       calls.push({ name, args: JSON.parse(argsJson) })
+      options.onCall?.(name)
       if (name === 'get_cursor_position') {
         return { text: '1,2', images: [], structuredJson: null, isError: false, degraded: false, rawJson: '' }
       }
       return { ...CLICK_REPLY, ...options.reply }
     },
   }
-  return { driver, calls, reads, manager: new ComputerUseManager({ loadDriver: async () => driver }) }
+  return {
+    driver,
+    calls,
+    reads,
+    manager: new ComputerUseManager({
+      loadDriver: async () => driver,
+      // A fake desktop: tests that care about UIPI or UAC override these; everything else runs at
+      // the same level as the test process, where no preflight refuses.
+      readProcessIntegrity:
+        options.integrity
+        ?? (() => ({ kind: 'level', rid: 0x2000, name: 'medium' })),
+      readInputDesktop:
+        options.desktop
+        ?? (() => ({ name: 'Default', secure: false })),
+    }),
+  }
 }
 
 async function paneFor(harnessed: ReturnType<typeof harness>) {
@@ -263,5 +291,144 @@ describe('computer-use manager > snapshot', () => {
     const snapshot = await fns.snapshot({ windowId: '42' })
 
     expect(snapshot.total).toBeUndefined()
+  })
+})
+
+describe('computer-use manager > refusal detail', () => {
+  it('carries the driver’s own UIPI sentence into the outcome', async () => {
+    const harnessed = harness({
+      reply: {
+        structuredJson: JSON.stringify({
+          effect: 'refused',
+          route: 'synthetic_events',
+          refusal: 'background_uipi_blocked',
+          detail: 'UIPI: target hwnd 0x1 is at High integrity; cua-driver is at Medium integrity.',
+          delivery: { mode: 'background' },
+        }),
+      },
+    })
+    const fns = await paneFor(harnessed)
+    const { elements } = await fns.snapshot({ windowId: '42' })
+
+    const outcome = await fns.invoke({ token: elements[0]!.token })
+
+    expect(outcome.effect).toBe('refused')
+    expect(outcome.note).toContain('UIPI: target')
+  })
+
+  it('reads a nested refusal object', async () => {
+    const harnessed = harness({
+      reply: {
+        structuredJson: JSON.stringify({
+          effect: 'refused',
+          route: 'synthetic_events',
+          refusal: {
+            code: 'background_uipi_blocked',
+            detail: 'PostMessage to a higher-integrity window is silently dropped.',
+          },
+          delivery: { mode: 'background' },
+        }),
+      },
+    })
+    const fns = await paneFor(harnessed)
+    const { elements } = await fns.snapshot({ windowId: '42' })
+
+    const outcome = await fns.invoke({ token: elements[0]!.token })
+
+    expect(outcome.note).toContain('PostMessage to a higher-integrity window')
+  })
+})
+
+describe('computer-use manager > elevated windows', () => {
+  const MEDIUM: ProcessIntegrity = { kind: 'level', rid: 0x2000, name: 'medium' }
+  const HIGH: ProcessIntegrity = { kind: 'level', rid: 0x3000, name: 'high' }
+
+  it('answers a higher-integrity window with no tree and a reason', async () => {
+    const harnessed = harness({
+      integrity: (pid) => pid === process.pid ? MEDIUM : HIGH,
+    })
+    const fns = await paneFor(harnessed)
+
+    const snapshot = await fns.snapshot({ windowId: '42' })
+
+    expect(snapshot.source).toBe('none')
+    expect(snapshot.elements).toEqual([])
+    expect(snapshot.note).toMatch(/elevated process/)
+    expect(snapshot.note).toMatch(/Restart this app as administrator/)
+    // The driver is not asked for a tree it cannot read; that is how the one-TitleBar answer was
+    // mistaken for a full snapshot.
+    expect(harnessed.reads).toHaveLength(0)
+  })
+
+  it('refuses an action aimed at a window above its own integrity', async () => {
+    let targetLevel = MEDIUM
+    const harnessed = harness({
+      integrity: (pid) => pid === process.pid ? MEDIUM : targetLevel,
+    })
+    const fns = await paneFor(harnessed)
+    const { elements } = await fns.snapshot({ windowId: '42' })
+    const token = elements[0]!.token
+
+    targetLevel = HIGH
+
+    await expect(fns.invoke({ token })).rejects.toThrow(/elevated process/)
+    expect(harnessed.calls.some((entry) => entry.name === 'click')).toBe(false)
+  })
+
+  it('refuses a coordinate click at an elevated window', async () => {
+    const harnessed = harness({
+      integrity: (pid) => pid === process.pid ? MEDIUM : HIGH,
+    })
+    const fns = await paneFor(harnessed)
+    await fns.windows()
+
+    await expect(fns.clickAt({ x: 10, y: 20, windowId: '42' })).rejects.toThrow(/elevated process/)
+    expect(harnessed.calls.some((entry) => entry.name === 'click')).toBe(false)
+  })
+})
+
+describe('computer-use manager > secure desktop', () => {
+  it('refuses commands but lets status name the UAC prompt', async () => {
+    const harnessed = harness({
+      desktop: () => ({ name: 'Winlogon', secure: true }),
+    })
+    const fns = await paneFor(harnessed)
+
+    await expect(fns.windows()).rejects.toThrow(/UAC prompt/)
+    const status = await fns.status()
+    expect(status.injectedInput).toContain('UAC prompt')
+    expect(status.permissions.join('\n')).toContain('Secure desktop')
+  })
+
+  it('names a launch waiting on UAC instead of reporting no window', async () => {
+    let secure = false
+    const harnessed = harness({
+      desktop: () => ({ name: secure ? 'Winlogon' : 'Default', secure }),
+      onCall: (name) => {
+        if (name === 'launch_app') secure = true
+      },
+    })
+    const fns = await paneFor(harnessed)
+
+    await expect(fns.launchApp('Setup')).rejects.toThrow(/administrator approval/)
+  })
+})
+
+describe('windows-desktop-state > integrity ladder', () => {
+  it('names the levels Windows documents', () => {
+    expect(integrityName(0x1000)).toBe('low')
+    expect(integrityName(0x2000)).toBe('medium')
+    expect(integrityName(0x2100)).toBe('medium-plus')
+    expect(integrityName(0x3000)).toBe('high')
+    expect(integrityName(0x4000)).toBe('system')
+  })
+
+  it('only crosses upward', () => {
+    const medium: ProcessIntegrity = { kind: 'level', rid: 0x2000, name: 'medium' }
+    const high: ProcessIntegrity = { kind: 'level', rid: 0x3000, name: 'high' }
+    expect(isHigherIntegrity(high, medium)).toBe(true)
+    expect(isHigherIntegrity(medium, high)).toBe(false)
+    expect(isHigherIntegrity(medium, medium)).toBe(false)
+    expect(isHigherIntegrity({ kind: 'unknown', error: 'x' }, medium)).toBe(false)
   })
 })

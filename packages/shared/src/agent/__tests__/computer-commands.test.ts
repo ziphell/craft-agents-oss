@@ -265,6 +265,23 @@ describe('computer command execution', () => {
     expect(result.output).not.toContain('exposes no accessible tree')
   })
 
+  it('does not offer click-at for a window it cannot drive', async () => {
+    // An elevated target has no readable tree *and* no input route; the generic "use screenshot
+    // together with click-at" hint would point the model at a second refusal.
+    const result = await executeComputerToolCommand({
+      command: 'snapshot',
+      fns: makeFns([], {
+        snapshot: {
+          source: 'none',
+          elements: [],
+          note: 'TestApp (w3) belongs to an elevated process (high integrity).',
+        },
+      }),
+    })
+    expect(result.output).toContain('note: TestApp (w3) belongs to an elevated process')
+    expect(result.output).not.toContain('click-at')
+  })
+
   it('says how much of a window it did not show', async () => {
     const capped = await executeComputerToolCommand({
       command: 'snapshot',

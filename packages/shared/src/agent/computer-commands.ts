@@ -267,6 +267,10 @@ function formatSnapshot(snapshot: ComputerSnapshot): string {
   const lines = [header]
   if (snapshot.note) lines.push(`note: ${snapshot.note}`)
   if (snapshot.elements.length === 0) {
+    // A note that already says why there is no tree (an elevated window, a degraded read) is the
+    // whole answer. The generic hint below recommends `click-at`, which UIPI blocks on an elevated
+    // target — pointing at a second failure is worse than saying nothing.
+    if (snapshot.note && snapshot.source === 'none' && !snapshot.filtered) return lines.join('\n')
     // A filtered read that matched nothing says nothing about the tree — the window can hold a
     // thousand elements and still not contain the word. Only an unfiltered empty read is evidence
     // that there is no tree at all.
