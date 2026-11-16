@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { buildSearchQuery } from '../imap.ts';
+import { buildSearchQuery, needsLocalSearch } from '../imap.ts';
 import { detectProvider, resolveEndpoints } from '../presets.ts';
 
 describe('detectProvider', () => {
@@ -112,5 +112,24 @@ describe('buildSearchQuery', () => {
   it('maps unread to seen:false and keeps date bounds', () => {
     const since = new Date('2026-01-01T00:00:00Z');
     expect(buildSearchQuery({ unseen: true, since })).toEqual({ seen: false, since });
+  });
+
+  it('drops non-ASCII keywords when the server cannot take them', () => {
+    expect(buildSearchQuery({ subject: '发票', since: new Date('2026-01-01T00:00:00Z') }, { asciiOnly: true }))
+      .toEqual({ since: new Date('2026-01-01T00:00:00Z') });
+    expect(buildSearchQuery({ subject: '发票' }, { asciiOnly: true })).toEqual({ all: true });
+  });
+});
+
+describe('needsLocalSearch', () => {
+  it('defers CJK keywords to the client', () => {
+    expect(needsLocalSearch({ subject: '发票' })).toBe(true);
+    expect(needsLocalSearch({ text: '账单' })).toBe(true);
+    expect(needsLocalSearch({ from: '账务 <billing@example.com>' })).toBe(true);
+  });
+
+  it('keeps ASCII queries on the server', () => {
+    expect(needsLocalSearch({ subject: 'invoice', since: new Date('2026-01-01T00:00:00Z') })).toBe(false);
+    expect(needsLocalSearch({})).toBe(false);
   });
 });

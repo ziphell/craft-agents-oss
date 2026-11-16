@@ -843,9 +843,29 @@ source_credential_prompt({
 `source_test` logs in to IMAP and verifies SMTP with that credential, so a passing test means mail
 will actually work. If it reports "Credentials needed", the prompt above has not run yet.
 
-The mailbox exposes `list_folders`, `search`, `read`, `download_attachment` and `send` as
-`mcp__{slug}__{tool}`. There is no draft tool: write the message to a file, show it to the person,
-then send. `send` cannot be undone — confirm recipients and body before calling it.
+The mailbox exposes `list_folders`, `search`, `read`, `download_attachment`, `export_html` and
+`send` as `mcp__{slug}__{tool}`. There is no draft tool: write the message to a file, show it to the
+person, then send. `send` cannot be undone — confirm recipients and body before calling it.
+`export_html` writes a sanitized standalone HTML file to
+`emails/<mailbox>-<hash>-<uid>/message.html` and returns its path. Inline images and remote `http(s)`
+images (including `srcset` and CSS `url()`) are saved beside it under `images/` and referenced
+relatively, so the file renders the same in a sandboxed renderer and stays usable when the session
+folder is moved. Remote fetching is bounded (30 images, 5 MB each, 20 MB total, 25 s) and refuses
+loopback/private hosts; a failed image keeps its original URL. Pass `includeRemoteImages: false` to
+skip remote fetching entirely. Use it when the layout matters, then render or screenshot that file
+with the html/browser tools.
+`download_attachment` defaults to `emails/<mailbox>-<hash>-<uid>/attachments/<filename>`; a relative
+`outputPath` is resolved inside that message folder, and absolute paths are restricted to the
+session/workspace. Pass `all: true` to save every real attachment from one fetch. Inline `cid:` images
+are listed separately in `read` output and are never treated as downloadable attachments. Attachments
+passed to `send` must also live inside the session/workspace; relative paths resolve against the
+session folder.
+
+Search keywords in Chinese (or any non-ASCII text) are matched locally against the newest 500
+headers, because QQ/163 reject UTF-8 server-side search; in that mode a `text` keyword does not
+cover message bodies, and older mail is only reachable by passing `since`/`before`. Both search and
+read page: `search` takes `limit` + `offset`, and `read` takes `offset` + `maxChars` so a long body
+can be read in parts without fetching the message again.
 
 Gmail and Outlook are retiring password-based IMAP login. If login fails there, use the browser, or
 a `type: "api"` source with Google/Microsoft OAuth.

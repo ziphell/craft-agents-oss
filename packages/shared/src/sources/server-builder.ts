@@ -345,6 +345,7 @@ export class SourceServerBuilder {
       smtp: endpoints.smtp,
       auth: { user: credential.user, pass: credential.pass },
       sessionPath,
+      workspaceRootPath: source.workspaceRootPath,
     });
   }
 

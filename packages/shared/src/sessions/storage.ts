@@ -111,6 +111,11 @@ export function ensureSessionDir(workspaceRootPath: string, sessionId: string): 
   if (!existsSync(downloadsDir)) {
     mkdirSync(downloadsDir, { recursive: true });
   }
+  // Email sources keep each message (HTML, inline images, attachments) here.
+  const emailsDir = join(sessionDir, 'emails');
+  if (!existsSync(emailsDir)) {
+    mkdirSync(emailsDir, { recursive: true });
+  }
   return sessionDir;
 }
 

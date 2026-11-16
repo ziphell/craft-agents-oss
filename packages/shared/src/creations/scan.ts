@@ -236,6 +236,13 @@ function newest(origins: CreationOrigin[]): CreationOrigin {
 /** Folders a session writes into — the ones a person would look in, not its whole tree. */
 const SESSION_OUTPUT_DIRS = ['data', 'plans', 'downloads', 'long_responses', 'attachments']
 
+/**
+ * Exported email HTML is written by an in-process MCP tool, not `Write`/`Edit`,
+ * so the transcript never names it. It is the one text format discovery has to
+ * look for itself.
+ */
+const EMAIL_FORMATS: ReadonlySet<CreationFormat> = new Set<CreationFormat>(['html'])
+
 /** How deep a project folder is read. Deep enough for `reports/2026/q3/x.xlsx`, no deeper. */
 const PROJECT_MAX_DEPTH = 4
 
@@ -310,6 +317,8 @@ function discoverDocuments(
   }
   for (const sessionId of sessionIds) {
     for (const dir of SESSION_OUTPUT_DIRS) documentsIn(join(sessionsRoot, sessionId, dir), found, 1)
+    // emails/<mailbox>-<hash>-<uid>/message.html
+    documentsIn(join(sessionsRoot, sessionId, 'emails'), found, 2, EMAIL_FORMATS)
   }
 
   const projectsRoot = join(workspaceRootPath, 'projects')

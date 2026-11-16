@@ -64,7 +64,12 @@ export interface EmailMessage extends EmailSummary {
   text: string;
   /** HTML body converted to Markdown; inline `cid:` images point at local files. */
   markdown: string;
+  /** Raw HTML body with inline images already localized. Never rendered into `read` output. */
+  html?: string;
+  /** Every MIME part except the body, inline images included; see `inlineImages` for the split. */
   attachments: EmailAttachment[];
+  /** `cid:` body images. Saved beside the message; not downloadable attachments. */
+  inlineImages: EmailAttachment[];
 }
 
 export interface EmailSearchQuery {
@@ -82,6 +87,8 @@ export interface EmailSearchQuery {
   before?: Date;
   /** Newest N results. Defaults to 20, capped by the caller. */
   limit?: number;
+  /** Skip the newest N matches, for paging. Defaults to 0. */
+  offset?: number;
 }
 
 export interface SendEmailInput {

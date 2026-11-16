@@ -10,7 +10,7 @@
  *
  * What is actually asked for is narrower, so this file does exactly it, with readers that read:
  *
- * - `.docx` — mammoth (WordprocessingML → HTML) and turndown (HTML → markdown, tables included)
+ * - `.docx` — mammoth (WordprocessingML → HTML) and the shared HTML → markdown converter (tables included)
  * - `.xlsx` / `.xls` — SheetJS, one markdown table per sheet
  * - `.pptx` — node-pptx-parser, one section per slide
  * - `.doc` / `.ppt` — the pre-2007 binaries: a sentence naming the modern format, because no reader
@@ -21,8 +21,8 @@
  */
 
 import { extname } from 'node:path'
+import { htmlToMarkdown } from '@craft-agent/shared/html/markdown'
 import mammoth from 'mammoth'
-import TurndownService from 'turndown'
 import * as XLSX from 'xlsx'
 import PptxParser from 'node-pptx-parser'
 
@@ -60,44 +60,6 @@ export function rowsToMarkdownTable(rows: readonly (readonly string[])[]): strin
   return [line(head), `| ${Array<string>(width).fill('---').join(' | ')} |`, ...rest.map(line)].join('\n')
 }
 
-/**
- * Enough of a DOM node to walk a table, without pulling `lib.dom` into a server package.
- *
- * turndown hands the rule the node it was built from (a domino element at runtime); these three
- * interfaces are the only surface the rule touches — a selector and a `textContent`.
- */
-interface TableCellNode {
-  textContent: string | null
-}
-interface TableRowNode {
-  querySelectorAll(selector: string): ArrayLike<TableCellNode>
-}
-interface TableNode {
-  querySelectorAll(selector: string): ArrayLike<TableRowNode>
-}
-
-const turndown = new TurndownService({
-  headingStyle: 'atx',
-  codeBlockStyle: 'fenced',
-  bulletListMarker: '-',
-})
-
-/**
- * turndown keeps a `<table>` as raw HTML unless a rule claims it, and the tables mammoth emits are
- * plain `<tr><td>` — so the first row is the header by construction, as it is for a sheet.
- */
-turndown.addRule('table', {
-  filter: 'table',
-  replacement: (_content, node) => {
-    const table = node as unknown as TableNode
-    const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
-      Array.from(row.querySelectorAll('th,td')).map((cell) => escapeCell(cell.textContent ?? '')),
-    )
-    const rendered = rowsToMarkdownTable(rows)
-    return rendered ? `\n\n${rendered}\n\n` : ''
-  },
-})
-
 async function docxToMarkdown(path: string): Promise<string> {
   const { value: html, messages } = await mammoth.convertToHtml({ path })
   // mammoth answers with warnings for what it skipped (an unsupported style, an image it cannot
@@ -106,7 +68,7 @@ async function docxToMarkdown(path: string): Promise<string> {
     const reason = messages.find((message) => message.type === 'error')?.message ?? 'no readable text'
     throw new Error(reason)
   }
-  return turndown.turndown(html)
+  return htmlToMarkdown(html)
 }
 
 function spreadsheetToMarkdown(path: string): string {
