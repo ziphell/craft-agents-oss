@@ -36,6 +36,16 @@ describe('handleSendAgentMessage delivery ack', () => {
     expect(text.toLowerCase()).toContain('do not assume it was read');
   });
 
+  it('reports a steered ack when a busy target took the text into its running turn', async () => {
+    const { ctx } = createCtx({ delivery: 'delivered', targetBusy: true, steered: true });
+    const res = await handleSendAgentMessage(ctx, { sessionId: 'target-9', message: 'heads up' });
+    expect(res.isError).toBeFalsy();
+    const text = JSON.stringify(res);
+    expect(text).toContain('delivered');
+    expect(text).toContain('running turn');
+    expect(text).not.toContain('queued');
+  });
+
   it('wraps the message with a sender envelope', async () => {
     const { ctx, calls } = createCtx({ delivery: 'delivered', targetBusy: false }, { name: 'Monitor' });
     await handleSendAgentMessage(ctx, { sessionId: 'target-9', message: 'ping' });

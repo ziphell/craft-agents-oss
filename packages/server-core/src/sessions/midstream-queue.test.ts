@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import * as backendFactory from '../../../shared/src/agent/backend/factory.ts'
 import { getPendingPlanExecution, saveSession } from '../../../shared/src/sessions/storage.ts'
 import { ClaudeAgent } from '../../../shared/src/agent/claude-agent.ts'
 import { PendingSteers } from '../../../shared/src/agent/backend/claude/pending-steers.ts'
@@ -9,9 +10,7 @@ import { AbortReason } from '../../../shared/src/agent/backend/types.ts'
 import {
   SessionManager,
   createManagedSession,
-  resolveMidStreamDeliveryOutcome,
-  shouldAttemptMidStreamSteer,
-  canSteerTextPayload,
+  canSilentlySteerPayload,
 } from './SessionManager.ts'
 
 describe('mid-stream queue runtime invariants', () => {
@@ -44,22 +43,88 @@ describe('mid-stream queue runtime invariants', () => {
     return managed
   }
 
-  it('always queues a mid-stream send, regardless of the provider', async () => {
+  it('always queues a mid-stream send from the composer, even when a steer is possible', async () => {
     const managed = buildSession('always-queue')
     managed.isProcessing = true
     const redirect = mock(() => true)
-    managed.agent = { redirect } as any
+    managed.agent = { canSteerNow: () => true, redirect } as any
     ;(sm as any).persistSession = () => {}
     ;(sm as any).flushSession = async () => {}
     const events: any[] = []
     sm.setEventSink((_channel, _target, event) => events.push(event))
 
-    await sm.sendMessage(managed.id, 'plain text')
+    await expect(sm.sendMessage(managed.id, 'plain text')).resolves.toEqual({ delivery: 'queued' })
 
     expect(redirect).not.toHaveBeenCalled()
     expect(managed.messageQueue).toHaveLength(1)
-    expect(managed.messages.at(-1)!.isQueued).toBe(true)
+    const queuedRow = managed.messages.at(-1)!
+    expect(queuedRow.isQueued).toBe(true)
+    expect(managed.messageQueue[0]).toMatchObject({ message: 'plain text', messageId: queuedRow.id })
     expect(events.find(e => e.type === 'user_message').status).toBe('queued')
+    // Queuing is not an interruption: the running turn keeps going and the
+    // replayed turn must not carry a false "previous response was interrupted".
+    expect(managed.wasInterrupted).not.toBe(true)
+    expect(events.filter(e => e.type === 'interrupted')).toHaveLength(0)
+    expect(events.find(e => e.type === 'user_message').message.id).toBe(queuedRow.id)
+    expect(events.find(e => e.type === 'queued_messages_state').order).toEqual([{ messageId: queuedRow.id }])
+  })
+
+  it.each(['anthropic', 'pi', 'pi_compat'] as const)(
+    'queues a mid-stream send even when the %s connection is configured to steer',
+    async providerType => {
+      spyOn(backendFactory, 'resolveSessionConnection').mockReturnValue({
+        providerType,
+        midStreamBehavior: 'steer',
+      } as any)
+      const managed = buildSession(`steer-configured-${providerType}`)
+      managed.isProcessing = true
+      const redirect = mock(() => true)
+      managed.agent = { canSteerNow: () => true, redirect } as any
+      ;(sm as any).persistSession = () => {}
+      ;(sm as any).flushSession = async () => {}
+      const events: any[] = []
+      sm.setEventSink((_channel, _target, event) => events.push(event))
+
+      await expect(sm.sendMessage(managed.id, 'follow up')).resolves.toEqual({ delivery: 'queued' })
+
+      expect(redirect).not.toHaveBeenCalled()
+      expect(managed.messageQueue.map(q => q.message)).toEqual(['follow up'])
+      expect(managed.messages.at(-1)!.isQueued).toBe(true)
+      expect(events.filter(e => e.type === 'interrupted')).toHaveLength(0)
+      expect(events.find(e => e.type === 'user_message').status).toBe('queued')
+    },
+  )
+
+  it('queues an automatic message ahead of the person’s queued follow-ups when it cannot steer', async () => {
+    const managed = buildSession('auto-priority')
+    managed.isProcessing = true
+    const redirect = mock(() => false) // the backend declines the steer
+    managed.agent = { canSteerNow: () => true, redirect } as any
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    sm.setEventSink(() => {})
+
+    await sm.sendMessage(managed.id, 'first follow-up')
+    await sm.sendMessage(managed.id, 'second follow-up')
+    const notice = (text: string) => sm.sendMessage(managed.id, text, [], [], {
+      hidden: true,
+      origin: 'system',
+      midStreamDelivery: 'steer',
+    })
+    await notice('first notice')
+    await notice('second notice')
+
+    // Automatic entries go ahead of the person's queue, FIFO among themselves.
+    expect(managed.messageQueue.map(q => q.message)).toEqual([
+      'first notice', 'second notice', 'first follow-up', 'second follow-up',
+    ])
+    // Crash recovery rebuilds the queue from the transcript, so its order must match.
+    const queuedRows = managed.messages.filter(m => m.role === 'user' && m.isQueued)
+    expect(queuedRows.map(m => m.content)).toEqual([
+      'first notice', 'second notice', 'first follow-up', 'second follow-up',
+    ])
+    // They keep their attribution and stay out of the person's draft tray.
+    expect(queuedRows.filter(m => m.hidden && m.origin === 'system')).toHaveLength(2)
   })
 
   it('sends a queued message now by stopping the turn and putting it first', async () => {
@@ -97,6 +162,68 @@ describe('mid-stream queue runtime invariants', () => {
     })
   })
 
+  it('send now discards queued automatic entries (Stop + send) and keeps the person’s queue', async () => {
+    const managed = buildSession('send-now-auto')
+    managed.isProcessing = true
+    managed.agent = { forceAbort: mock(() => {}) } as any
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await sm.sendMessage(managed.id, 'first follow-up')
+    await sm.sendMessage(managed.id, 'system notice', [], [], {
+      hidden: true,
+      origin: 'system',
+      midStreamDelivery: 'steer',
+    })
+    await sm.sendMessage(managed.id, 'second follow-up')
+    // The automatic entry sits ahead of the person's queue (it could not steer).
+    expect(managed.messageQueue.map(q => q.message)).toEqual([
+      'system notice', 'first follow-up', 'second follow-up',
+    ])
+    const noticeId = managed.messages.find(m => m.content === 'system notice')!.id
+    const secondId = managed.messages.find(m => m.content === 'second follow-up')!.id
+
+    await expect(sm.sendQueuedMessageNow(managed.id, secondId)).resolves.toEqual({ sent: true })
+
+    // Stop + send: pending automatic traffic is gone; the person's queue stays.
+    expect(managed.messageQueue.map(q => q.message)).toEqual(['second follow-up', 'first follow-up'])
+    expect(managed.messages.some(m => m.content === 'system notice')).toBe(false)
+    expect(events.find(e => e.type === 'queued_message_cancelled')).toMatchObject({
+      sessionId: managed.id,
+      messageId: noticeId,
+    })
+    // Still queued until the replay turns it into an accepted turn.
+    expect(managed.messages.find(m => m.id === secondId)!.isQueued).toBe(true)
+    managed.isProcessing = false
+  })
+
+  it('Stop restores only the person’s text and drops automatic entries', async () => {
+    const managed = buildSession('stop-auto')
+    managed.isProcessing = true
+    managed.agent = { forceAbort: mock(() => {}) } as any
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await sm.sendMessage(managed.id, 'user follow-up')
+    await sm.sendMessage(managed.id, 'system notice', [], [], {
+      hidden: true,
+      origin: 'system',
+      midStreamDelivery: 'steer',
+    })
+    await sm.cancelProcessing(managed.id)
+
+    // The composer gets the person's text back; the internal notice is not theirs
+    // to edit and the stopped work is gone.
+    expect(events.find(e => e.type === 'interrupted')!.queuedMessages).toEqual(['user follow-up'])
+    expect(managed.messageQueue).toEqual([])
+    expect(managed.messages.some(m => m.content === 'system notice')).toBe(false)
+    managed.isProcessing = false // Disarm the production Stop backstop timer.
+  })
+
   it('keeps the message queued while a manual compaction owns the turn', async () => {
     const managed = buildSession('send-now-compacting')
     managed.isProcessing = true
@@ -116,19 +243,84 @@ describe('mid-stream queue runtime invariants', () => {
     managed.isProcessing = false
   })
 
-  it('queues instead of steering while a manual compaction owns the turn (#1058)', () => {
-    const compacting = { isCompactionInFlight: () => true }
-    const idle = { isCompactionInFlight: () => false }
-    expect(shouldAttemptMidStreamSteer('steer', true, compacting)).toBe(false)
-    expect(shouldAttemptMidStreamSteer('steer', true, idle)).toBe(true)
-    // Backends without the concept behave as before.
-    expect(shouldAttemptMidStreamSteer('steer', true, {})).toBe(true)
-    expect(shouldAttemptMidStreamSteer('queue', true, idle)).toBe(false)
-    expect(shouldAttemptMidStreamSteer('steer', false, idle)).toBe(false)
-    expect(shouldAttemptMidStreamSteer('steer', true, undefined)).toBe(false)
-    // The forced queue path is not an interruption: the compaction runs to
-    // completion and the replayed turn must not claim it was cut off.
-    expect(resolveMidStreamDeliveryOutcome('queue', false)).toEqual({ shouldQueue: true, wasInterrupted: false })
+  it('silently steers a non-composer send into the running turn when asked', async () => {
+    const managed = buildSession('silent-steer')
+    managed.isProcessing = true
+    const redirected: string[] = []
+    const redirect = mock((text: string) => { redirected.push(text); return true })
+    const takePendingSteers = mock(() => [])
+    managed.agent = { canSteerNow: () => true, redirect, takePendingSteers } as any
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    const outcome = await sm.sendMessage(managed.id, 'ping from another session', undefined, undefined, {
+      origin: 'agent',
+      fromSessionId: 'other-session',
+      fromSessionName: 'Monitor',
+      midStreamDelivery: 'steer',
+    })
+
+    expect(outcome).toEqual({ delivery: 'steered' })
+    expect(redirected).toEqual(['ping from another session'])
+    // Nothing waits in the tray: the running turn already has the text.
+    expect(managed.messageQueue).toHaveLength(0)
+    expect(managed.messages.at(-1)).toMatchObject({
+      isQueued: false,
+      origin: 'agent',
+      fromSessionId: 'other-session',
+      fromSessionName: 'Monitor',
+    })
+    expect(events.find(e => e.type === 'user_message').status).toBe('accepted')
+    expect(events.filter(e => e.type === 'interrupted')).toHaveLength(0)
+    expect(managed.wasInterrupted).not.toBe(true)
+  })
+
+  it('queues a requested steer when the backend or the payload cannot take one', async () => {
+    const cases = [
+      { name: 'compacting', agent: { canSteerNow: () => true, isCompactionInFlight: () => true } },
+      { name: 'cannot-steer', agent: { canSteerNow: () => false } },
+      { name: 'no-gate', agent: {} },
+    ] as const
+    const attachments = [{ name: 'photo.png', type: 'image' as const, mimeType: 'image/png', base64: 'image-bytes' }]
+    for (const variant of [...cases.map(c => c.name), 'attachments']) {
+      const managed = buildSession(`steer-fallback-${variant}`)
+      managed.isProcessing = true
+      const redirect = mock(() => true)
+      const fixture = cases.find(c => c.name === variant)
+      managed.agent = { ...(fixture?.agent ?? {}), redirect } as any
+      ;(sm as any).persistSession = () => {}
+      ;(sm as any).flushSession = async () => {}
+
+      const outcome = await sm.sendMessage(
+        managed.id,
+        'hello',
+        variant === 'attachments' ? attachments as any : undefined,
+        undefined,
+        { origin: 'agent', midStreamDelivery: 'steer' },
+      )
+
+      expect(outcome).toEqual({ delivery: 'queued' })
+      expect(redirect).not.toHaveBeenCalled()
+      expect(managed.messageQueue).toHaveLength(1)
+      expect(managed.messages.at(-1)!.isQueued).toBe(true)
+      managed.isProcessing = false
+    }
+  })
+
+  it('lets only presentation-only payloads ride a silent steer', () => {
+    expect(canSilentlySteerPayload(undefined, undefined, {
+      origin: 'agent',
+      fromSessionId: 'x',
+      fromSessionName: 'X',
+      hidden: true,
+      replyTo: { messageId: 'm', preview: 'quote' } as any,
+      midStreamDelivery: 'steer',
+    })).toBe(true)
+    expect(canSilentlySteerPayload(undefined, undefined, { skillSlugs: ['image-skill'] })).toBe(false)
+    expect(canSilentlySteerPayload(undefined, undefined, { badges: [{ label: 'x' }] as any })).toBe(false)
+    expect(canSilentlySteerPayload([{ name: 'a' } as any], undefined, {})).toBe(false)
 
     // Claude reports a live /compact turn through its event adapter; a bare
     // prototype without an adapter reads as not compacting.
@@ -137,7 +329,6 @@ describe('mid-stream queue runtime invariants', () => {
     expect(claude.isCompactionInFlight()).toBe(false)
     claude.eventAdapter = { isManualCompactionRequested: () => true }
     expect(claude.isCompactionInFlight()).toBe(true)
-    expect(shouldAttemptMidStreamSteer('steer', true, claude)).toBe(false)
     claude.currentQuery = null
     expect(claude.isCompactionInFlight()).toBe(false)
   })

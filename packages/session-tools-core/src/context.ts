@@ -723,13 +723,17 @@ export interface ListSessionsResult {
  */
 export interface SendAgentMessageResult {
   /**
-   * - `delivered`: the target was idle, so it will start processing the message now.
+   * - `delivered`: the target has the message now — it was idle and starts a
+   *   turn, or it was mid-turn and the text was silently steered into the
+   *   running turn (`steered` below).
    * - `queued`: the target was mid-turn; the message is enqueued and will be
    *   processed after the current turn finishes.
    */
   delivery: 'delivered' | 'queued';
   /** Whether the target session was processing a turn when the message arrived. */
   targetBusy: boolean;
+  /** The text joined the target's running turn instead of waiting in its queue. */
+  steered?: boolean;
 }
 
 /**

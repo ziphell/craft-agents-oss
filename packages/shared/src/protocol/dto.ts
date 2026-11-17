@@ -555,6 +555,15 @@ export interface SendMessageOptions {
   /** `origin: 'agent'`: the conversation that sent it. */
   fromSessionId?: string
   fromSessionName?: string
+  /**
+   * How a send that arrives while a turn is running is delivered. Omitted means
+   * `'queue'`: it waits for the current turn to end (a person at the composer).
+   * `'steer'` asks to insert the text into the running turn silently; it is
+   * honored only for text-only payloads on a backend that can take a steer right
+   * now, and otherwise queues as usual. Non-composer callers (another session, a
+   * system notice) opt in; the queue itself never steers.
+   */
+  midStreamDelivery?: 'queue' | 'steer'
 }
 
 // ---------------------------------------------------------------------------

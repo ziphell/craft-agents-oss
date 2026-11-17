@@ -133,7 +133,7 @@ export interface ISessionManager {
     existingMessageId?: string,
     _isAuthRetry?: boolean,
     onAck?: (messageId: string) => void,
-  ): Promise<void>
+  ): Promise<{ delivery: 'queued' | 'steered' } | void>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
   cancelQueuedMessage(sessionId: string, messageId: string, content?: string): Promise<{ cancelled: boolean }>
   reorderQueuedMessage(sessionId: string, messageId: string, toIndex: number): Promise<{ reordered: boolean }>

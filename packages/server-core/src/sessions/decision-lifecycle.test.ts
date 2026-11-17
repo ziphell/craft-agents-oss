@@ -3,10 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { saveSession } from '../../../shared/src/sessions/storage.ts'
-import * as backendFactory from '../../../shared/src/agent/backend/factory.ts'
 import * as midTurnMessages from '../decisions/mid-turn-messages.ts'
 import * as suggestions from '../decisions/suggestions.ts'
-import { SessionManager, createManagedSession, isInQueuedContinuation } from './SessionManager.ts'
+import { SessionManager, createManagedSession } from './SessionManager.ts'
 
 const tick = async (n = 5) => { for (let i = 0; i < n; i++) await new Promise(resolve => setImmediate(resolve)) }
 async function waitFor(condition: () => boolean, what: string): Promise<void> {
@@ -43,141 +42,44 @@ describe('decision points in the session lifecycle', () => {
     return managed
   }
 
-  describe('mid-turn messages', () => {
-    function liveAgent(opts: { canSteer: () => boolean }) {
-      const redirects: string[] = []
-      return {
-        redirects,
-        agent: { redirect: (message: string) => { redirects.push(message); return true }, canSteerNow: opts.canSteer } as any,
-      }
+  describe('mid-turn continuation merge', () => {
+    // The composer always queues; the decision model only decides whether two
+    // waiting halves are one request, so they replay as a single turn.
+    const FIRST = 'when you create the calendar event later,'
+    const SECOND = 'call it "Balaton team day" and don\'t invite anyone yet'
+
+    async function splitSend() {
+      const managed = await session('split')
+      managed.isProcessing = true
+      ;(sm as any).decisionFeatureActive = (feature: string) => feature === 'midTurnMessages'
+      const continuations: Array<(same: boolean) => void> = []
+      spyOn(midTurnMessages, 'isContinuation').mockImplementation(() => new Promise(resolve => continuations.push(resolve)))
+      await sm.sendMessage(managed.id, FIRST)
+      await sm.sendMessage(managed.id, SECOND)
+      return { managed, continuations }
     }
 
-    it('records messages in send order at once, then steers only the one the model calls a correction', async () => {
-      const managed = await session('order')
-      managed.isProcessing = true
-      const { agent, redirects } = liveAgent({ canSteer: () => true })
-      managed.agent = agent
-      ;(sm as any).decisionFeatureActive = (feature: string) => feature === 'midTurnMessages'
-      ;(sm as any).markQueuedContinuation = async () => {}
-      const answers = new Map<string, (delivery: 'steer' | 'queue') => void>()
-      ;(sm as any).decideMidTurnDelivery = (_managed: unknown, message: string) => new Promise(resolve => answers.set(message, resolve))
+    it('queues both halves, then merges them into one replay when the model calls them one request', async () => {
+      const { managed, continuations } = await splitSend()
+      expect(managed.messageQueue.map(entry => entry.message)).toEqual([FIRST, SECOND])
+      expect(managed.messages.filter(m => m.role === 'user').every(m => m.isQueued)).toBe(true)
 
-      await sm.sendMessage(managed.id, 'also add a changelog entry')
-      await sm.sendMessage(managed.id, 'wait, use tabs not spaces')
-      // Both are recorded and queued before any decision is back.
-      expect(managed.messages.filter(m => m.role === 'user').map(m => m.content)).toEqual(['also add a changelog entry', 'wait, use tabs not spaces'])
-      expect(managed.messageQueue.map(entry => entry.message)).toEqual(['also add a changelog entry', 'wait, use tabs not spaces'])
-
-      // Answers arrive in reverse order.
-      answers.get('wait, use tabs not spaces')!('steer')
-      answers.get('also add a changelog entry')!('queue')
+      continuations[0]!(true)
       await tick()
-      expect(redirects).toEqual(['wait, use tabs not spaces'])
-      expect(managed.messageQueue.map(entry => entry.message)).toEqual(['also add a changelog entry'])
-      expect(managed.messages.find(m => m.content === 'wait, use tabs not spaces')?.isQueued).toBe(false)
+      expect(managed.messageQueue[1]!.mergeWith).toBe(managed.messageQueue[0])
+
+      const replays: string[] = []
+      ;(sm as any).sendMessage = async (_id: string, message: string) => { replays.push(message) }
+      ;(sm as any).processNextQueuedMessage(managed.id)
+      await tick()
+      expect(replays).toEqual([`${FIRST}\n\n${SECOND}`])
     })
 
-    it('never steers when the backend cannot take a steer right now, or the turn has ended', async () => {
-      spyOn(backendFactory, 'resolveSessionConnection').mockReturnValue({ providerType: 'anthropic', midStreamBehavior: 'queue' } as any)
-      const managed = await session('steer-guard')
-      managed.isProcessing = true
-      let canSteer = false
-      const { agent, redirects } = liveAgent({ canSteer: () => canSteer })
-      managed.agent = agent
-      ;(sm as any).decisionFeatureActive = (feature: string) => feature === 'midTurnMessages'
-      ;(sm as any).markQueuedContinuation = async () => {}
-      let answer!: (delivery: 'steer') => void
-      ;(sm as any).decideMidTurnDelivery = () => new Promise(resolve => { answer = resolve })
-
-      await sm.sendMessage(managed.id, 'fix the typo first')
-      answer('steer')
+    it('keeps the halves separate when the model calls them different requests', async () => {
+      const { managed, continuations } = await splitSend()
+      continuations[0]!(false)
       await tick()
-      expect(redirects).toEqual([])
-      expect(managed.messageQueue.map(entry => entry.message)).toEqual(['fix the typo first'])
-
-      canSteer = true
-      await sm.sendMessage(managed.id, 'and rename the file')
-      managed.processingGeneration++  // that turn ended and a new one began before the answer
-      answer('steer')
-      await tick()
-      expect(redirects).toEqual([])
-      expect(managed.messageQueue.map(entry => entry.message)).toEqual(['fix the typo first', 'and rename the file'])
-
-      await sm.sendMessage(managed.id, 'use tabs')
-      answer('steer')
-      await tick()
-      expect(redirects).toEqual(['use tabs'])
-    })
-
-    // Found in a harness test run: "call it X" was steered while "when you create the event
-    // later," replayed alone, so the agent read the second half as "create the event now".
-    describe('a message split over two sends', () => {
-      const FIRST = 'when you create the calendar event later,'
-      const SECOND = 'call it "Balaton team day" and don\'t invite anyone yet'
-
-      async function splitSend() {
-        const managed = await session('split')
-        managed.isProcessing = true
-        const { agent, redirects } = liveAgent({ canSteer: () => true })
-        managed.agent = agent
-        ;(sm as any).decisionFeatureActive = (feature: string) => feature === 'midTurnMessages'
-        const deliveries = new Map<string, (delivery: 'steer' | 'queue') => void>()
-        ;(sm as any).decideMidTurnDelivery = (_managed: unknown, message: string) => new Promise(resolve => deliveries.set(message, resolve))
-        const continuations: Array<(same: boolean) => void> = []
-        spyOn(midTurnMessages, 'isContinuation').mockImplementation(() => new Promise(resolve => continuations.push(resolve)))
-        await sm.sendMessage(managed.id, FIRST)
-        await sm.sendMessage(managed.id, SECOND)
-        return { managed, redirects, deliveries, continuations }
-      }
-
-      it('waits for the continuation check before steering the second half', async () => {
-        const { managed, redirects, deliveries, continuations } = await splitSend()
-        deliveries.get(FIRST)!('queue')
-        deliveries.get(SECOND)!('steer')  // the steer answer comes back first
-        await tick()
-        expect(redirects).toEqual([])
-        continuations[0]!(true)
-        await tick()
-        expect(redirects).toEqual([])
-        expect(managed.messageQueue.map(entry => entry.message)).toEqual([FIRST, SECOND])
-        expect(managed.messageQueue[1]!.mergeWith).toBe(managed.messageQueue[0])
-
-        const replays: string[] = []
-        ;(sm as any).sendMessage = async (_id: string, message: string) => { replays.push(message) }
-        ;(sm as any).processNextQueuedMessage(managed.id)
-        await tick()
-        expect(replays).toEqual([`${FIRST}\n\n${SECOND}`])
-      })
-
-      it('does not steer the first half once a later message is known to continue it', async () => {
-        const { redirects, deliveries, continuations } = await splitSend()
-        continuations[0]!(true)
-        await tick()
-        deliveries.get(FIRST)!('steer')
-        deliveries.get(SECOND)!('steer')
-        await tick()
-        expect(redirects).toEqual([])
-      })
-
-      it('steers the second half on its own when it is a separate request', async () => {
-        const { redirects, deliveries, continuations } = await splitSend()
-        deliveries.get(FIRST)!('queue')
-        continuations[0]!(false)
-        deliveries.get(SECOND)!('steer')
-        await tick()
-        expect(redirects).toEqual([SECOND])
-      })
-    })
-
-    it('recognises either half of a queued continuation', () => {
-      const a = { message: 'A' }
-      const b = { message: 'B', mergeWith: a }
-      const c = { message: 'C' }
-      expect(isInQueuedContinuation([a, b, c], a)).toBe(true)
-      expect(isInQueuedContinuation([a, b, c], b)).toBe(true)
-      expect(isInQueuedContinuation([a, b, c], c)).toBe(false)
-      // The earlier half already left the queue (steered or replayed): nothing to keep together.
-      expect(isInQueuedContinuation([b, c], b)).toBe(false)
+      expect(managed.messageQueue[1]!.mergeWith).toBeUndefined()
     })
   })
 
