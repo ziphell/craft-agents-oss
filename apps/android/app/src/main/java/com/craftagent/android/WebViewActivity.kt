@@ -384,6 +384,13 @@ class WebViewActivity : AppCompatActivity() {
   /**
    * 服务器列表里的显示设置：把整页缩放写到根元素，并触发 resize 让 WebUI
    * 按新的逻辑视口重新排一遍（viewport.ts 会把宽高除以 CSS zoom）。
+   *
+   * **必须继续用 CSS `zoom`，不要换成改写 viewport meta。** Craft 的 WebUI 是围绕它设计的：
+   * `viewport.ts` 读 `getComputedStyle(html).zoom`（即 `--webui-css-zoom`）并把视口尺寸除以它，
+   * `index.css` 也用 `calc(100dvh / var(--webui-css-zoom))` 补高。
+   * 换成页面缩放（不设 CSS zoom）后，Chromium 116 的 `getComputedStyle(html).zoom` 会返回
+   * devicePixelRatio（实测 2.75），WebUI 于是把 1203 ÷ 2.75 = 437 当成页面宽度，
+   * `#root` 被压成 437×302 —— 整屏错位。（Open WebUI 没有这个契约，所以那边可以用 meta 方案。）
    */
   private fun applyZoom() {
     val zoom = DisplaySettings.zoom(this)

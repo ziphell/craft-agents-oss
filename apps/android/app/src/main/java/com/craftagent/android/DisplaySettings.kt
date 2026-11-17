@@ -6,14 +6,16 @@ import kotlin.math.roundToInt
 /**
  * WebView 整页缩放（根元素 CSS zoom）。1f = 100%。
  *
- * WebUI 的 viewport.ts 会读取 `getComputedStyle(html).zoom` 并把 `#root` 的宽高
+ * WebUI 的 viewport.ts 会读取 `getComputedStyle(html).zoom` 并把视口宽高
  * 除以这个值，所以调大缩放等价于用更窄的逻辑视口渲染，而不是把页面裁掉。
+ * 这条契约要求壳**必须**继续用 CSS zoom（不能换成页面缩放）：未设 zoom 时
+ * Chromium 116 的 `getComputedStyle(html).zoom` 会返回 devicePixelRatio。
  */
 object DisplaySettings {
   private const val PREFS = "craft_display"
   private const val KEY_ZOOM = "webview_zoom"
 
-  val zoomOptions = listOf(0.8f, 0.85f, 0.9f, 0.95f, 1f)
+  val zoomOptions = listOf(0.75f, 0.8f, 0.85f, 0.9f, 0.95f, 1f)
 
   fun zoom(context: Context): Float {
     val value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getFloat(KEY_ZOOM, 1f)

@@ -6,9 +6,10 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.View
-import android.widget.ArrayAdapter
 import android.widget.LinearLayout
-import android.widget.ListView
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -104,29 +105,47 @@ class MainActivity : AppCompatActivity() {
       text = displaySummary(options[selected])
     }
 
-    val list = ListView(this).apply {
-      layoutParams = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        (48 * density * labels.size).toInt(),
-      )
-      choiceMode = ListView.CHOICE_MODE_SINGLE
-      adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_list_item_single_choice, labels)
-      setItemChecked(selected, true)
-      setOnItemClickListener { _, _, position, _ ->
-        DisplaySettings.setZoom(this@MainActivity, options[position])
-        summary.text = displaySummary(options[position])
+    // 选项用 RadioGroup 而不是固定高度的 ListView：屏幕不够高时固定高度会把下面几档
+    // 裁掉（既看不到也点不到）。
+    val zoomGroup = RadioGroup(this).apply {
+      orientation = RadioGroup.VERTICAL
+      val sidePadding = (20 * density).toInt()
+      setPadding(sidePadding, 0, sidePadding, 0)
+      options.forEachIndexed { index, value ->
+        addView(
+          RadioButton(this@MainActivity).apply {
+            id = View.generateViewId()
+            tag = value
+            text = labels[index]
+            isChecked = index == selected
+            val vertical = (4 * density).toInt()
+            setPadding(0, vertical, 0, vertical)
+          },
+        )
+      }
+      setOnCheckedChangeListener { group, checkedId ->
+        val value = group.findViewById<RadioButton>(checkedId)?.tag as? Float
+          ?: return@setOnCheckedChangeListener
+        DisplaySettings.setZoom(this@MainActivity, value)
+        summary.text = displaySummary(value)
       }
     }
 
     val container = LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       addView(summary)
-      addView(list)
+      addView(zoomGroup)
+    }
+
+    // 整块内容可能比一屏高，套 ScrollView 才能滚动到底。
+    val scroll = ScrollView(this).apply {
+      addView(container)
+      isFillViewport = true
     }
 
     AlertDialog.Builder(this)
       .setTitle(R.string.display_settings)
-      .setView(container)
+      .setView(scroll)
       .setPositiveButton(R.string.close, null)
       .show()
   }
