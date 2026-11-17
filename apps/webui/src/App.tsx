@@ -24,8 +24,10 @@ type Phase = 'loading' | 'error' | 'ready'
 function LoadingScreen() {
   const { t } = useTranslation()
 
+  // 用 h-full 而不是 h-screen：#root 的高度由 viewport.ts 按 CSS zoom 补偿过，
+  // 100vh 在 zoom < 1 时会被再缩一次，loading 会看起来偏上。
   return (
-    <div className="flex flex-col items-center justify-center h-screen font-sans text-foreground/50 gap-3">
+    <div className="flex flex-col items-center justify-center h-full font-sans text-foreground/50 gap-3">
       <div className="animate-spin w-6 h-6 border-2 border-current border-t-transparent rounded-full" />
       <p className="text-[13px]">{t("webui.connectingToServer")}</p>
     </div>
@@ -35,8 +37,10 @@ function LoadingScreen() {
 function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => void }) {
   const { t } = useTranslation()
 
+  // 用 h-full 而不是 h-screen：#root 的高度由 viewport.ts 按 CSS zoom 补偿过，
+  // 100vh 在 zoom < 1 时会被再缩一次，loading 会看起来偏上。
   return (
-    <div className="flex flex-col items-center justify-center h-screen font-sans text-foreground/50 gap-3">
+    <div className="flex flex-col items-center justify-center h-full font-sans text-foreground/50 gap-3">
       <p className="text-base font-medium text-destructive">{t("webui.connectionFailed")}</p>
       <p className="text-[13px] max-w-md text-center">{message}</p>
       <div className="flex gap-2 mt-2">
