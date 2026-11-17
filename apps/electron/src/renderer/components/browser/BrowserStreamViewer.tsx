@@ -189,6 +189,17 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
    * gesture alive and clamped to the picture instead.
    */
   const dragCleanupRef = useRef<(() => void) | null>(null)
+  /**
+   * The touch gesture in flight, if any.
+   *
+   * A finger cannot leave the picture the way a pointer can, so there is no window listener to
+   * clean up — but the press still has to be a whole gesture: down at the first touch, a move per
+   * `touchmove` (a slider, a text selection, a drag), and up when the last finger that started it
+   * lifts. `last` is the release point if the finger ends somewhere unreadable.
+   */
+  const touchRef = useRef<{ id: number; last: { x: number; y: number } } | null>(null)
+  /** Two fingers after the press was let go: their midpoint's drift is the wheel. */
+  const scrollTouchRef = useRef<{ lastX: number; lastY: number } | null>(null)
   /** The picture. Painted imperatively; never re-mounted between frames. */
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const pendingFrameRef = useRef<BrowserStreamFrame | null>(null)
@@ -877,24 +888,47 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
    * so its own box already excludes the letterbox bars. That is what makes a click land where
    * it looked, at any window size and any tab aspect ratio.
    */
-  const toTabPoint = (
-    event: { clientX: number; clientY: number },
+  const toTabPointOf = useCallback((
+    clientX: number,
+    clientY: number,
     /** A gesture already belongs to the page: where it goes past the picture, keep it at the edge. */
     clampOutside = false,
   ): { x: number; y: number } | null => {
     const picture = canvasRef.current
-    const size = frameSize
+    const size = frameSizeRef.current
     if (!size || !picture) return null
     const box = picture.getBoundingClientRect()
     if (box.width === 0 || box.height === 0) return null
-    const x = clampOutside ? clamp(event.clientX, box.left, box.right) : event.clientX
-    const y = clampOutside ? clamp(event.clientY, box.top, box.bottom) : event.clientY
+    const x = clampOutside ? clamp(clientX, box.left, box.right) : clientX
+    const y = clampOutside ? clamp(clientY, box.top, box.bottom) : clientY
     if (x < box.left || x > box.right || y < box.top || y > box.bottom) return null
     return {
       x: clamp(Math.round(((x - box.left) / box.width) * size.width), 0, Math.max(0, size.width - 1)),
       y: clamp(Math.round(((y - box.top) / box.height) * size.height), 0, Math.max(0, size.height - 1)),
     }
-  }
+  }, [])
+
+  const toTabPoint = (
+    event: { clientX: number; clientY: number },
+    clampOutside = false,
+  ): { x: number; y: number } | null => toTabPointOf(event.clientX, event.clientY, clampOutside)
+
+  /**
+   * Double-click is two presses at one place: CDP reads it from `clickCount`, not from timing.
+   *
+   * Shared by the mouse and the finger, because on a phone a double tap is the same gesture
+   * arriving through a different event family.
+   */
+  const clickCountAt = useCallback((point: { x: number; y: number }): number => {
+    const previous = lastClickRef.current
+    const now = Date.now()
+    const repeat = now - previous.at < 400
+      && Math.abs(previous.x - point.x) <= 2
+      && Math.abs(previous.y - point.y) <= 2
+    const count = repeat ? previous.count + 1 : 1
+    lastClickRef.current = { at: now, x: point.x, y: point.y, count }
+    return count
+  }, [])
 
   /** Stop following a press. The release itself is sent by whoever ends it. */
   const endDrag = () => {
@@ -953,18 +987,8 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
 
     // Double-click is two presses at one place: CDP reads it from `clickCount`, not from timing.
     let clickCount: number | undefined
-    if (action === 'down') {
-      const previous = lastClickRef.current
-      const now = Date.now()
-      const repeat = now - previous.at < 400
-        && Math.abs(previous.x - point.x) <= 2
-        && Math.abs(previous.y - point.y) <= 2
-      const count = repeat ? previous.count + 1 : 1
-      lastClickRef.current = { at: now, x: point.x, y: point.y, count }
-      clickCount = count
-    } else if (action === 'up') {
-      clickCount = lastClickRef.current.count
-    }
+    if (action === 'down') clickCount = clickCountAt(point)
+    else if (action === 'up') clickCount = lastClickRef.current.count
 
     send([{
       type: 'mouse',
@@ -977,6 +1001,138 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     // edge (or a selection dragged past the bottom) keeps scrolling instead of dying on exit.
     if (action === 'down') beginDrag(event.button, clickCount ?? 1)
   }
+
+  /**
+   * The finger, as the mouse the page understands.
+   *
+   * The picture is a JPEG of a desktop page, so there is no DOM here to touch: the events have to
+   * be translated. One finger is a left press — a slider, a text selection, a drag — held from
+   * `touchstart` until that finger lifts, which is what lets a slider be dragged rather than only
+   * tapped. Two fingers scroll instead: their midpoint's drift is sent as the wheel, so the page
+   * still moves under the finger the way a phone expects.
+   *
+   * Native listeners rather than React's: React registers `touchstart`/`touchmove` passively, so
+   * a handler there cannot claim the gesture and the page behind the pane would scroll instead.
+   * Claiming it also suppresses the compatibility mouse events a tap produces, which is why the
+   * press has to be sent from here rather than left to `onMouseDown`.
+   */
+  useEffect(() => {
+    const surface = surfaceRef.current
+    if (phase !== 'live' || !surface) return
+
+    /** End the held press where it stands. Touch capture keeps the events coming after this. */
+    const release = (point: { x: number; y: number }) => {
+      if (!touchRef.current) return
+      touchRef.current = null
+      send([{
+        type: 'mouse',
+        action: 'up',
+        ...point,
+        button: 'left',
+        clickCount: lastClickRef.current.count,
+        buttons: 0,
+      }])
+    }
+
+    const onTouchStart = (event: TouchEvent) => {
+      event.preventDefault()
+
+      if (event.touches.length === 1) {
+        const touch = event.touches[0]
+        const point = toTabPointOf(touch.clientX, touch.clientY)
+        if (!point) return
+        // Same focus move as a mouse press: the keyboard belongs to the pane's hidden input, and
+        // an input method anchors its candidate window where the pointer went.
+        const input = inputRef.current
+        if (input) {
+          input.style.left = `${touch.clientX}px`
+          input.style.top = `${touch.clientY}px`
+          input.focus()
+        }
+        touchRef.current = { id: touch.identifier, last: point }
+        send([{
+          type: 'mouse',
+          action: 'down',
+          ...point,
+          button: 'left',
+          clickCount: clickCountAt(point),
+          buttons: 1,
+        }])
+        return
+      }
+
+      // A second finger means scroll, not drag: let go of the press first, so the page is not
+      // left holding a button for the rest of the gesture, and follow the midpoint from here.
+      if (touchRef.current) release(touchRef.current.last)
+      const [first, second] = [event.touches[0], event.touches[1]]
+      scrollTouchRef.current = {
+        lastX: (first.clientX + second.clientX) / 2,
+        lastY: (first.clientY + second.clientY) / 2,
+      }
+    }
+
+    const onTouchMove = (event: TouchEvent) => {
+      event.preventDefault()
+
+      if (event.touches.length >= 2 && scrollTouchRef.current) {
+        const [first, second] = [event.touches[0], event.touches[1]]
+        const x = (first.clientX + second.clientX) / 2
+        const y = (first.clientY + second.clientY) / 2
+        const previous = scrollTouchRef.current
+        scrollTouchRef.current = { lastX: x, lastY: y }
+        const deltaX = previous.lastX - x
+        const deltaY = previous.lastY - y
+        if (deltaX === 0 && deltaY === 0) return
+        const point = toTabPointOf(x, y, true)
+        if (!point) return
+        send([{ type: 'wheel', ...point, deltaX, deltaY }])
+        return
+      }
+
+      const gesture = touchRef.current
+      if (!gesture) return
+      const touch = Array.from(event.touches).find((item) => item.identifier === gesture.id)
+      if (!touch) return
+      const point = toTabPointOf(touch.clientX, touch.clientY, true)
+      if (!point) return
+      gesture.last = point
+      send([{ type: 'mouse', action: 'move', ...point, buttons: 1 }])
+    }
+
+    const onTouchEnd = (event: TouchEvent) => {
+      // The scroll is over once fewer than two fingers are left; the one that stays was part of
+      // a scroll, not a press, so it does not become a new drag in the middle of the gesture.
+      if (scrollTouchRef.current) {
+        if (event.touches.length < 2) scrollTouchRef.current = null
+        return
+      }
+      const gesture = touchRef.current
+      if (!gesture) return
+      event.preventDefault()
+      const touch = Array.from(event.changedTouches).find((item) => item.identifier === gesture.id)
+      const point = touch ? toTabPointOf(touch.clientX, touch.clientY, true) : null
+      release(point ?? gesture.last)
+    }
+
+    const onTouchCancel = () => {
+      scrollTouchRef.current = null
+      if (touchRef.current) release(touchRef.current.last)
+    }
+
+    surface.addEventListener('touchstart', onTouchStart, { passive: false })
+    surface.addEventListener('touchmove', onTouchMove, { passive: false })
+    surface.addEventListener('touchend', onTouchEnd, { passive: false })
+    surface.addEventListener('touchcancel', onTouchCancel)
+    return () => {
+      surface.removeEventListener('touchstart', onTouchStart)
+      surface.removeEventListener('touchmove', onTouchMove)
+      surface.removeEventListener('touchend', onTouchEnd)
+      surface.removeEventListener('touchcancel', onTouchCancel)
+      // The stream this gesture belonged to is gone; a stale press must not leak into the next.
+      touchRef.current = null
+      scrollTouchRef.current = null
+    }
+  }, [phase, send, toTabPointOf, clickCountAt])
 
   const live = phase === 'live'
   const hasTabs = visibleInstances.length > 0
@@ -1477,7 +1633,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
           <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden bg-[#0b0c0f]">
             <div
               ref={surfaceRef}
-              className="absolute inset-0 flex cursor-default items-center justify-center outline-none"
+              className="absolute inset-0 flex touch-none cursor-default items-center justify-center outline-none"
               onMouseDown={(event) => {
                 // The focus belongs to the hidden input below: the default would move it to the
                 // document instead, and a blurred editable target kills the keyboard and any

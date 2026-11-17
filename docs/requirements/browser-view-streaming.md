@@ -141,6 +141,8 @@ type BrowserStreamInput =
 
 **拖拽与滚动条**：两件事都要对。其一，**移动事件必须带上按住的按钮**（`button: 'left'` / `'right'` / `'middle'`）——只给 `buttons` 位掩码不够，Blink 把 `button: 'none'` 当作悬停：选区不延伸、拖动不开始（实测：`left` 能拖选文字、能在 `input` 里拖选、能拖滚动条；`none` 三者全不动）。设备侧从 `buttons` 推导按钮，悬停（没有任何键按下）才用 `none`。其二，按下之后手势归窗口：`mousemove`/`mouseup` 挂在 window 上，超出画面时坐标夹到画面边缘，直到按钮抬起——滚动条画在画面最右侧，指针滑出一像素就会丢掉整段拖动。滚动条本身由 Chromium 绘制与命中，观看端不模拟；滚轮走 `mouseWheel`，页面平滑滚动期间帧会继续更新。
 
+**触摸**：观看端是画布，没有可点的 DOM，所以触摸要翻译成页面认识的鼠标。**单指**是左键按下（`touchstart` → down，`touchmove` → 带 `buttons: 1` 的 move，抬起 → up）：滑块、选区、拖拽都靠它，这也是手机上一指能拖滑块的原因。**双指**是滚动：两指中点位移换算成 `wheel` 的 delta，同时先松开单指按下，免得页面一直按着键。`touchstart`/`touchmove` 必须挂在原生监听上并 `passive: false`（React 的触摸监听是 passive 的，`preventDefault` 不生效，手势会被外层页面抢走），画布区域加 `touch-action: none`。手写笔走兼容鼠标事件，仍是上面的鼠标路径。
+
 ### 5.4 一条 capture = 一个标签页，一条 stream = 一个观看者
 
 Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` 会先停掉上一路。所以 screencast 由**标签页**持有、观看者共享（管理器里的 `viewCaptures` 扇出）：
@@ -223,5 +225,5 @@ Chromium 的 screencast 是**每个 CDP 会话一路**，且 `startScreencast` �
 4. ~~**接管与 agent 的仲裁**~~ **已定**：不做仲裁。agent 不因人在操作而暂停；人被 agent 的锁挡住时，点锁解锁即接管；多观看者允许同时操作，不互斥。要独占需要另加租约，当前不做。
 5. ~~**流的结束要告诉观看端**~~ **已补**：`browser-pane:stream-ended`（`streamId`, `reason`），只推给发起该流的 client；标签页关闭 / 窗口销毁 / CDP 会话丢失都会发。观看端收到后清掉画面并说明原因。
 6. ~~**webui 面板按什么过滤窗口**~~ **已补**：webui 把它连接的工作区传给面板，面板只列该工作区的窗口（无工作区标记的实例仍然可见）。局限：在 webui 里切换工作区后，面板仍按页面连接时的工作区过滤，刷新后才更新。
-7. ~~**输入覆盖面**~~ **已补**：单击、双击（`clickCount`）、右键/中键、拖拽选择（按下时的 `buttons` 位掩码）、滚轮、键盘（含修饰键）、输入法组合输入（不可见 textarea + `text` 事件，候选框按 `stream-caret` 停在光标处）。仍未覆盖：文件拖放、触摸/手写笔。
+7. ~~**输入覆盖面**~~ **已补**：单击、双击（`clickCount`）、右键/中键、拖拽选择（按下时的 `buttons` 位掩码）、滚轮、键盘（含修饰键）、输入法组合输入（不可见 textarea + `text` 事件，候选框按 `stream-caret` 停在光标处）、触摸（单指按下拖动、双指滚动；手写笔走鼠标事件）。仍未覆盖：文件拖放。
 8. **多屏同时看**：`documentPictureInPicture`（Chrome）可以把面板搬进画中画窗口，仍是同一条流；比"新标签页"合适，但会多一条浏览器分支。
