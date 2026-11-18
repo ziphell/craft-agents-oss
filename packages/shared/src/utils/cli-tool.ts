@@ -24,16 +24,35 @@ export function cliToolsDir(): string | null {
 }
 
 /**
- * The runtime that runs a bundle.
+ * The runtime that runs a bundle, and the arguments it needs before the file.
  *
  * A desktop build sets `CRAFT_BUN` to the Bun it ships; a headless server *is* Bun, so its own
  * executable is the answer. Anything else falls back to `bun` on PATH, which is what a developer
- * machine has.
+ * machine has. `argsPrefix` exists because Bun takes `run <file>` while a plain JS runner does not.
+ */
+export interface CliRuntime {
+  command: string
+  argsPrefix: string[]
+}
+
+export function cliRuntime(): CliRuntime {
+  const configured = process.env.CRAFT_BUN?.trim()
+  if (configured) return { command: configured, argsPrefix: ['run'] }
+
+  const self = basename(process.execPath).toLowerCase()
+  if (self.startsWith('bun')) return { command: process.execPath, argsPrefix: ['run'] }
+
+  return { command: 'bun', argsPrefix: ['run'] }
+}
+
+/**
+ * The program that runs a bundle, without its arguments.
+ *
+ * Kept for callers that only need the path; prefer {@link cliRuntime}, which also carries the
+ * `run` prefix Bun needs.
  */
 export function bunBinary(): string {
-  const configured = process.env.CRAFT_BUN?.trim()
-  if (configured) return configured
-  return basename(process.execPath).toLowerCase().startsWith('bun') ? process.execPath : 'bun'
+  return cliRuntime().command
 }
 
 export interface CliRun {

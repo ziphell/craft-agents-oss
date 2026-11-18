@@ -9,8 +9,9 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { getBundledAssetsDir } from '../utils/paths.ts'
+import { cliRuntime } from '../utils/cli-tool.ts'
 
 export interface CliRun {
   ok: boolean
@@ -32,12 +33,12 @@ export function cliToolsDir(): string | null {
   return getBundledAssetsDir('cli-tools/dist') ?? null
 }
 
-/** The runtime that runs a bundle: the one the app ships, else this process, else `bun`. */
-export function bunBinary(): string {
-  const configured = process.env.CRAFT_BUN?.trim()
-  if (configured) return configured
-  return basename(process.execPath).toLowerCase().startsWith('bun') ? process.execPath : 'bun'
-}
+/**
+ * The runtime that runs a bundle — the same answer the agent's other tools get.
+ *
+ * Deliberately not a second copy: this used to be a duplicate of `utils/cli-tool.ts`'s resolver,
+ * which is how the two drifted (one passed `run`, the other did not).
+ */
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -62,7 +63,8 @@ export function runBundledCliTool(
   }
 
   return new Promise((resolve) => {
-    const child = spawn(bunBinary(), [file, ...args], {
+    const runtime = cliRuntime()
+    const child = spawn(runtime.command, [...runtime.argsPrefix, file, ...args], {
       cwd: options.cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],

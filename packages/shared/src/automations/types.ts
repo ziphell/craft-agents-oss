@@ -119,7 +119,7 @@ export interface ScriptAction {
   script: string;
   /** Extra argv appended after the script path */
   args?: string[];
-  /** Script runtime (default: 'bun') */
+  /** Script runtime (default: 'node') */
   runtime?: ScriptActionRuntime;
   /** Per-run timeout in ms (default 60_000, clamped to [1_000, 900_000]) */
   timeoutMs?: number;

@@ -75,6 +75,81 @@ describe('resolveScriptRuntime', () => {
     }
   });
 
+  it('rejects bun in packaged mode when no Bun is available', () => {
+    const prevBun = process.env.CRAFT_BUN;
+    const prevBase = process.env.CRAFT_RESOURCES_BASE;
+    const prevRoot = process.env.CRAFT_APP_ROOT;
+    delete process.env.CRAFT_BUN;
+    delete process.env.CRAFT_RESOURCES_BASE;
+    delete process.env.CRAFT_APP_ROOT;
+
+    try {
+      expect(() => resolveScriptRuntime('bun', { isPackaged: true })).toThrow(
+        'Bun runtime unavailable'
+      );
+    } finally {
+      if (prevBun === undefined) delete process.env.CRAFT_BUN;
+      else process.env.CRAFT_BUN = prevBun;
+      if (prevBase === undefined) delete process.env.CRAFT_RESOURCES_BASE;
+      else process.env.CRAFT_RESOURCES_BASE = prevBase;
+      if (prevRoot === undefined) delete process.env.CRAFT_APP_ROOT;
+      else process.env.CRAFT_APP_ROOT = prevRoot;
+    }
+  });
+
+  it('falls back to Bun for node when no Node is available', () => {
+    const prevNode = process.env.CRAFT_NODE;
+    const prevBun = process.env.CRAFT_BUN;
+    const prevBase = process.env.CRAFT_RESOURCES_BASE;
+    const prevRoot = process.env.CRAFT_APP_ROOT;
+    delete process.env.CRAFT_NODE;
+    process.env.CRAFT_BUN = process.execPath;
+    delete process.env.CRAFT_RESOURCES_BASE;
+    delete process.env.CRAFT_APP_ROOT;
+
+    try {
+      const resolved = resolveScriptRuntime('node', { isPackaged: true });
+      expect(resolved.command).toBe(process.execPath);
+      expect(resolved.argsPrefix).toEqual([]);
+      expect(resolved.source).toBe('env');
+    } finally {
+      if (prevNode === undefined) delete process.env.CRAFT_NODE;
+      else process.env.CRAFT_NODE = prevNode;
+      if (prevBun === undefined) delete process.env.CRAFT_BUN;
+      else process.env.CRAFT_BUN = prevBun;
+      if (prevBase === undefined) delete process.env.CRAFT_RESOURCES_BASE;
+      else process.env.CRAFT_RESOURCES_BASE = prevBase;
+      if (prevRoot === undefined) delete process.env.CRAFT_APP_ROOT;
+      else process.env.CRAFT_APP_ROOT = prevRoot;
+    }
+  });
+
+  it('rejects node in packaged mode when neither Node nor Bun is available', () => {
+    const prevNode = process.env.CRAFT_NODE;
+    const prevBun = process.env.CRAFT_BUN;
+    const prevBase = process.env.CRAFT_RESOURCES_BASE;
+    const prevRoot = process.env.CRAFT_APP_ROOT;
+    delete process.env.CRAFT_NODE;
+    delete process.env.CRAFT_BUN;
+    delete process.env.CRAFT_RESOURCES_BASE;
+    delete process.env.CRAFT_APP_ROOT;
+
+    try {
+      expect(() => resolveScriptRuntime('node', { isPackaged: true })).toThrow(
+        'No JavaScript runtime'
+      );
+    } finally {
+      if (prevNode === undefined) delete process.env.CRAFT_NODE;
+      else process.env.CRAFT_NODE = prevNode;
+      if (prevBun === undefined) delete process.env.CRAFT_BUN;
+      else process.env.CRAFT_BUN = prevBun;
+      if (prevBase === undefined) delete process.env.CRAFT_RESOURCES_BASE;
+      else process.env.CRAFT_RESOURCES_BASE = prevBase;
+      if (prevRoot === undefined) delete process.env.CRAFT_APP_ROOT;
+      else process.env.CRAFT_APP_ROOT = prevRoot;
+    }
+  });
+
   it('prefers CRAFT_BUN for bun in dev', () => {
     const prev = process.env.CRAFT_BUN;
     process.env.CRAFT_BUN = '/tmp/custom-bun';

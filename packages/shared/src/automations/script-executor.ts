@@ -100,7 +100,7 @@ export async function executeScriptAction(
   let command: string;
   let argsPrefix: string[];
   try {
-    const runtime = resolveScriptRuntime(action.runtime ?? 'bun');
+    const runtime = resolveScriptRuntime(action.runtime ?? 'node');
     command = runtime.command;
     argsPrefix = runtime.argsPrefix;
   } catch (e) {

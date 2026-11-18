@@ -165,6 +165,43 @@ function validatePackagedEnvRuntime(command: string, label: string): string {
 }
 
 /**
+ * Bun, from the environment's override, the build's staged copy, or PATH (dev only).
+ *
+ * Also the fallback for `node`: Bun runs Node code, and the desktop ships Bun rather than Node,
+ * so a script that asks for `node` has a working runtime there either way.
+ */
+function resolveBunRuntime(
+  ctx: ResolveScriptRuntimeContext | undefined,
+  isPackaged: boolean,
+): ResolvedScriptRuntime | null {
+  if (process.env.CRAFT_BUN) {
+    const cmd = isPackaged
+      ? validatePackagedEnvRuntime(process.env.CRAFT_BUN, 'Bun')
+      : process.env.CRAFT_BUN;
+    return { command: cmd, argsPrefix: [], source: 'env' };
+  }
+
+  const bundledBun = resolveBundledBun(ctx);
+  if (bundledBun) {
+    return { command: bundledBun, argsPrefix: [], source: 'bundled' };
+  }
+
+  if (!isPackaged) {
+    const selfBun = currentBunExecutable();
+    if (selfBun) {
+      return { command: selfBun, argsPrefix: [], source: 'path' };
+    }
+
+    const bunPath = resolveBinaryOnPath('bun');
+    if (bunPath) {
+      return { command: bunPath, argsPrefix: [], source: 'path' };
+    }
+  }
+
+  return null;
+}
+
+/**
  * Resolve runtime command and fixed argument prefix for script execution tools.
  *
  * Resolution order:
@@ -238,37 +275,24 @@ export function resolveScriptRuntime(
       }
     }
 
+    // No Node: fall back to Bun, which executes Node code. This is the desktop layout — the app
+    // ships Bun, not a second Node.
+    const bunFallback = resolveBunRuntime(ctx, isPackaged);
+    if (bunFallback) return bunFallback;
+
     throw new Error(
       isPackaged
-        ? 'Node runtime unavailable in packaged app: node was not found in env or bundled resources.'
-        : 'Node runtime unavailable: configure CRAFT_NODE or install node on PATH.'
+        ? 'No JavaScript runtime in packaged app: neither Node nor Bun was found in env or bundled resources.'
+        : 'No JavaScript runtime: configure CRAFT_NODE or CRAFT_BUN, or install node or bun on PATH.'
     );
   }
 
-  if (process.env.CRAFT_BUN) {
-    const cmd = isPackaged
-      ? validatePackagedEnvRuntime(process.env.CRAFT_BUN, 'Bun')
-      : process.env.CRAFT_BUN;
-    return { command: cmd, argsPrefix: [], source: 'env' };
-  }
+  const bun = resolveBunRuntime(ctx, isPackaged);
+  if (bun) return bun;
 
-  const bundledBun = resolveBundledBun(ctx);
-  if (bundledBun) {
-    return { command: bundledBun, argsPrefix: [], source: 'bundled' };
-  }
-
-  if (!isPackaged) {
-    const selfBun = currentBunExecutable();
-    if (selfBun) {
-      return { command: selfBun, argsPrefix: [], source: 'path' };
-    }
-
-    const bunPath = resolveBinaryOnPath('bun');
-    if (bunPath) {
-      return { command: bunPath, argsPrefix: [], source: 'path' };
-    }
-  }
-
+  // `bun` is a promise about the API surface, not just "some JS runtime": scripts may use
+  // `Bun.file`, `Bun.spawn` or `bun:sqlite`. Running them on a non-Bun runtime would turn that
+  // promise into a runtime crash, so a missing Bun is an error.
   throw new Error(
     isPackaged
       ? 'Bun runtime unavailable in packaged app: bun was not found in env or bundled resources.'
