@@ -9,6 +9,8 @@
  */
 
 import { describe, it, expect, afterEach } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Subprocess } from 'bun'
 import WebSocket from 'ws'
@@ -31,10 +33,14 @@ async function spawnTestServer(extraEnv?: Record<string, string>): Promise<Spawn
 
   // Spawn the server with the Bun executable running this test: a bare 'bun' on
   // Windows resolves to a `bun.cmd`/extensionless shim that argv-spawn cannot run.
+  // A config dir of its own: the server takes a lock in `~/.craft-agent`, so with the shared one
+  // this test fails on any machine where the app — or another server — is already running.
+  const configDir = mkdtempSync(join(tmpdir(), 'craft-server-smoke-'))
   const proc = Bun.spawn([process.execPath, 'run', SERVER_ENTRY], {
     env: {
       ...parentEnv,
       ...extraEnv,
+      CRAFT_CONFIG_DIR: configDir,
       CRAFT_SERVER_TOKEN: token,
       CRAFT_RPC_PORT: '0',
       CRAFT_RPC_HOST: '127.0.0.1',
@@ -52,6 +58,21 @@ async function spawnTestServer(extraEnv?: Record<string, string>): Promise<Spawn
 
     let url = ''
     let buffer = ''
+    let stderr = ''
+    // Kept so a server that exits without a URL says why, instead of only that it did.
+    ;(async () => {
+      const reader = proc.stderr!.getReader()
+      const decoder = new TextDecoder()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          stderr += decoder.decode(value, { stream: true })
+        }
+      } catch {
+        // Stream closed
+      }
+    })()
 
     const processLines = () => {
       const lines = buffer.split('\n')
@@ -70,6 +91,7 @@ async function spawnTestServer(extraEnv?: Record<string, string>): Promise<Spawn
             stop: async () => {
               proc.kill('SIGTERM')
               await proc.exited
+              rmSync(configDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
             },
           })
           return
@@ -92,7 +114,8 @@ async function spawnTestServer(extraEnv?: Record<string, string>): Promise<Spawn
       }
       clearTimeout(timer)
       if (!url) {
-        reject(new Error('Server exited before printing CRAFT_SERVER_URL'))
+        reject(new Error(`Server exited before printing CRAFT_SERVER_URL
+${stderr.trim() || '(no stderr)'}`))
       }
     })()
   })

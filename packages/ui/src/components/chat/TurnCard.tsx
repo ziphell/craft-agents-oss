@@ -671,6 +671,9 @@ function formatToolDisplay(
 
   // Primary: Use embedded toolDisplayMeta (works in both Electron and viewer)
   if (toolDisplayMeta) {
+    // Rows stored before the brand fallback existed carry no icon, and that is the honest state:
+    // this is the status slot, so a row without a brand keeps its checkmark.
+    const icon = toolDisplayMeta.iconDataUrl
     // For MCP tools, append the tool slug to the source name
     if (toolName?.startsWith('mcp__') && toolDisplayMeta.category === 'source') {
       const parts = toolName.match(/^mcp__([^_]+)__(.+)$/)
@@ -678,7 +681,7 @@ function formatToolDisplay(
         const toolSlug = parts[2]
         return {
           name: `${toolDisplayMeta.displayName}: ${toolSlug}`,
-          icon: toolDisplayMeta.iconDataUrl,
+          icon,
           description: toolDisplayMeta.description,
         }
       }
@@ -694,7 +697,7 @@ function formatToolDisplay(
       const action = extractActionFromDisplayName(iconName, displayName)
       return {
         name: iconName.toLowerCase() === 'terminal' ? action : `${iconName}: ${action}`,
-        icon: toolDisplayMeta.iconDataUrl,
+        icon,
         description: toolDisplayMeta.description,
       }
     }
@@ -704,14 +707,14 @@ function formatToolDisplay(
     if (displayName && toolDisplayMeta.category === 'native') {
       return {
         name: displayName,
-        icon: toolDisplayMeta.iconDataUrl,
+        icon,
         description: toolDisplayMeta.description,
       }
     }
 
     return {
       name: toolDisplayMeta.displayName,
-      icon: toolDisplayMeta.iconDataUrl,
+      icon,
       description: toolDisplayMeta.description,
     }
   }

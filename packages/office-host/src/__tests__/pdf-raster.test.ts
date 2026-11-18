@@ -1,3 +1,4 @@
+import './test-assets.ts'
 import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 import { renderPagePng } from '../pdf-raster'

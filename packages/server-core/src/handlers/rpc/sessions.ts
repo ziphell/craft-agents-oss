@@ -3,6 +3,7 @@ import { join } from 'path'
 import { RPC_CHANNELS, type FileAttachment, type SendMessageOptions, type SessionEvent } from '@craft-agent/shared/protocol'
 import type { StoredAttachment } from '@craft-agent/core/types'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
+import { isExcluded, SESSION_EXPLORER_EXCLUDES, SESSION_WATCHER_EXCLUDES } from '@craft-agent/shared/sessions/file-excludes'
 import { perf } from '@craft-agent/shared/utils'
 import { isValidThinkingLevel, THINKING_LEVEL_IDS } from '@craft-agent/shared/agent/thinking-levels'
 import { isPermissionMode, PERMISSION_MODE_ORDER } from '@craft-agent/shared/agent/modes'
@@ -62,16 +63,22 @@ export function cleanupSessionFileWatchForClient(clientId: string): void {
 
 // Recursive directory scanner for session files.
 //
-// The panel shows what the folder holds — there is no exclude list: hidden entries (`.foo`,
-// `.cache/`) and the session's own `session.jsonl` are part of the folder and are listed like
-// any other, the way an editor's file explorer lists everything it finds. A directory that is
-// still empty is listed too, so a folder the agent just created does not vanish.
-async function scanSessionDirectory(dirPath: string): Promise<import('@craft-agent/shared/protocol').SessionFile[]> {
+// The panel shows what the folder holds, minus the few things an editor's explorer leaves out too
+// (VCS metadata, OS droppings — `SESSION_EXPLORER_EXCLUDES`). Dotfiles are **not** excluded:
+// `.env` and `.gitignore` are the person's own files. A directory that is still empty is listed,
+// so a folder the agent just created does not vanish.
+async function scanSessionDirectory(
+  dirPath: string,
+  relativePath = '',
+): Promise<import('@craft-agent/shared/protocol').SessionFile[]> {
   const { readdir, stat } = await import('fs/promises')
   const entries = await readdir(dirPath, { withFileTypes: true })
   const files: import('@craft-agent/shared/protocol').SessionFile[] = []
 
   for (const entry of entries) {
+    const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name
+    if (isExcluded(childRelativePath, SESSION_EXPLORER_EXCLUDES)) continue
+
     const fullPath = join(dirPath, entry.name)
 
     if (entry.isDirectory()) {
@@ -80,7 +87,7 @@ async function scanSessionDirectory(dirPath: string): Promise<import('@craft-age
         name: entry.name,
         path: fullPath,
         type: 'directory',
-        children: await scanSessionDirectory(fullPath),
+        children: await scanSessionDirectory(fullPath, childRelativePath),
       })
       continue
     }
@@ -554,10 +561,10 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
       }
 
       state.watcher = watch(sessionPath, { recursive: true }, (_eventType, filename) => {
-        // The transcript is appended to on every message, and the tree is listed in full on every
-        // signal — so its own writes are left out of the trigger. This is churn control, not a
-        // filter: `session.jsonl` is listed in the tree like any other file.
-        if (filename && filename.includes('session.jsonl')) {
+        // Churn control, not a filter: the tree is re-listed in full on every signal, so a write
+        // that cannot change what the panel shows is left out of the trigger
+        // (`SESSION_WATCHER_EXCLUDES` — the transcript, `node_modules`, the tool scratch dir).
+        if (filename && isExcluded(String(filename), SESSION_WATCHER_EXCLUDES)) {
           return
         }
 

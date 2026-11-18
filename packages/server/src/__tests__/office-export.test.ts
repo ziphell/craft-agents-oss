@@ -3,8 +3,13 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { setBundledAssetsRoot } from '@craft-agent/shared/utils/paths'
 import type { OfficePrint } from '@craft-agent/office-host'
 import { createHubExporter } from '../office-export.ts'
+
+// The engines are fetched artifacts that live beside the app; pinning the root keeps these tests
+// independent of the directory they are run from.
+setBundledAssetsRoot(join(import.meta.dir, '..', '..', '..', '..', 'apps', 'electron'))
 
 /**
  * The hub's export doors, tested as a contract rather than through a browser.

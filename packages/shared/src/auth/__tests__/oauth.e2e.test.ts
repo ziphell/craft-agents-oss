@@ -36,7 +36,7 @@ function describeIfReachable(name: string, mcpUrl: string, fn: () => void) {
       if (!reachable) {
         console.log(`Skipping ${name}: server unreachable`);
       }
-    });
+    }, 30_000);
     fn();
   });
 }
@@ -63,7 +63,7 @@ describe('E2E: OAuth Metadata Discovery', () => {
       expect(metadata.authorization_endpoint).toBeTruthy();
       expect(metadata.token_endpoint).toBeTruthy();
       console.log('GitHub MCP OAuth metadata:', metadata);
-    });
+    }, 30_000);
   });
 
   describe('Linear MCP (mcp.linear.app)', () => {
@@ -86,7 +86,7 @@ describe('E2E: OAuth Metadata Discovery', () => {
       expect(metadata.authorization_endpoint).toBeTruthy();
       expect(metadata.token_endpoint).toBeTruthy();
       console.log('Linear MCP OAuth metadata:', metadata);
-    });
+    }, 30_000);
   });
 
   describe('Ahrefs MCP (api.ahrefs.com/mcp/mcp)', () => {
@@ -110,7 +110,7 @@ describe('E2E: OAuth Metadata Discovery', () => {
       expect(metadata.authorization_endpoint).toBeTruthy();
       expect(metadata.token_endpoint).toBeTruthy();
       console.log('Ahrefs MCP OAuth metadata:', metadata);
-    });
+    }, 30_000);
   });
 
   describe('Multiple path segments', () => {

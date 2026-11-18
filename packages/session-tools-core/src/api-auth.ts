@@ -133,10 +133,12 @@ export function parseStoredApiCredential(raw: string, api: StoredCredentialShape
   if (api?.headerName && keys.length === 1 && keys[0] === api.headerName) {
     return headerMap[api.headerName]!;
   }
-  // No configured header names and no single-header match: the credential is not
-  // intended as a header map — spreading arbitrary JSON keys (e.g. a service-account
-  // object) as header names would corrupt the request.
-  if (configuredNames.length === 0) return raw;
+  // Reaching here means the source declared header auth (`mayBeHeaderMap` above) and the stored
+  // object is not the single-header case — a second header, or a name the prompt did not use. Send
+  // it as the map the person typed: `serializeHeaderCredential` stores exactly this shape, so
+  // returning the raw JSON would put `{"x-goog-api-key":"…"}` on the wire (OSS #1067).
+  // A JSON object stored under any *other* auth type never gets this far, which is what keeps a
+  // service-account blob from being spread into headers.
   return headerMap;
 }
 

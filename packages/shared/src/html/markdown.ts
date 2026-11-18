@@ -19,7 +19,17 @@
 import TurndownService from 'turndown';
 import { strikethrough, taskListItems } from 'turndown-plugin-gfm';
 
-export function createMarkdownConverter(): TurndownService {
+/**
+ * The converter's instance type, not the default import's name.
+ *
+ * `@types/turndown` is `export =` a class merged with a namespace. Packages that typecheck this
+ * file through `@craft-agent/shared` with `esModuleInterop: true` (the shared base config) get the
+ * *namespace* in type position, so `TurndownService` cannot be named as a type there. Reading the
+ * class out of the value space works under both configs.
+ */
+type Converter = InstanceType<typeof TurndownService>;
+
+export function createMarkdownConverter(): Converter {
   const converter = new TurndownService({
     headingStyle: 'atx',
     codeBlockStyle: 'fenced',
@@ -38,18 +48,24 @@ export function htmlToMarkdown(html: string): string {
   return sharedConverter.turndown(html);
 }
 
-function addTableRules(converter: TurndownService): void {
+/**
+ * The rules are annotated rather than inferred. Turndown's own `Rule` types are DOM-typed, and
+ * this file is typechecked by node-only packages whose `lib` has no DOM (they import it through
+ * `@craft-agent/shared`) — inferring would make every parameter an implicit `any` there. The
+ * helpers take `unknown` and narrow themselves, which is also what the DOM shim needs at runtime.
+ */
+function addTableRules(converter: Converter): void {
   converter.addRule('tableCell', {
-    filter: (node) => isDataCell(node),
-    replacement: (content) => ` ${flattenCell(content)} |`,
+    filter: (node: unknown) => isDataCell(node),
+    replacement: (content: string) => ` ${flattenCell(content)} |`,
   });
   converter.addRule('tableRow', {
-    filter: (node) => node.nodeName === 'TR' && isDataTable(tableOf(node)),
-    replacement: (content) => `|${content}\n`,
+    filter: (node: unknown) => asDomNode(node).nodeName === 'TR' && isDataTable(tableOf(node)),
+    replacement: (content: string) => `|${content}\n`,
   });
   converter.addRule('table', {
     filter: 'table',
-    replacement: (content, node) => {
+    replacement: (content: string, node: unknown) => {
       if (!isDataTable(asDomNode(node))) return `\n\n${content.trim()}\n\n`;
 
       const rows = content

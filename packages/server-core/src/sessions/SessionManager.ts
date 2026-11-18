@@ -645,6 +645,15 @@ async function resolveToolDisplayMeta(
           category: 'native' as const,
         }
       }
+      // Nothing in the command names a tool we have a mark for (`ls -la`, `cd x && rg y`). No icon
+      // is written on purpose: that slot is the *status* slot (pending dot / spinner / checkmark),
+      // and a generic terminal glyph there would say nothing the row's own text does not already
+      // say, while replacing the checkmark that says the command finished. A branded icon earns
+      // that slot by naming the tool; a placeholder does not.
+      return {
+        displayName: 'Terminal',
+        category: 'native' as const,
+      }
     } catch {
       // Icon resolution is best-effort — never crash the session for it
     }

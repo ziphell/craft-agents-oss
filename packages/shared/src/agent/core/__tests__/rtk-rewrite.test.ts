@@ -7,6 +7,8 @@ import { meetsMinVersion, RTK_MIN_SAFE_VERSION } from '../rtk-detector.ts';
 
 // A /bin/sh fake can take longer than the production 200 ms budget under test load.
 const SLOW_SPAWN_MS = 5_000;
+/** The fake rtk below is a `#!/bin/sh` script, which Windows cannot execute as a command. */
+const isWindows = process.platform === 'win32';
 
 let dir: string;
 let fakeRtk: string;
@@ -22,7 +24,7 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('rewriteBashWithRtk', () => {
-  it('rewrites a plain command through rtk', () => {
+  it.skipIf(isWindows)('rewrites a plain command through rtk', () => {
     expect(rewriteBashWithRtk('Bash', { command: 'grep -n foo a.ts' }, fakeRtk, [], undefined, SLOW_SPAWN_MS)).toEqual({
       modified: true,
       input: { command: 'rtk grep -n foo a.ts' },
@@ -35,7 +37,7 @@ describe('rewriteBashWithRtk', () => {
     }
   });
 
-  it('leaves excluded base commands alone', () => {
+  it.skipIf(isWindows)('leaves excluded base commands alone', () => {
     expect(rewriteBashWithRtk('Bash', { command: 'grep -n foo a.ts' }, fakeRtk, ['grep']).modified).toBe(false);
     expect(rewriteBashWithRtk('Bash', { command: 'ls -la' }, fakeRtk, ['grep'], undefined, SLOW_SPAWN_MS).modified).toBe(true);
   });

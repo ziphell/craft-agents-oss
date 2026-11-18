@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test'
+
+// `mock.module` is process-wide and cannot be undone by a later file (`mock.restore()` does not
+// restore it), and this file replaces `@craft-agent/shared/config` wholesale. It therefore runs in a
+// process of its own: `*.isolated.ts` is what the root `test` script runs one per process.
 import { RPC_CHANNELS } from '../../../shared/types'
 import type { RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'

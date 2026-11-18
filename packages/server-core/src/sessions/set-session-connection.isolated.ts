@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test'
+
+// `mock.module` is process-wide and cannot be undone by a later file (`mock.restore()` does not
+// restore it), so this file must run in a process of its own: `*.isolated.ts` is run one per
+// process by the root `test` script. Two files that mock the same module otherwise make each
+// other fail depending on which one Bun happened to load first.
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -22,6 +27,7 @@ mock.module('@craft-agent/shared/config/storage', () => ({
   ...realStorage,
   getLlmConnection: (slug: string) => CONNECTIONS[slug] ?? null,
 }))
+
 
 const { SessionManager, createManagedSession } = await import('./SessionManager.ts')
 

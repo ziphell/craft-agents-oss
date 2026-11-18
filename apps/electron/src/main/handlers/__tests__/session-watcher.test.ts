@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { mkdtempSync, writeFileSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { RpcServer, RequestContext } from '@craft-agent/server-core/transport'
@@ -195,8 +195,13 @@ describe('session file watcher isolation', () => {
     cleanupSessionFileWatchForClient('client-a')
   })
 
-  it('ignores internal session.jsonl and hidden files', async () => {
+  it('leaves the transcript out of the trigger, and nothing else', async () => {
     const dir = makeTempSessionDir()
+    // Bookkeeping directories a session already has before anyone watches it: the tool scratch and
+    // VCS metadata. Only writes *inside* them are checked below.
+    mkdirSync(join(dir, 'data', '.tmp'), { recursive: true })
+    mkdirSync(join(dir, '.git'), { recursive: true })
+
     const sessionPaths = new Map([['s1', dir]])
     const { server, deps, handlers, pushCalls } = createTestHarness(sessionPaths)
 
@@ -206,12 +211,25 @@ describe('session file watcher isolation', () => {
     const watchHandler = handlers.get(RPC_CHANNELS.sessions.WATCH_FILES)!
     await watchHandler(makeCtx('client-a'), 's1')
 
-    // Write internal files — should be ignored
+    // The transcript is appended to on every message, so its own writes are churn rather than a
+    // change to what the panel shows. It is still listed in the tree like any other file.
     writeFileSync(join(dir, 'session.jsonl'), 'log entry')
+    await new Promise(r => setTimeout(r, 300))
+    expect(pushCalls.length).toBe(0)
+
+    // The tool scratch directory (`script_sandbox` points TMPDIR here) and VCS metadata are the
+    // watcher's own exclusions: they churn without changing anything a person opens.
+    writeFileSync(join(dir, 'data', '.tmp', 'craft-sandbox-1.ts'), 'export {}')
+    writeFileSync(join(dir, '.git', 'config'), '[core]')
+    await new Promise(r => setTimeout(r, 300))
+    expect(pushCalls.length).toBe(0)
+
+    // A hidden entry that is the person's own is not excluded from anything: the folder scan lists
+    // `.env` and `.gitignore` like any other file, so a write to one does change the tree, and the
+    // panel is told. Excluding by dot-prefix would be the wrong rule.
     writeFileSync(join(dir, '.hidden'), 'secret')
     await new Promise(r => setTimeout(r, 300))
-
-    expect(pushCalls.length).toBe(0)
+    expect(pushCalls.length).toBe(1)
 
     // Write a normal file — should trigger notification
     writeFileSync(join(dir, 'result.txt'), 'output')

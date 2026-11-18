@@ -94,6 +94,7 @@
     "./search": "./src/search/index.ts",
     "./sessions": "./src/sessions/index.ts",
     "./sessions/message-page": "./src/sessions/message-page.ts",
+    "./sessions/file-excludes": "./src/sessions/file-excludes.ts",
     "./skills": "./src/skills/index.ts",
     "./skills/types": "./src/skills/types.ts",
     "./sources": "./src/sources/index.ts",

@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+/** A path under the fixture workspace, in this platform's separators (the code under test joins). */
+const wsPath = (...parts: string[]) => join('/ws', ...parts)
 import {
   DecisionRecorder,
   SystemOneClient,
@@ -27,7 +30,7 @@ import {
 } from './suggestions'
 
 const skill = (slug: string, description = `Helps with ${slug}`) =>
-  ({ slug, metadata: { name: `Skill ${slug}`, description }, content: '', path: `/ws/skills/${slug}`, source: 'workspace' }) as unknown as LoadedSkill
+  ({ slug, metadata: { name: `Skill ${slug}`, description }, content: '', path: wsPath('skills', slug), source: 'workspace' }) as unknown as LoadedSkill
 
 const source = (slug: string, config: { enabled?: boolean; tagline?: string; authType?: string; isAuthenticated?: boolean } = {}) =>
   ({
@@ -35,7 +38,7 @@ const source = (slug: string, config: { enabled?: boolean; tagline?: string; aut
       id: slug, name: `Source ${slug}`, slug, enabled: config.enabled ?? true, provider: `${slug}-provider`, type: 'mcp',
       mcp: { authType: config.authType ?? 'none' }, tagline: config.tagline, isAuthenticated: config.isAuthenticated,
     },
-    guide: null, folderPath: `/ws/sources/${slug}`, workspaceRootPath: '/ws', workspaceId: 'ws',
+    guide: null, folderPath: wsPath('sources', slug), workspaceRootPath: '/ws', workspaceId: 'ws',
   }) as unknown as LoadedSource
 
 function answering(choice: string, confidence: number, calls: { count: number } = { count: 0 }): () => Promise<DecisionClientResolution> {
@@ -80,9 +83,9 @@ describe('collectSuggestionCandidates', () => {
       activeSourceSlugs: ['active'],
     })
     expect(candidates.map(c => `${c.kind}:${c.slug}`)).toEqual(['source:linear', 'source:files', 'skill:deploy'])
-    expect(candidates[0]).toMatchObject({ name: 'Source linear', description: 'Issue tracking', path: '/ws/sources/linear' })
+    expect(candidates[0]).toMatchObject({ name: 'Source linear', description: 'Issue tracking', path: wsPath('sources', 'linear') })
     expect(candidates[1]!.description).toBe('files-provider')
-    expect(candidates[2]!.path).toBe('/ws/skills/deploy/SKILL.md')
+    expect(candidates[2]!.path).toBe(wsPath('skills', 'deploy', 'SKILL.md'))
   })
 
   it('caps the offer', () => {
@@ -192,7 +195,7 @@ describe('formatSuggestionHint', () => {
     const [linear, deploy] = collectSuggestionCandidates({ skills: [skill('deploy')], sources: [source('linear')], activeSourceSlugs: [] })
     const skillHint = formatSuggestionHint(deploy!)
     const sourceHint = formatSuggestionHint(linear!)
-    expect(skillHint).toContain('/ws/skills/deploy/SKILL.md')
+    expect(skillHint).toContain(wsPath('skills', 'deploy', 'SKILL.md'))
     expect(sourceHint).toContain('source_test')
     for (const hint of [skillHint, sourceHint]) {
       expect(hint).toStartWith('<system-reminder>')

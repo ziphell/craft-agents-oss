@@ -9,7 +9,7 @@
  * only draw a file that already exists.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
@@ -17,9 +17,12 @@ import { executeDrawioToolCommand, getDrawioToolHelp } from '../drawio-commands'
 import type { BrowserPaneFns } from '../browser-pane'
 
 let workspace = ''
+/** The content root for a session with no project: its own folder. */
+const sessionRoot = () => join(workspace, 'sessions', 'test-session')
 
 beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'craft-diagram-'))
+  mkdirSync(sessionRoot(), { recursive: true })
 })
 
 afterEach(() => {
@@ -53,7 +56,7 @@ async function run(command: string | string[], fns: BrowserPaneFns) {
 
 /** A document on disk, because every command here reads one. */
 function diagram(name = 'flow.drawio'): string {
-  const path = join(workspace, name)
+  const path = join(sessionRoot(), name)
   writeFileSync(path, '<mxfile><diagram id="p"/></mxfile>', 'utf-8')
   return path
 }
@@ -90,7 +93,7 @@ describe('drawio_tool command line', () => {
 
     const result = await run(['pages', 'flows/../flow.drawio'], fns)
 
-    expect(seen[0]!.path).toBe(resolve(workspace, 'flow.drawio'))
+    expect(seen[0]!.path).toBe(resolve(sessionRoot(), 'flow.drawio'))
     expect(result.output).toContain('has 3 pages')
     // The one a command draws with no `--page` is marked, and the names are the point of the listing.
     expect(result.output).toContain('* Checkout')
@@ -210,7 +213,7 @@ describe('drawio_tool command line', () => {
     // The engine is asked for `xml`: drawio's own name for "the document". The command line's word
     // for it is `drawio`, because that is what the caller gets.
     expect(seen[0]).toMatchObject({ format: 'xml' })
-    expect(seen[0]!.out).toBe(resolve(workspace, 'out', 'plain.drawio'))
+    expect(seen[0]!.out).toBe(resolve(sessionRoot(), 'out', 'plain.drawio'))
     expect(result.output).toContain('drawio, 3 bytes')
     expect(result.output).not.toContain('Nothing in the file points back')
 
@@ -346,14 +349,14 @@ describe('drawio_tool command line', () => {
     })
 
     await run('export flow.drawio --to out/plain --format drawio', fns)
-    expect(seen[0]!.out).toBe(resolve(workspace, 'out', 'plain.drawio'))
+    expect(seen[0]!.out).toBe(resolve(sessionRoot(), 'out', 'plain.drawio'))
 
     // A suffix of its own is left alone — what the caller named is theirs.
     await run('export flow.drawio --to out/v1.2 --format svg', fns)
-    expect(seen[1]!.out).toBe(resolve(workspace, 'out', 'v1.2'))
+    expect(seen[1]!.out).toBe(resolve(sessionRoot(), 'out', 'v1.2'))
 
     await run('export flow.drawio --to out/picture --format png', fns)
-    expect(seen[2]!.out).toBe(resolve(workspace, 'out', 'picture.png'))
+    expect(seen[2]!.out).toBe(resolve(sessionRoot(), 'out', 'picture.png'))
   })
 
   it('exports svg by default, reading the document at the path it was given', async () => {
@@ -375,8 +378,8 @@ describe('drawio_tool command line', () => {
     await run('export flows/../flow.drawio --to out/flow.svg', fns)
 
     expect(seen[0]).toMatchObject({ format: 'svg', theme: 'auto' })
-    expect(seen[0]!.path).toBe(resolve(workspace, 'flow.drawio'))
-    expect(seen[0]!.out).toBe(resolve(workspace, 'out', 'flow.svg'))
+    expect(seen[0]!.path).toBe(resolve(sessionRoot(), 'flow.drawio'))
+    expect(seen[0]!.out).toBe(resolve(sessionRoot(), 'out', 'flow.svg'))
     expect(seen[0]!.scale).toBeUndefined()
   })
 

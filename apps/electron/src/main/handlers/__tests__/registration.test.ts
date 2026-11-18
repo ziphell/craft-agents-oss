@@ -138,6 +138,24 @@ async function getExpectedChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/tweaks'),
     import('@craft-agent/server-core/handlers/rpc/decisions'),
     import('@craft-agent/server-core/handlers/rpc/browser-profiles'),
+    import('@craft-agent/server-core/handlers/rpc/asr'),
+    import('@craft-agent/server-core/handlers/rpc/bot'),
+    import('@craft-agent/server-core/handlers/rpc/canvas'),
+    import('@craft-agent/server-core/handlers/rpc/creations'),
+    import('@craft-agent/server-core/handlers/rpc/img'),
+    import('@craft-agent/server-core/handlers/rpc/media'),
+    import('@craft-agent/server-core/handlers/rpc/office'),
+  ])
+
+  // GUI handler channels (remain in electron)
+  const [asr, bot, canvas, creations, img, media, office] = await Promise.all([
+    import('@craft-agent/server-core/handlers/rpc/asr'),
+    import('@craft-agent/server-core/handlers/rpc/bot'),
+    import('@craft-agent/server-core/handlers/rpc/canvas'),
+    import('@craft-agent/server-core/handlers/rpc/creations'),
+    import('@craft-agent/server-core/handlers/rpc/img'),
+    import('@craft-agent/server-core/handlers/rpc/media'),
+    import('@craft-agent/server-core/handlers/rpc/office'),
   ])
 
   // GUI handler channels (remain in electron)
@@ -176,6 +194,13 @@ async function getExpectedChannels(): Promise<Set<string>> {
     ...guiSystem.GUI_HANDLED_CHANNELS,
     ...guiWorkspace.GUI_HANDLED_CHANNELS,
     ...guiSettings.GUI_HANDLED_CHANNELS,
+    ...asr.HANDLED_CHANNELS,
+    ...bot.HANDLED_CHANNELS,
+    ...canvas.HANDLED_CHANNELS,
+    ...creations.HANDLED_CHANNELS,
+    ...img.HANDLED_CHANNELS,
+    ...media.HANDLED_CHANNELS,
+    ...office.HANDLED_CHANNELS,
   ])
 }
 

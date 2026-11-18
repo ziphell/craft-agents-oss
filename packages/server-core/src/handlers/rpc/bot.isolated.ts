@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test'
+
+// `mock.module` is process-wide and cannot be undone by a later file (`mock.restore()` does not
+// restore it), so this file must run in a process of its own: `*.isolated.ts` is run one per
+// process by the root `test` script. Two files that mock the same module otherwise make each
+// other fail depending on which one Bun happened to load first.
 import type { HandlerFn, RequestContext, RpcServer } from '../../transport/types'
 import type { HandlerDeps } from '../handler-deps'
 
@@ -56,6 +61,8 @@ mock.module('@craft-agent/shared/creations', () => ({
     return CREATIONS_SNAPSHOT
   },
 }))
+
+
 
 const { RPC_CHANNELS } = await import('@craft-agent/shared/protocol')
 const { registerBotHandlers } = await import('./bot.ts')
@@ -295,12 +302,12 @@ describe('bot:result artifacts', () => {
 
   it('lists what that session wrote, and nothing another session wrote', async () => {
     const h = createHarness([child, { id: 'bot-1', workspaceId: 'ws-main', role: 'bot' }])
-    const result = await h.call(RPC_CHANNELS.bot.RESULT, 'child')
+    const result = await h.call(RPC_CHANNELS.bot.RESULT, 'child', { artifacts: true })
     expect(result.artifacts?.map((a: { title: string }) => a.title)).toEqual(['notes.md', 'spec.pdf'])
 
     // The cache is keyed by the task's own `lastMessageAt`, so a second read of a card that has not
     // moved is a map lookup rather than another scan of the workspace.
-    await h.call(RPC_CHANNELS.bot.RESULT, 'child')
+    await h.call(RPC_CHANNELS.bot.RESULT, 'child', { artifacts: true })
     expect(scanCount).toBe(1)
   })
 })

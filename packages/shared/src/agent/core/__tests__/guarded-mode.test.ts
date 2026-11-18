@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { cleanupModeState, initializeModeState, setGuardedModeActiveResolver } from '../../mode-manager.ts';
 import { runPreToolUseChecks } from '../pre-tool-use.ts';
 import { permissionsConfigCache } from '../../permissions-config.ts';
@@ -74,7 +74,7 @@ describe('getGuardedModeCall', () => {
     expect(getGuardedModeCall('Edit', { file_path: 'src/a.ts' }, withFolders)).toBeNull();
     expect(getGuardedModeCall('Write', { file_path: join(plans, 'p.md') }, withFolders)).toBeNull();
     expect(getGuardedModeCall('Write', { file_path: '~/.ssh/config' }, withFolders)).toMatchObject({ promptType: 'file_write', alwaysAsk: 'outside_workspace' });
-    expect(getGuardedModeCall('MultiEdit', { file_path: '/repo/../other/x.ts' }, withFolders)).toMatchObject({ command: '/other/x.ts' });
+    expect(getGuardedModeCall('MultiEdit', { file_path: '/repo/../other/x.ts' }, withFolders)).toMatchObject({ command: resolve('/other/x.ts') });
   });
 
   it('judges session tools that Explore blocks, but not session bookkeeping', () => {
@@ -114,7 +114,7 @@ describe('applyGuardedModeCheck', () => {
     let calls = 0;
     const counting = guardOf(async () => { calls++; return { risks: [] }; });
     const result = await applyGuardedModeCheck(allow, ctx('Write', { file_path: '/etc/hosts', content: 'x' }), counting);
-    expect(result).toMatchObject({ type: 'prompt', promptType: 'file_write', command: '/etc/hosts' });
+    expect(result).toMatchObject({ type: 'prompt', promptType: 'file_write', command: resolve('/etc/hosts') });
     expect(calls).toBe(0);
   });
 
