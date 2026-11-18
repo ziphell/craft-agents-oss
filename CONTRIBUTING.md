@@ -59,6 +59,7 @@ Use descriptive branch names:
 - Use meaningful variable and function names
 - Add comments for complex logic
 - Naming, domain words and user-facing copy have a written convention: [docs/vocabulary.md](docs/vocabulary.md) (e.g. a browser window holds **tabs**, a tab is given an **address**, and `page` means only what a browser displays)
+- The Android shell zooms the whole document with CSS `zoom`, so pointer coordinates and viewport-dependent layout have a written convention: [docs/webview-zoom.md](docs/webview-zoom.md) (event coordinates are viewport px, `getBoundingClientRect()` is subtree px — convert before mixing; use `h-full`, not `100vh`)
 
 ### Type Checking
 

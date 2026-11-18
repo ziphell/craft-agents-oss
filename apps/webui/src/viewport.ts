@@ -3,6 +3,7 @@ import { getViewportRect, subscribeViewportChanges } from '@/lib/input-viewport'
 /** Keep the app shell inside the top-level visible browser viewport, including
  * keyboard panning. Only the host is sized; shared components own their layout.
  * No scroll resets: they fight Safari's focus handling and accessibility zoom. */
+/** 缩放带来的两套坐标系与兼容性约束见 docs/webview-zoom.md —— 改指针交互或满屏布局前先读那份。 */
 export function installViewportRoot(root: HTMLElement): () => void {
   let frame: number | undefined
   const properties = ['--webui-viewport-top', '--webui-viewport-left', '--webui-viewport-width', '--webui-viewport-height', '--webui-css-zoom']
