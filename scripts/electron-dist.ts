@@ -11,6 +11,10 @@
  * Silicon ("runtime library is newer than runtime"). Keeping the staged Bun and
  * the artifact in step removes that whole failure mode.
  *
+ * uv is staged for the same arch, for the same reason: electron-builder skips a
+ * missing `extraResources` source silently, so an unstaged uv would produce a
+ * package that reports no Python runtime instead of failing the build.
+ *
  * Use `electron:dist:mac` / `electron:dist:win` / `electron:dist:linux` for
  * explicit (possibly cross-arch) builds.
  */
@@ -27,8 +31,9 @@ const platform = process.platform === 'darwin'
     : 'linux'
 const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
 
-// Stage the matching Bun (cached — reused offline when already present).
+// Stage the matching Bun and uv (cached — reused offline when already present).
 await $`bun run scripts/fetch-bun.ts ${platform} ${arch}`.cwd(ROOT_DIR)
+await $`bun run scripts/fetch-uv.ts ${platform} ${arch}`.cwd(ROOT_DIR)
 
 const platformFlag = platform === 'darwin' ? '--mac' : platform === 'win32' ? '--win' : '--linux'
 const archFlag = arch === 'arm64' ? '--arm64' : '--x64'

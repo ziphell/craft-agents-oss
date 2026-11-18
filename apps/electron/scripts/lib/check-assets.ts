@@ -89,6 +89,21 @@ export function checkAssets(electronDir: string): AssetCheck[] {
   addPath('resources/tool-icons', join(resources, 'tool-icons'), true)
   addPath('resources/config-defaults.json', join(resources, 'config-defaults.json'), true)
 
+  // ── bundled runtimes ──
+  // uv runs the Python **scripts a person writes**, not the agent's own tools (those are the Bun
+  // bundles above). electron-builder only logs `file source doesn't exist` for a missing
+  // `extraResources` source and packages without it, so a missing uv has to fail here — otherwise
+  // the package is built and "no Python runtime" is discovered at run time instead.
+  const hostPlatform = process.platform === 'win32' ? 'win32' : process.platform === 'linux' ? 'linux' : 'darwin'
+  const hostArch = process.arch === 'arm64' ? 'arm64' : 'x64'
+  const uvName = hostPlatform === 'win32' ? 'uv.exe' : 'uv'
+  addPath(
+    `resources/bin/${hostPlatform}-${hostArch}/${uvName}`,
+    join(resources, 'bin', `${hostPlatform}-${hostArch}`, uvName),
+    true,
+    `bun run fetch:uv ${hostPlatform} ${hostArch}`,
+  )
+
   // ── local speech recognition: optional, and only the tiny VAD model ships ──
   // Without it a recording is transcribed as one chunk: subtitles still come out, their boundaries
   // just stop following the pauses. The ASR model itself (SenseVoice) is the

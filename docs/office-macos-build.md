@@ -84,12 +84,20 @@ that cannot be edited in place.
 ```bash
 cd vendor/genoffice
 npm install                     # ~1.4 GB of deps; postinstall downloads Electron (~200 MB)
-npx electron-vite build -w @genoffice/docs
-npx electron-vite build -w @genoffice/pdf
-npx electron-vite build -w @genoffice/slides
-npx electron-vite build -w @genoffice/sheets    # deliberately NOT `npm run build` — see below
+(cd apps/docs   && npx electron-vite build)
+(cd apps/pdf    && npx electron-vite build)
+(cd apps/slides && npx electron-vite build)
+(cd apps/sheets && npx electron-vite build)   # deliberately NOT `npm run build` — see below
+npm run build -w @genoffice/cli               # the document tools spawn this bundle
 cd ../..
 ```
+
+`electron-vite` 5 removed the workspace flag: the older `npx electron-vite build -w @genoffice/docs`
+fails with `CACError: Unknown option -w`. Run it from each app's directory as above.
+
+The CLI is a separate workspace package that `build-office-assets.ts` copies but never builds —
+skipping it makes `build-office-assets.ts` report "no build at …/packages/cli/dist" and leaves
+`docx_tool` saying the engine is not installed.
 
 Why `npx electron-vite build` for sheets: its `build` script runs `native:build` (cargo) first. We do
 not need cargo on macOS — the sidecar comes prebuilt from the `.dmg` in step 6. If you would rather
@@ -143,10 +151,15 @@ installer rather than compiling:
 ```bash
 # Apple Silicon — or GenOffice-0.12.446.dmg for Intel
 curl -LO https://github.com/genspark-ai/genoffice/releases/download/v0.12.446/GenOffice-0.12.446-arm64.dmg
-hdiutil attach GenOffice-0.12.446-arm64.dmg          # mounts at /Volumes/GenOffice
-bun scripts/build-office-native.ts --from /Volumes/GenOffice
-hdiutil detach /Volumes/GenOffice
+hdiutil attach GenOffice-0.12.446-arm64.dmg          # mounts at "/Volumes/GenOffice 0.12.446-arm64"
+bun scripts/build-office-native.ts --from "/Volumes/GenOffice 0.12.446-arm64"
+hdiutil detach "/Volumes/GenOffice 0.12.446-arm64"
 ```
+
+The volume name carries the version, so `--from /Volumes/GenOffice` will not resolve it — pass the
+name `hdiutil attach` printed (or `find /Volumes/GenOffice* -name 'xlsx-sidecar'` first). The arm64
+installer's sidecar is a **universal** binary (x86_64 + arm64), so the same file serves both macOS
+artifacts; `build-office-native.ts` still refuses one of the wrong platform.
 
 `--from` searches the mounted tree for a file named `xlsx-sidecar`; the installer keeps it under
 `GenOffice.app/Contents/Resources/native/`.
@@ -166,12 +179,13 @@ file resources/office-native/xlsx-sidecar          # expect: Mach-O 64-bit execu
 bun scripts/build-office-native.ts --check         # expect: in place ✓
 ```
 
-If `--from` finds nothing, run `find /Volumes/GenOffice -name 'xlsx-sidecar*'` and report the paths —
+If `--from` finds nothing, run `find /Volumes/GenOffice* -name 'xlsx-sidecar*'` and report the paths —
 the installer layout may differ from what the Windows `.exe` and Linux `.deb` had.
 
 ## 7. Asset gate
 
 ```bash
+bun run fetch:uv darwin arm64   # the bundled uv runtime (electron:dist stages it too)
 cd apps/electron && bun scripts/validate-assets.ts --strict && cd ../..
 ```
 
@@ -181,11 +195,16 @@ Run it here anyway — it takes a second and fails before a ten-minute build —
 into packaging: `build-dmg.sh`, `build-win.ps1` and every `electron:dist*` script (through
 `electron:validate-strict`) refuse to package without the editors.
 
+uv is checked here as a **required** item: `electron-builder` silently skips a missing
+`extraResources` source, which used to ship a package with no Python script runtime. `electron:dist`
+and `electron:dist:mac` now stage uv before this gate, so the check only fails if that staging is
+bypassed.
+
 ## 8. Build and package
 
 ```bash
 bun run electron:build          # main (minified, ~16 MB) + preload + renderer + resources
-bun run electron:dist:mac       # drawio → webui → build → validate-strict → bun per arch → electron-builder ×2
+bun run electron:dist:mac       # drawio → webui → build → validate-strict → uv+bun per arch → electron-builder ×2
 ```
 
 `electron:dist:mac` runs `electron:validate-strict` between the build and packaging, so a missing

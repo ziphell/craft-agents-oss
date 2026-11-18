@@ -16,12 +16,14 @@
  *
  *   cd ../genoffice
  *   npm install
- *   npm run build -w @genoffice/docs
- *   npm run build -w @genoffice/pdf
- *   npm run build -w @genoffice/slides
- *   npx electron-vite build -w @genoffice/sheets    # or `npm run build` with a Rust toolchain
+ *   (cd apps/docs   && npx electron-vite build)
+ *   (cd apps/pdf    && npx electron-vite build)
+ *   (cd apps/slides && npx electron-vite build)
+ *   (cd apps/sheets && npx electron-vite build)   # or `npm run build` with a Rust toolchain
+ *   npm run build -w @genoffice/cli               # the bundle `docx_tool` spawns
  *
- * (`apps/sheets` needs a Rust toolchain for its xlsx sidecar; the renderer builds without one.)
+ * `electron-vite` 5 dropped `-w`, so each app builds from its own directory. `apps/sheets` needs a
+ * Rust toolchain only for its xlsx sidecar; the renderer builds without one.
  */
 
 import { cpSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
