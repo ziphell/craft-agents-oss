@@ -11,6 +11,7 @@
  * - Measures sibling panel widths from the DOM on drag start (no width props needed)
  */
 
+import { viewportPxToOwnPx } from '@/lib/input-viewport'
 import { useCallback, useRef } from 'react'
 import { useSetAtom, useAtomValue } from 'jotai'
 import { panelStackAtom, resizePanelsAtom } from '@/atoms/panel-stack'
@@ -67,7 +68,8 @@ export function PanelResizeSash({
     combinedProportionRef.current = leftProp + rightProp
 
     const handleMouseMove = (e: MouseEvent) => {
-      const delta = e.clientX - startXRef.current
+      // 拖动距离是视口 px，面板宽度来自 rect（子树 px）
+      const delta = viewportPxToOwnPx(e.clientX - startXRef.current)
       const combinedWidth = startLeftWidthRef.current + startRightWidthRef.current
 
       // Compute new widths, clamped to min

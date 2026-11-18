@@ -11,6 +11,7 @@
  * writes the same file through `reel_tool`. No second app, no project store, no chat.
  */
 
+import { viewportPxToOwnPx } from '@/lib/input-viewport'
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -1110,8 +1111,8 @@ export function EditSurface({
       const startTime = playheadRef.current
       const timeAt = (clientX: number) =>
         mode === 'relative'
-          ? startTime + (clientX - startX) / pxPerSecond
-          : (clientX - rect.left) / pxPerSecond
+          ? startTime + viewportPxToOwnPx(clientX - startX) / pxPerSecond
+          : viewportPxToOwnPx(clientX - rect.left) / pxPerSecond
       // Edges the scrub may catch on. A slow drag snaps within 8px; a fast drag passes through,
       // so crossing a busy timeline never feels sticky.
       const edges = snap
@@ -1955,7 +1956,8 @@ export function EditSurface({
     // A drag that scrolled the timeline moved the content under the pointer, so that distance
     // counts as movement even when the pointer itself stayed still.
     const scrolled = (timelineScrollRef.current?.scrollLeft ?? 0) - drag.scrollLeft
-    const seconds = (clientX - drag.x + scrolled) / pxPerSecond
+    // 指针距离是视口 px，scrolled 与 pxPerSecond 是子树 px
+    const seconds = (viewportPxToOwnPx(clientX - drag.x) + scrolled) / pxPerSecond
     const threshold = 10 / pxPerSecond
     const targets = snap ? snapTargets(drag.id) : []
     const catchAt = (value: number): number | null => {

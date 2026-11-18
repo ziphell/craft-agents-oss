@@ -87,3 +87,51 @@ export function subscribeViewportChanges(host: ViewportEventHost, update: () => 
     visual?.removeEventListener('scroll', update)
   }
 }
+
+/**
+ * An element's box in **viewport** CSS pixels.
+ *
+ * `getBoundingClientRect()` answers in the element's own CSS pixels, but the Android shell scales
+ * the document with `html { zoom: z }`: inside that subtree one CSS px is z of a viewport pixel,
+ * while a pointer event's `clientX`/`clientY` are viewport pixels. Mixing the two shifts every
+ * click by a factor of z — at 75% zoom a tap on the middle of a canvas reads as 35% across.
+ *
+ * Coordinates that never leave the zoomed subtree (positioning a child, sizing a surface) need no
+ * conversion; only comparisons against event coordinates do.
+ */
+export interface ViewportBox {
+  left: number
+  top: number
+  right: number
+  bottom: number
+  width: number
+  height: number
+}
+
+export function boxInViewportPx(element: Element, cssZoom = getRootCssZoom()): ViewportBox {
+  const rect = element.getBoundingClientRect()
+  const scale = Number.isFinite(cssZoom) && cssZoom > 0 ? cssZoom : 1
+  if (scale === 1) {
+    return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }
+  }
+  return {
+    left: rect.left * scale,
+    top: rect.top * scale,
+    right: rect.right * scale,
+    bottom: rect.bottom * scale,
+    width: rect.width * scale,
+    height: rect.height * scale,
+  }
+}
+
+/**
+ * Viewport pixels → the zoomed subtree's own CSS pixels.
+ *
+ * The inverse of the shell's `html { zoom: z }`: a pointer delta is measured in viewport pixels,
+ * while a width from `getBoundingClientRect()` is in the subtree's pixels. Divide before adding one
+ * to the other. Identity when the shell is at 100%.
+ */
+export function viewportPxToOwnPx(viewportPx: number, cssZoom = getRootCssZoom()): number {
+  const scale = Number.isFinite(cssZoom) && cssZoom > 0 ? cssZoom : 1
+  return scale === 1 ? viewportPx : viewportPx / scale
+}

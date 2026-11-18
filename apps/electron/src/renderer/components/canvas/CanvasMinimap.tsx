@@ -5,6 +5,7 @@
  * pan until something familiar appears. Clicking the map centres the view there, dragging scrubs it.
  */
 
+import { viewportPxToOwnPx } from '@/lib/input-viewport'
 import * as React from 'react'
 import { Maximize } from 'lucide-react'
 import type { CanvasDoc, CanvasViewport } from '@craft-agent/shared/canvas/document'
@@ -65,8 +66,9 @@ export function CanvasMinimap({ doc, viewport, board, onNavigate, label, onFit, 
 
   const navigate = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
-    const x = (event.clientX - rect.left - frame.x) / frame.scale + frame.left
-    const y = (event.clientY - rect.top - frame.y) / frame.scale + frame.top
+    // 指针是视口 px，frame 是子树 px
+    const x = (viewportPxToOwnPx(event.clientX - rect.left) - frame.x) / frame.scale + frame.left
+    const y = (viewportPxToOwnPx(event.clientY - rect.top) - frame.y) / frame.scale + frame.top
     onNavigate(x, y)
   }
 

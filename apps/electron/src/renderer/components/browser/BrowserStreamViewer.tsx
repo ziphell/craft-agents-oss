@@ -28,6 +28,7 @@ import { useTranslation } from 'react-i18next'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { requestWindowControlsHidden, releaseWindowControlsHidden, usePlatform } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
+import { boxInViewportPx } from '@/lib/input-viewport'
 import {
   ArrowLeft,
   ArrowRight,
@@ -862,7 +863,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       const picture = canvasRef.current
       const current = frameSizeRef.current
       if (!picture || !current) return
-      const box = picture.getBoundingClientRect()
+      const box = boxInViewportPx(picture)
       if (box.width === 0 || box.height === 0) return
       if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) {
         return
@@ -897,7 +898,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     const picture = canvasRef.current
     const size = frameSizeRef.current
     if (!size || !picture) return null
-    const box = picture.getBoundingClientRect()
+    const box = boxInViewportPx(picture)
     if (box.width === 0 || box.height === 0) return null
     const x = clampOutside ? clamp(clientX, box.left, box.right) : clientX
     const y = clampOutside ? clamp(clientY, box.top, box.bottom) : clientY

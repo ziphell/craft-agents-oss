@@ -6,6 +6,7 @@
  * show in folder). Everything else belongs to the card's composer or its right-click menu.
  */
 
+import { viewportPxToOwnPx } from '@/lib/input-viewport'
 import * as React from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -188,8 +189,8 @@ export function CanvasLightbox({
             onPointerMove={(event) => {
               if (!drag.current) return
               setOffset({
-                x: drag.current.ox + (event.clientX - drag.current.x),
-                y: drag.current.oy + (event.clientY - drag.current.y),
+                x: drag.current.ox + viewportPxToOwnPx(event.clientX - drag.current.x),
+                y: drag.current.oy + viewportPxToOwnPx(event.clientY - drag.current.y),
               })
             }}
             onPointerUp={() => {

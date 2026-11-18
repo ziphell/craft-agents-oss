@@ -14,6 +14,7 @@
  *   from, so the layout button is not offered and this component is just the chat.
  */
 
+import { viewportPxToOwnPx } from '@/lib/input-viewport'
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { useTranslation } from 'react-i18next'
@@ -67,7 +68,8 @@ export function SessionCanvasWorkspace({ sessionId }: { sessionId: string }) {
     if (!element) return
     const rect = element.getBoundingClientRect()
     const move = (pointer: PointerEvent) => {
-      const next = (pointer.clientX - rect.left) / rect.width
+      // 指针是视口 px，rect 是子树 px：先换算再除
+      const next = viewportPxToOwnPx(pointer.clientX - rect.left) / rect.width
       setRatio(Math.min(MAX_RATIO, Math.max(MIN_RATIO, next)))
     }
     const stop = () => {

@@ -1,4 +1,5 @@
 import * as React from "react"
+import { viewportPxToOwnPx } from '@/lib/input-viewport'
 import { useTranslation, Trans } from "react-i18next"
 import { useRef, useState, useEffect, useCallback, useMemo } from "react"
 import { useAtomValue, useStore } from "jotai"
@@ -1570,19 +1571,20 @@ function AppShellContent({
 
     const handleMouseMove = (e: MouseEvent) => {
       if (isResizing === 'sidebar') {
-        const newWidth = Math.min(Math.max(e.clientX, 180), 320)
+        const pointerX = viewportPxToOwnPx(e.clientX)
+        const newWidth = Math.min(Math.max(pointerX, 180), 320)
         setSidebarWidth(newWidth)
         if (resizeHandleRef.current) {
           const rect = resizeHandleRef.current.getBoundingClientRect()
-          setSidebarHandleY(e.clientY - rect.top)
+          setSidebarHandleY(viewportPxToOwnPx(e.clientY - rect.top))
         }
       } else if (isResizing === 'session-list') {
         const offset = isSidebarVisible ? sidebarWidth : 0
-        const newWidth = Math.min(Math.max(e.clientX - offset, 240), 480)
+        const newWidth = Math.min(Math.max(viewportPxToOwnPx(e.clientX) - offset, 240), 480)
         setSessionListWidth(newWidth)
         if (sessionListHandleRef.current) {
           const rect = sessionListHandleRef.current.getBoundingClientRect()
-          setSessionListHandleY(e.clientY - rect.top)
+          setSessionListHandleY(viewportPxToOwnPx(e.clientY - rect.top))
         }
       }
     }
