@@ -233,6 +233,15 @@ export function QueuedMessagesTray({
                   {attachmentCount}
                 </span>
               )}
+              <button
+                type="button"
+                onClick={() => onEdit(message)}
+                className="shrink-0 rounded-sm p-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground cursor-pointer"
+                title={t('chat.queuedEdit')}
+                aria-label={t('chat.queuedEdit')}
+              >
+                <PencilLine className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
               {isProcessing && (
                 <button
                   type="button"
@@ -244,15 +253,6 @@ export function QueuedMessagesTray({
                   <Zap className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => onEdit(message)}
-                className="shrink-0 rounded-sm p-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground cursor-pointer"
-                title={t('chat.queuedEdit')}
-                aria-label={t('chat.queuedEdit')}
-              >
-                <PencilLine className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
               <button
                 type="button"
                 onClick={() => onRemove(message)}
