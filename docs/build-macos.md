@@ -116,7 +116,7 @@ node -e 'const m=require("module");const r=m.createRequire(process.argv[1]);cons
 
 ## 5. 与 `build-dmg.sh` 的关系
 
-`apps/electron/scripts/build-dmg.sh` 是**正式出包**路径，额外做了：清目录、`bun install`、下载并校验固定版本 bun（`vendor/bun`）、stage SDK、签名 / 公证 / 上传 S3，并且**每次只出一个架构**（`build-dmg.sh arm64` / `build-dmg.sh x64`），跨架构缺失时自己 `npm pack`。
+`apps/electron/scripts/build-dmg.sh` 是**正式出包**路径，额外做了：清目录、`bun install`、下载并校验固定版本 bun（`vendor/bun`，当前 1.3.14，不要低于 1.3.13）、stage SDK、签名 / 公证 / 上传 S3，并且**每次只出一个架构**（`build-dmg.sh arm64` / `build-dmg.sh x64`），跨架构缺失时自己 `npm pack`。
 
 二者差异：
 

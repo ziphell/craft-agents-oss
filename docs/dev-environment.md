@@ -56,6 +56,8 @@ packages/
 ### 3.3 packages/pi-agent-server（特殊：bun 运行时产物）
 
 - 构建：`bun build src/index.ts --outdir=dist --target=bun --format=esm --external koffi --external electron --external electron-log`，随后由 `scripts/build/photon-wasm.ts` 把 Photon wasm 注入 `dist/index.js`（[package.json](file:///c:/Users/Ryan/code/craft-agents-oss/packages/pi-agent-server/package.json#L12)）。
+- **图片处理走 Photon（WASM），不是 sharp**：Pi SDK 用 `@silvia-odwyer/photon-node` 把附件缩到 2000×2000 / 4.5MB 以内。选 wasm 是为了随 bundle / 单文件二进制分发，一份产物覆盖 win/mac/linux 与 x64/arm64；sharp 是 libvips 原生模块，要按平台/架构预编译并额外处理 Electron 打包。代价是 `bun build` 会把 photon 的 `__dirname` 内联成构建机路径，所以 `photon-wasm.ts` 必须把字面量改成运行时目录，并把 `photon_rs_bg.wasm` 放在 `index.js` 旁边——少了这步，任何非构建机上 `loadPhoton()` 都返回 null，附件会被替换成 `[Image omitted...]`。
+- **worker 当前是关闭的（resize 走 in-process）**：SDK 原本用 Worker 跑 resize 以免阻塞事件循环，`photon-wasm.ts` 的 `inlineResizeImage` 把 `resizeImage` 直接指向 `resizeImageInProcess`。原因是 Windows Bun 1.3.9 在 Worker 加载失败后的 teardown 会泄漏线程并 segfault（应用侧表现为 `Pi subprocess exited unexpectedly (code 3)`）；该问题在 Bun 1.3.13 修复，vendor 固定 1.3.14。代价是大图会阻塞主线程（本机实测：12MP ~2.3s、6MP ~1.6s、1080p ~85ms、小图 ~40ms）。1.3.14 上的 worker 原型可把阻塞降到 ~20ms 且 20 轮无崩溃，但需要额外产出并分发 `image-resize-worker.js`，**暂不做**；上游 main 也没有 worker 实现，且未处理 photon wasm（仍是 Bun 1.3.9）。
 - 产物 **只能用 bun 跑**（Electron 内嵌 Node 会报 `__require is not a function`）。
 - `koffi` 外置：打包时拷到 `resources/pi-agent-server/node_modules/koffi`（`scripts/build/common.ts` 的 `copyPiAgentServer`）；dev 下靠根 node_modules 解析。
 - 启动运行时由 [runtime-resolver.ts](file:///c:/Users/Ryan/code/craft-agents-oss/packages/shared/src/agent/backend/internal/runtime-resolver.ts) 解析：`CRAFT_BUN` → `vendor/bun` → PATH 上的 `bun`。
@@ -201,6 +203,8 @@ Chromium 的运行时库（libnss3/libgbm/libasound/libatspi 等）Ubuntu 24.04 
    - 解压 `.tar.xz` 时报 `version 'XZ_5.4' not found`；TLS 相关偶发 `no version information` 也来自这里。
 
    系统库本身是齐的，**不要**去 apt 装/降级。构建和服务启动前清掉即可：`unset LD_LIBRARY_PATH` 或 `env -u LD_LIBRARY_PATH <cmd>`。
+
+9. **不要把 Pi 子进程的 bun 降到 1.3.13 以下**：Windows Bun 1.3.9 的 Worker teardown 会 segfault（1.3.13 修复），打包固定 1.3.14。CI 的 1.3.10 只用于单测/类型检查；当前 worker 已关闭（resize 走 in-process），若恢复 worker，CI 必须同步升到 ≥1.3.13。
 
 ## 6. 远程模式（headless server + Web UI）
 

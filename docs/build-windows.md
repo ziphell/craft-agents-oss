@@ -46,6 +46,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
 9. 在 `apps/electron` 下执行带 EBUSY 重试的 `electron-builder --win --x64`
 10. 校验打包产物：SDK 原生 binary（~210MB）在 `release\win-unpacked` 中
 
+> `bun-v1.3.14` 是刻意固定的：Windows Bun 1.3.9 在 Worker 线程销毁时会泄漏线程并 segfault，该问题在 1.3.13 修复。**不要降级**；CI 的 `1.3.10` 只用于单测/类型检查，Pi 子进程的图片缩放当前走 in-process（不使用 worker）。
+
 产物：`apps/electron\release\Craft-Agents-x64.exe`
 
 ## 3. 方式 B：package.json 快捷指令（增量重打包）
