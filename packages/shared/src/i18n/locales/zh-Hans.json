@@ -597,6 +597,7 @@
   "chat.queuedReorderFailed": "无法调整队列顺序",
   "chat.queuedSendNow": "立即发送（停止当前回复）",
   "chat.queuedSendNowFailed": "无法立即发送，消息仍在队列中。",
+  "chat.compactUnavailable": "回复进行中无法压缩，请等本轮结束后再试。",
   "chat.renameSession": "重命名会话",
   "chat.reply": "回复",
   "chat.replyingToAssistant": "正在回复更早的一个回答",

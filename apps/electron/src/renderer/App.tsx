@@ -1471,11 +1471,13 @@ export default function App() {
   }, [updateSessionById])
 
   const handleSendMessage = useCallback(async (sessionId: string, message: string, attachments?: FileAttachment[], skillSlugs?: string[], externalBadges?: ContentBadge[], replyTo?: import('@craft-agent/core/types').MessageReply) => {
+    // Capture pre-send processing state so we can flag mid-stream sends
+    // for the queued badge (#616 follow-up — covers Pi steer path which
+    // returns status 'accepted', not 'queued') and so a rejected send does not
+    // end a turn that is actually running.
+    const sendingMidStream = store.get(sessionAtomFamily(sessionId))?.isProcessing === true
+    let optimisticMessageId: string | undefined
     try {
-      // Capture pre-send processing state so we can flag mid-stream sends
-      // for the queued badge (#616 follow-up — covers Pi steer path which
-      // returns status 'accepted', not 'queued').
-      const sendingMidStream = store.get(sessionAtomFamily(sessionId))?.isProcessing === true
 
       // Step 1: Store attachments and get persistent metadata
       let storedAttachments: StoredAttachment[] | undefined
@@ -1589,57 +1591,66 @@ export default function App() {
         })
       }
 
-      // Step 5: Create user message with StoredAttachments (for UI display)
-      // Mark as isPending for optimistic UI — will be confirmed by user_message
-      // event. Flag mid-stream sends as queued so the bubble renders with the
-      // dashed-draft treatment immediately. Applies to both backends:
-      // Pi steers (server emits status: 'accepted' but the renderer preserves
-      // isQueued through that update) and Claude queues (server emits 'queued'
-      // which confirms it). Cleared by 'processing' status or when the current
-      // turn ends.
-      const userMessage: Message = {
-        id: generateMessageId(),
-        role: 'user',
-        content: message,
-        timestamp: Date.now(),
-        attachments: storedAttachments,
-        badges: badges.length > 0 ? badges : undefined,
-        isPending: true,  // Optimistic - will be confirmed by backend
-        isQueued: sendingMidStream,
-      }
+      // Step 5: Optimistic UI. `/compact` is a command, not a message: the backend
+      // creates the real row (with the command badge) and confirms it through
+      // `user_message`. An optimistic bubble would only have to be cleaned up when
+      // the send is rejected (a turn is running), so commands skip it.
+      const compactCommand = /^\/compact(\s|$)/i.test(message.trim())
+      if (compactCommand) {
+        updateSessionById(sessionId, { isProcessing: true, lastMessageAt: Date.now() })
+      } else {
+        const userMessage: Message = {
+          id: generateMessageId(),
+          role: 'user',
+          content: message,
+          timestamp: Date.now(),
+          attachments: storedAttachments,
+          badges: badges.length > 0 ? badges : undefined,
+          isPending: true,  // Optimistic - will be confirmed by backend
+          isQueued: sendingMidStream,
+        }
+        optimisticMessageId = userMessage.id
 
-      // Optimistic UI update - add user message and set processing state
-      updateSessionById(sessionId, (s) => ({
-        messages: [...s.messages, userMessage],
-        isProcessing: true,
-        lastMessageAt: Date.now()
-      }))
+        // Optimistic UI update - add user message and set processing state
+        updateSessionById(sessionId, (s) => ({
+          messages: [...s.messages, userMessage],
+          isProcessing: true,
+          lastMessageAt: Date.now()
+        }))
+      }
 
       // Step 6: Send to Claude with processed attachments + stored attachments for persistence
       await window.electronAPI.sendMessage(sessionId, message, processedAttachments, storedAttachments, {
         skillSlugs,
         badges: badges.length > 0 ? badges : undefined,
-        optimisticMessageId: userMessage.id,
+        // Only messages have an optimistic row to reconcile.
+        ...(optimisticMessageId ? { optimisticMessageId } : {}),
         // The quote travels with the message so the bubble can show what it answers; the model
         // already has that message in context (see `MessageReply`).
         ...(replyTo ? { replyTo } : {}),
       })
     } catch (error) {
       console.error('Failed to send message:', error)
+      // Transport keeps the typed code; translate the one rejection the UI can hit
+      // instead of surfacing the server's English text in a localized transcript.
+      const errorMessage = (error as { code?: string } | null)?.code === 'COMPACTION_UNAVAILABLE'
+        ? t('chat.compactUnavailable')
+        : `Failed to send message: ${error instanceof Error ? error.message : 'Unknown error'}`
       updateSessionById(sessionId, (s) => ({
-        isProcessing: false,
+        // A rejected send must not end a turn that is actually running.
+        isProcessing: sendingMidStream,
         messages: [
-          ...s.messages,
+          ...s.messages.filter(m => !optimisticMessageId || m.id !== optimisticMessageId),
           {
             id: generateMessageId(),
             role: 'error' as const,
-            content: `Failed to send message: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            content: errorMessage,
             timestamp: Date.now()
           }
         ]
       }))
     }
-  }, [sessionOptions, updateSessionById, skills, sources, windowWorkspaceId])
+  }, [sessionOptions, updateSessionById, skills, sources, windowWorkspaceId, t])
 
   /**
    * Unified handler for all session option changes.

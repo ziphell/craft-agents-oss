@@ -113,7 +113,7 @@ import { isParentTaskTool } from '@craft-agent/shared/utils/toolNames'
 import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
-import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
+import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, CodedError, generateMessageId } from '@craft-agent/shared/protocol'
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath, expandPath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
@@ -7731,7 +7731,17 @@ export class SessionManager implements ISessionManager {
     // steer, it still goes ahead of the person's queued follow-ups: an automatic
     // message belongs to the work in flight, which their next request may have
     // nothing to do with.
+    // Manual compaction owns the whole turn (the composer disables the action
+    // mid-turn). A typed /compact while a turn runs is a mistake, not a message to
+    // replay later, and this branch is the authority on `isProcessing`: decide here
+    // so a turn that starts during the disk I/O above cannot slip past the check.
     if (managed.isProcessing) {
+      if (isCompactCommand) {
+        throw new CodedError(
+          'COMPACTION_UNAVAILABLE',
+          'Compaction is not available while a reply is in progress. Wait for the current turn to finish.',
+        )
+      }
       const automatic = options?.origin === 'agent' || options?.origin === 'system'
       // Create user message for UI
       const userMessage: Message = {

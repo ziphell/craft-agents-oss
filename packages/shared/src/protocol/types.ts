@@ -197,6 +197,8 @@ export type ErrorCode =
   | 'PROTOCOL_VERSION_UNSUPPORTED'
   | 'SESSION_NOT_IDLE'
   | 'SESSION_ID_CONFLICT'
+  /** Manual compaction needs the whole turn; the sender must wait or stop it first. */
+  | 'COMPACTION_UNAVAILABLE'
   | 'ARTIFACT_NOT_PORTABLE'
   | 'TRANSFER_TOO_LARGE'
   | 'TRANSFER_TIMEOUT'
@@ -221,6 +223,7 @@ const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   'PROTOCOL_VERSION_UNSUPPORTED',
   'SESSION_NOT_IDLE',
   'SESSION_ID_CONFLICT',
+  'COMPACTION_UNAVAILABLE',
   'ARTIFACT_NOT_PORTABLE',
   'TRANSFER_TOO_LARGE',
   'TRANSFER_TIMEOUT',

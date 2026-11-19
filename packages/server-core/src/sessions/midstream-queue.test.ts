@@ -243,6 +243,23 @@ describe('mid-stream queue runtime invariants', () => {
     managed.isProcessing = false
   })
 
+  it('rejects /compact while a turn is running instead of queuing it', async () => {
+    const managed = buildSession('compact-midturn')
+    managed.isProcessing = true
+    ;(sm as any).persistSession = () => {}
+    ;(sm as any).flushSession = async () => {}
+    const events: any[] = []
+    sm.setEventSink((_channel, _target, event) => events.push(event))
+
+    await expect(sm.sendMessage(managed.id, '/compact')).rejects.toMatchObject({
+      code: 'COMPACTION_UNAVAILABLE',
+    })
+    expect(managed.messageQueue).toEqual([])
+    expect(managed.messages).toEqual([])
+    expect(events.filter(e => e.type === 'user_message')).toHaveLength(0)
+    managed.isProcessing = false
+  })
+
   it('silently steers a non-composer send into the running turn when asked', async () => {
     const managed = buildSession('silent-steer')
     managed.isProcessing = true

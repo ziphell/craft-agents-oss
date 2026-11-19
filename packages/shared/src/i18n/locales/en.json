@@ -597,6 +597,7 @@
   "chat.queuedReorderFailed": "Couldn't reorder the queue",
   "chat.queuedSendNow": "Send now (stops the current reply)",
   "chat.queuedSendNowFailed": "Couldn't send this message now; it stays queued.",
+  "chat.compactUnavailable": "Can't compact while a reply is in progress. Wait for this turn to finish.",
   "chat.renameSession": "Rename Session",
   "chat.reply": "Reply",
   "chat.replyingToAssistant": "Replying to an earlier answer",

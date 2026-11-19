@@ -1358,6 +1358,13 @@ export function FreeFormInput({
     // to point the conversation at an existing folder before a turn can start.
     if (workingDirectoryMissing) return false
 
+    // Compaction owns the whole turn and the compact action is disabled mid-turn;
+    // typing it should say why instead of queueing a maintenance command.
+    if (isProcessing && /^\/compact(\s|$)/i.test(input.trim())) {
+      toast.error(t('chat.compactUnavailable'))
+      return false
+    }
+
     // Parse all @mentions (skills, sources, folders)
     const skillSlugs = skills.map(s => s.slug)
     const sourceSlugs = sources.map(s => s.config.slug)
@@ -1393,7 +1400,7 @@ export function FreeFormInput({
     })
 
     return true
-  }, [input, attachments, followUpItems, disabled, disableSend, browserProfileMissing, workingDirectoryMissing, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
+  }, [input, attachments, followUpItems, disabled, disableSend, browserProfileMissing, workingDirectoryMissing, isProcessing, t, onInputChange, onAttachmentsChange, onSubmit, skills, sources, optimisticSourceSlugs, onSourcesChange, onWorkingDirectoryChange, homeDir])
 
   // Listen for craft:submit-input events (simulate pressing the Send button)
   React.useEffect(() => {

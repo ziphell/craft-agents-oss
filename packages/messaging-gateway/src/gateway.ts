@@ -699,6 +699,9 @@ export class MessagingGateway {
       )
     } catch (err) {
       this.pendingCompactAccepts.delete(entry.sessionId)
+      // Compaction never started, so the "waiting for compaction" record must not
+      // stay behind: the next real message would be gated on it.
+      await this.sessionManager.clearPendingPlanExecution(entry.sessionId).catch(() => {})
       this.log.error('compact dispatch failed', {
         event: 'plan_compact_failed',
         sessionId: entry.sessionId,
