@@ -225,7 +225,10 @@ export interface WebuiHandlerOptions {
    * every browser session.
    */
   serverToken: string
-  /** Web UI login password (generated when Server Mode first starts). */
+  /**
+   * Web UI login password. Optional: an empty value leaves the server token as the only browser
+   * credential, which is enough to sign in.
+   */
   password: string
   /**
    * Accepts a bearer header for endpoints a native client fetches over HTTP (export downloads).
@@ -325,8 +328,12 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
 
   const trustedProxySet = new Set(trustedProxies ?? [])
 
-  // Hash both accepted passwords at startup (async, but resolves before the first auth attempt).
-  const passwordReady = runtime.hashPassword(password)
+  // Hash both accepted credentials at startup (async, but resolves before the first auth attempt).
+  // An empty password means "token only": there is nothing to compare, and the runtime's hash
+  // function rejects an empty input.
+  const passwordReady: Promise<string | null> = password
+    ? runtime.hashPassword(password)
+    : Promise.resolve(null)
   const tokenPasswordReady = runtime.hashPassword(serverToken)
 
   /** Extract client IP — only trusts proxy headers when trustedProxies is configured. */
@@ -401,7 +408,8 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
       }
 
       // Either credential is a full client of this hub, so either is a valid login.
-      const matchesPassword = await runtime.verifyPassword(body.password, passwordHash)
+      const matchesPassword = passwordHash !== null
+        && await runtime.verifyPassword(body.password, passwordHash)
       const matchesToken = matchesPassword
         || await runtime.verifyPassword(body.password, tokenHash)
       if (!matchesToken) {

@@ -32,7 +32,7 @@ tar 内只有一个版本化顶层目录 `craft-server-<ver>/`，所以必须用
 `install.sh` 不启动服务；它只：
 
 1. 给 `bin/craft-server`、`start.sh`、`vendor/bun/bun`、`resources/bin/*` 加执行位；
-2. 若未提供 `CRAFT_SERVER_TOKEN`，生成 32 字节 hex 写入 `/opt/craft/.env`；同时生成并写入 `CRAFT_WEBUI_PASSWORD`（如果环境里已有就用环境值），避免每次重启换密码；
+2. 若未提供 `CRAFT_SERVER_TOKEN`，生成 32 字节 hex 写入 `/opt/craft/.env`；
 3. 若带 `--systemd`，额外安装 systemd 单元。
 
 `/opt/craft` 里同时放着一份 `start.sh`、`.env` 和 `bin/`，升级时替换整个目录即可（见第 8 节）。
@@ -89,7 +89,7 @@ sudo systemctl restart craft-server
 CRAFT_SERVER_URL=ws://<ip>:9100
 CRAFT_SERVER_TOKEN=...
 CRAFT_WEBUI_URL=http://0.0.0.0:9100
-CRAFT_WEBUI_PASSWORD=...
+CRAFT_WEBUI_PASSWORD=...        # 仅在设置了 CRAFT_WEBUI_PASSWORD 时出现
 ```
 
 ### 3.1 监听配置的来源与优先级
@@ -103,12 +103,12 @@ CRAFT_WEBUI_PASSWORD=...
 | TLS | `CRAFT_RPC_TLS_CERT` + `CRAFT_RPC_TLS_KEY` | 不启用（`ws://`） |
 | 外网地址 | `CRAFT_WEBUI_WS_URL` | 按请求地址推导 |
 | 服务器令牌 | `CRAFT_SERVER_TOKEN` | 必填，缺失拒绝启动 |
-| 浏览器访问令牌 | `CRAFT_WEBUI_PASSWORD` | 每次启动随机生成（不落盘） |
+| 浏览器访问令牌 | `CRAFT_WEBUI_PASSWORD` | 不生成；用 `CRAFT_SERVER_TOKEN` 登录 |
 
 - 优先级只有两层：**环境变量 > 内置默认值**。桌面端之前存在本地配置里的 Server Mode 端口，在 headless 下既不会被读取，也不会覆盖环境变量。
 - Web UI 的 **Settings → Server** 页在 headless 下是**只读**的：保存会返回 `Server settings are provided by the host environment ...`；端口、TLS、外网地址、浏览器令牌都改了不生效，必须改环境变量并重启服务。
 - 服务端没有 `server:restart` 通道，Web UI 无法帮你重启，改完配置要自己 `systemctl restart craft-server`。
-- `CRAFT_WEBUI_PASSWORD` 不设置时生成的密码**不写入磁盘**，重启后旧密码失效、所有浏览器会话退出。`install.sh` 首次写入 `.env` 时会一并生成；手工部署或升级时记得保留 `.env` 里的这一行。
+- `CRAFT_WEBUI_PASSWORD` **可以为空**：不设置时不会生成密码，浏览器直接用 `CRAFT_SERVER_TOKEN` 登录（两者任一都可登录 Web UI）。设置它只是给浏览器一个独立凭据。
 
 运行期仍会写这些文件（都在数据目录，默认 `~/.craft-agent`）：
 
@@ -190,7 +190,7 @@ sudo ufw allow 443/tcp
 
 ## 5. 客户端接入
 
-- **浏览器**：打开 `https://craft.example.com/`（或 `http://<ip>:9100/`），用 `CRAFT_WEBUI_PASSWORD` 登录。它不是 `CRAFT_SERVER_TOKEN`。
+- **浏览器**：打开 `https://craft.example.com/`（或 `http://<ip>:9100/`），用 `CRAFT_WEBUI_PASSWORD` 登录；没有设置它时直接用 `CRAFT_SERVER_TOKEN` 登录。
 - **桌面客户端**：菜单 → Connect to Server… → 填 `wss://craft.example.com`（或 `ws://<ip>:9100`）+ `CRAFT_SERVER_TOKEN`。连接成功后窗口的会话、工具、浏览器都跑在服务器上。
 - **CLI**：
 
@@ -302,7 +302,7 @@ CRAFT_SERVER_TOKEN=<token-a> \
 3. **`libatspi.so.0: undefined symbol: g_once_init_leave_pointer` 或 `libxz ... XZ_5.4 not found`**：环境里被注入了旧的 `LD_LIBRARY_PATH`（常见于 IDE 终端）。启动前 `unset LD_LIBRARY_PATH`，或直接在 systemd 里跑（环境干净）。
 4. **端口被占用 / 启动后不是 9100**：看启动横幅和日志里的 `bindError`；`ss -ltnp | grep 9100` 找到占用者，或改 `CRAFT_RPC_PORT`。
 5. **反代后页面能开但一直转圈**：多半是 WebSocket 没转发。确认 `Upgrade`/`Connection` 头，长连接超时调到 1 小时；地址不一致时设 `CRAFT_WEBUI_WS_URL`。
-6. **升级后浏览器登录失效**：Web UI 会话由 `CRAFT_SERVER_TOKEN` 与 `CRAFT_WEBUI_PASSWORD` 派生签名，换了任一值都会让已有会话失效，重新登录即可。
+6. **升级后浏览器登录失效**：Web UI 会话由 `CRAFT_SERVER_TOKEN` 与 `CRAFT_WEBUI_PASSWORD` 派生签名，换了任一值都会让已有会话失效，重新登录即可（未设置密码时只有 token 参与派生）。
 7. **PDF 里中文变成方框 / 排版错乱**：缺 CJK 字体，装 `fonts-noto-cjk` 后重试（第 6 节）。
 8. **多实例启动报 lock 占用**：同一 `CRAFT_CONFIG_DIR` 只能一个实例，给每个实例分配独立目录（第 9 节）。
 
@@ -318,7 +318,7 @@ CRAFT_SERVER_TOKEN=<token-a> \
   CRAFT_HEADLESS=1 xvfb-run -a ./Craft-Agents-x64.AppImage --no-sandbox
   ```
 - `CRAFT_HEADLESS=1` 下**完全从环境变量读**监听配置与凭据，不读取也不写入 `config.json` 的 Server Mode：
-  - 必填 `CRAFT_SERVER_TOKEN`、`CRAFT_WEBUI_PASSWORD`，缺失直接拒绝启动
+  - 必填 `CRAFT_SERVER_TOKEN`；`CRAFT_WEBUI_PASSWORD` 可选，留空时用服务器令牌登录
   - `CRAFT_RPC_HOST`（默认 `127.0.0.1`）、`CRAFT_RPC_PORT`（默认 `9100`）
   - `CRAFT_RPC_TLS_CERT` + `CRAFT_RPC_TLS_KEY`（可选 `CRAFT_RPC_TLS_CA`，证书与私钥必须成对）
   - `CRAFT_WEBUI_WS_URL`（反向代理/端口映射时的外部地址）

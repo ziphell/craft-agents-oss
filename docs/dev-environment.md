@@ -226,7 +226,7 @@ bun run packages/server/src/index.ts
 - 现成脚本 `server:dev:webui` 会构建子进程 + webui 并设好 env；上面是手工等价路线（Windows/PowerShell 下我用的就是它）。注意那个脚本设的 `CRAFT_WEBUI_PORT=3100` **没人读**——Web UI 实际服务在 `CRAFT_RPC_PORT` 上（入口只认后者）。
 - **Linux/WSL** 等价：`export CRAFT_WEBUI_DIR=$PWD/apps/webui/dist`、`export CRAFT_BUNDLED_ASSETS_ROOT=$PWD/apps/electron`，然后 `env -u LD_LIBRARY_PATH bun run packages/server/src/index.ts`（去掉 IDE 注入的库路径，见第 5 节第 8 条）。drawio / office / PDF 导出这些资源按 4.6 节准备。
 - **锁**：第二个实例会撞 `CONFIG_DIR/.server.lock`（`headless-start.ts`）并报出占用者 PID。不要删那个锁，改用 `CRAFT_CONFIG_DIR` 起并行实例（提示里也是这么写的）。
-- 启动横幅给出 `CRAFT_SERVER_URL` / `CRAFT_SERVER_TOKEN` / `CRAFT_WEBUI_URL`；Web UI 的登录口令是同一段输出里的 `CRAFT_WEBUI_PASSWORD`（不是 `CRAFT_SERVER_TOKEN`）。
+- 启动横幅给出 `CRAFT_SERVER_URL` / `CRAFT_SERVER_TOKEN` / `CRAFT_WEBUI_URL`；Web UI 可以直接用 `CRAFT_SERVER_TOKEN` 登录。若另外设置了 `CRAFT_WEBUI_PASSWORD`，它也是一个独立登录口令（同一段输出里会打印）。
 
 ### 6.2 验什么（不依赖 Electron）
 

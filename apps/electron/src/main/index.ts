@@ -1175,7 +1175,6 @@ app.whenReady().then(async () => {
       if (isHeadless) {
         // Fail fast rather than quietly running a hub with a value nobody intended.
         if (!envServerToken) throw new Error('CRAFT_HEADLESS requires CRAFT_SERVER_TOKEN.')
-        if (!envWebuiPassword) throw new Error('CRAFT_HEADLESS requires CRAFT_WEBUI_PASSWORD.')
         if (!!envTlsCertPath !== !!envTlsKeyPath) {
           throw new Error('CRAFT_HEADLESS TLS requires both CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY.')
         }
@@ -1185,10 +1184,13 @@ app.whenReady().then(async () => {
       const serverToken = envServerToken
         ?? (serverModeEnabled && embeddedServerConfig.token ? embeddedServerConfig.token : randomUUID())
       // The Web UI follows Server Mode — it is always on while the server is. Its password is
-      // still its own credential, minted on first enable and kept in the config so the settings
-      // page can show (and reset) it. Session cookies are signed with a key derived from that
-      // password and the server token, so changing either one ends browser sessions.
-      let webuiPassword = envWebuiPassword ?? embeddedServerConfig.webuiPassword ?? ''
+      // optional: with none, the server token is accepted as a browser login. On the desktop the
+      // password is minted on first enable and kept in the config so the settings page can show
+      // (and reset) it. Session cookies are signed with a key derived from that password and the
+      // server token, so changing either one ends browser sessions.
+      let webuiPassword = configSource === 'env'
+        ? envWebuiPassword ?? ''
+        : embeddedServerConfig.webuiPassword ?? ''
       if (configSource === 'config' && serverModeEnabled && !webuiPassword) {
         webuiPassword = randomUUID()
         const { setServerConfig: setConfig } = await import('@craft-agent/shared/config')

@@ -138,10 +138,10 @@ const serverToken = process.env.CRAFT_SERVER_TOKEN
 
 // Web UI configuration
 const webuiDir = process.env.CRAFT_WEBUI_DIR || undefined
-// The Web UI is served whenever this process is a hub. Its password is its own credential, but
-// sessions are signed with a key derived from it and CRAFT_SERVER_TOKEN — so changing either one
-// ends browser sessions.
-const webuiPassword = process.env.CRAFT_WEBUI_PASSWORD || generateServerToken()
+// The Web UI is served whenever this process is a hub. Its password is optional: when unset,
+// the server token is accepted as a browser login. Sessions are signed with a key derived from
+// the token and this value — so changing either one ends browser sessions.
+const webuiPassword = process.env.CRAFT_WEBUI_PASSWORD || ''
 // One key for both the HTTP handler and the WebSocket upgrade; empty until a token is present,
 // in which case bootstrap refuses to start anyway.
 const webuiSessionKey = serverToken ? deriveWebuiSessionKey(serverToken, webuiPassword) : ''
@@ -494,10 +494,12 @@ console.log(`CRAFT_SERVER_URL=${instance.protocol}://${instance.host}:${instance
 console.log(`CRAFT_SERVER_TOKEN=${instance.token}`)
 if (webuiDir && webuiHandler) {
   console.log(`CRAFT_WEBUI_URL=${serverProto}://0.0.0.0:${instance.port}`)
-  // Printed only when this process minted it, and it is not the server token: the two are
-  // separate credentials, so logging one never leaks the other.
+  // Printed only when this process has one that is not the server token: the two are separate
+  // credentials, so logging one never leaks the other. Without a password the token is the login.
   if (!process.env.CRAFT_WEBUI_PASSWORD) {
-    console.log(`CRAFT_WEBUI_PASSWORD=${webuiPassword}`)
+    console.log(webuiPassword
+      ? `CRAFT_WEBUI_PASSWORD=${webuiPassword}`
+      : 'CRAFT_WEBUI_PASSWORD unset — sign in to the Web UI with CRAFT_SERVER_TOKEN')
   }
 }
 
