@@ -25,6 +25,14 @@ export interface ServerBootstrapOptions<TSessionManager, THandlerDeps> {
    */
   webuiPassword?: string
   /**
+   * The host registers `settings:getServerConfig` / `setServerConfig` / `getServerStatus` on its
+   * own because the listener's settings belong to it (the Electron app stores them in config.json
+   * and can restart itself). When true, the core settings handlers leave those three channels
+   * alone — two registrations of one channel abort startup. When false (the headless hub), they
+   * answer from the environment.
+   */
+  serverSettingsFromHost?: boolean
+  /**
    * Registry to fill with this hub's credentials. Callers that wire HTTP endpoints before the
    * server starts (the Web UI's export downloads) pass their own; otherwise one is created.
    */
@@ -83,6 +91,11 @@ export interface ServerHandlerContext {
   tokens: ServerTokenRegistry
   /** The Web UI password the listener actually uses (environment value or one minted at startup). */
   webuiPassword?: string
+  /**
+   * See {@link ServerBootstrapOptions.serverSettingsFromHost}: the host owns the three Server Mode
+   * channels, so the core settings handlers must not register them again.
+   */
+  serverSettingsFromHost?: boolean
   /** Drop every live connection authenticated with one credential. */
   disconnectTokenClients: (tokenId: string, reason?: string) => number
   /** Apply a changed credential scope to the connections already holding it. */
@@ -511,6 +524,7 @@ export async function bootstrapServer<TSessionManager, THandlerDeps>(
     startedAt,
     tokens,
     webuiPassword: options.webuiPassword ?? process.env.CRAFT_WEBUI_PASSWORD,
+    serverSettingsFromHost: options.serverSettingsFromHost === true,
     disconnectTokenClients: (tokenId, reason) => wsServer.disconnectTokenClients(tokenId, reason),
     applyTokenScope: (tokenId, scope) => wsServer.applyTokenScope(tokenId, scope),
     revalidateTokenClients: (tokenId, stillPermitted, reason) =>

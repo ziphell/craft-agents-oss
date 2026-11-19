@@ -548,16 +548,22 @@ export function registerSettingsHandlers(
   // A hub has no Electron main process, so the handlers the desktop app registers
   // for its embedded server do not exist here. The settings page still reads them
   // in a browser, so they answer from the hub's own environment.
+  //
+  // The desktop app registers these three channels itself (it owns config.json and
+  // the relaunch), and a second registration of one channel aborts startup — hence
+  // the hand-off flag rather than a `serverCtx` check.
 
-  server.handle(RPC_CHANNELS.settings.GET_SERVER_CONFIG, async () => hubServerConfig(serverCtx))
+  if (!serverCtx?.serverSettingsFromHost) {
+    server.handle(RPC_CHANNELS.settings.GET_SERVER_CONFIG, async () => hubServerConfig(serverCtx))
 
-  server.handle(RPC_CHANNELS.settings.SET_SERVER_CONFIG, async () => {
-    throw new Error(
-      'Server settings are provided by the host environment (CRAFT_RPC_HOST, CRAFT_RPC_PORT, ' +
-        'CRAFT_RPC_TLS_CERT/KEY, CRAFT_WEBUI_WS_URL, CRAFT_SERVER_TOKEN, CRAFT_WEBUI_PASSWORD). ' +
-        'Change them there and restart the service.',
-    )
-  })
+    server.handle(RPC_CHANNELS.settings.SET_SERVER_CONFIG, async () => {
+      throw new Error(
+        'Server settings are provided by the host environment (CRAFT_RPC_HOST, CRAFT_RPC_PORT, ' +
+          'CRAFT_RPC_TLS_CERT/KEY, CRAFT_WEBUI_WS_URL, CRAFT_SERVER_TOKEN, CRAFT_WEBUI_PASSWORD). ' +
+          'Change them there and restart the service.',
+      )
+    })
 
-  server.handle(RPC_CHANNELS.settings.GET_SERVER_STATUS, async () => hubServerStatus())
+    server.handle(RPC_CHANNELS.settings.GET_SERVER_STATUS, async () => hubServerStatus())
+  }
 }

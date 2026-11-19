@@ -1279,6 +1279,12 @@ app.whenReady().then(async () => {
         rpcHost,
         rpcPort,
         tls,
+        // This process owns Server Mode: its listener settings live in config.json and it
+        // registers the three settings channels itself below (with the desktop's
+        // config/env distinction and the relaunch). The core settings handlers must not
+        // register them too — a duplicate channel throws and aborts startup before any
+        // window is created.
+        serverSettingsFromHost: true,
         httpHandler: webuiHttpDispatcher,
         // Accept a Web UI session cookie on the WebSocket upgrade — verified with the key derived
         // from this hub's token and Web UI password.
