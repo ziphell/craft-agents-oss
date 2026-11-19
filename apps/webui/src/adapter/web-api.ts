@@ -390,7 +390,6 @@ export function createWebApi(options: WebApiOptions): {
 
     // Relaunch — reload page
     relaunchApp: () => { window.location.reload(); return Promise.resolve() },
-    removeWorkspace: () => Promise.resolve(false), // not supported in web UI
 
     // Client connection management — these describe a *window's* transport and its hub config.
     // The browser tab is the client: it connected to one hub when the page loaded, and a tab
