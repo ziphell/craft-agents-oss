@@ -97,7 +97,17 @@ function capOutput(value: string, remaining: number): { text: string; truncated:
   return { text: Buffer.from(value, 'utf8').subarray(0, Math.max(0, remaining)).toString('utf8'), truncated: true }
 }
 
-export async function runExec(req: DeviceExecRequest, allowedRoots: readonly string[]): Promise<DeviceExecResponse> {
+/**
+ * Run a command for a hub.
+ *
+ * `env` defaults to this process's environment; the bridge passes its own (configured proxy
+ * included), while the Electron app leaves the default in place.
+ */
+export async function runExec(
+  req: DeviceExecRequest,
+  allowedRoots: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<DeviceExecResponse> {
   if (!req.command?.trim()) throw new Error('A command is required')
   const roots = rootsForRequest(req, allowedRoots)
   if (roots.length === 0) {
@@ -112,7 +122,7 @@ export async function runExec(req: DeviceExecRequest, allowedRoots: readonly str
       cwd,
       shell: true,
       windowsHide: true,
-      env: process.env,
+      env,
       detached: process.platform !== 'win32',
     })
 

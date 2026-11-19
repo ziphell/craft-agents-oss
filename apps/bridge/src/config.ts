@@ -16,6 +16,16 @@ export interface BridgeGrants {
   files?: boolean
 }
 
+/** Proxy settings applied to the commands the hub runs on this device. */
+export interface BridgeProxy {
+  /** Exported as HTTP_PROXY/http_proxy. */
+  http?: string
+  /** Exported as HTTPS_PROXY/https_proxy. */
+  https?: string
+  /** Exported as NO_PROXY/no_proxy. */
+  noProxy?: string
+}
+
 export interface BridgeConfig {
   hub: string
   token: string
@@ -24,6 +34,7 @@ export interface BridgeConfig {
   /** Folders the hub may touch, in addition to the bridge's own scratch directory. */
   allowedRoots?: string[]
   grants?: BridgeGrants
+  proxy?: BridgeProxy
   tlsRejectUnauthorized?: boolean
 }
 
@@ -83,6 +94,27 @@ export interface ConfigOverrides {
   noShell?: boolean
   noFiles?: boolean
   insecure?: boolean
+  /** One URL for both HTTP and HTTPS. */
+  proxy?: string
+  noProxy?: string
+}
+
+/**
+ * The proxy block in effect.
+ *
+ * A flag replaces the fields it names (`--proxy` sets both HTTP and HTTPS); the file supplies
+ * whatever the flags did not. Empty values are dropped so a cleared field stays cleared.
+ */
+function resolveProxy(file: BridgeProxy | undefined, overrides: ConfigOverrides): BridgeProxy | undefined {
+  const http = overrides.proxy?.trim() || file?.http?.trim() || undefined
+  const https = overrides.proxy?.trim() || file?.https?.trim() || undefined
+  const noProxy = overrides.noProxy?.trim() || file?.noProxy?.trim() || undefined
+  if (!http && !https && !noProxy) return undefined
+  return {
+    ...(http ? { http } : {}),
+    ...(https ? { https } : {}),
+    ...(noProxy ? { noProxy } : {}),
+  }
 }
 
 /** Merge file + flags into the effective config, deriving the values the CLI did not supply. */
@@ -108,6 +140,7 @@ export function resolveConfig(file: Partial<BridgeConfig>, overrides: ConfigOver
     name: (overrides.name ?? file.name)?.trim() || undefined,
     allowedRoots: normalizeRoots([...(file.allowedRoots ?? []), ...(overrides.allow ?? [])]),
     grants: { shell, files },
+    proxy: resolveProxy(file.proxy, overrides),
     tlsRejectUnauthorized: overrides.insecure || file.tlsRejectUnauthorized === false ? false : undefined,
   }
 }

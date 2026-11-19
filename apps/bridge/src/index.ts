@@ -21,7 +21,7 @@ import { spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { currentUser, enableLinger, homeForUser, isRoot, journalctl, readUnitConfigPath, removeUnit, systemctl, UNIT_NAME, writeUnit, type ServiceMode } from './systemd'
 import { DEFAULT_CONFIG_PATH, loadConfigFile, resolveConfig, saveConfig, type BridgeConfig } from './config'
-import { startBridge, log, probeHub } from './daemon'
+import { describeProxy, log, probeHub, startBridge } from './daemon'
 
 const CONFIG_DIR_NAME = '.craft-agent'
 
@@ -64,6 +64,8 @@ Install options:
   --user                Install as a user service instead of /etc/systemd/system
   --service-user <u>    Account that runs the service (default: \$SUDO_USER or current user)
   --binary <path>       Compiled binary to install (default: this executable)
+  --proxy <url>         Proxy for commands, stored in the config (HTTP + HTTPS)
+  --no-proxy <list>     NO_PROXY list for commands, stored in the config
   --start               Start the service after enabling it
 
 Service options:
@@ -89,6 +91,7 @@ Configuration
          "deviceId": "<generated on first run — do not copy between machines>",
          "allowedRoots": ["/home/me/work"],
          "grants": { "shell": true, "files": true },
+         "proxy": { "https": "http://127.0.0.1:7890", "noProxy": "localhost,127.0.0.1" },
          "tlsRejectUnauthorized": true
        }
 
@@ -101,6 +104,9 @@ Configuration
                             bridge's own scratch directory in the workspace.
      grants.shell           false = refuse client:device:exec.
      grants.files           false = refuse client:device:fs.
+     proxy.http/https       Exported to commands as HTTP(S)_PROXY (upper and
+                            lower case). Overrides the service's own proxy vars.
+     proxy.noProxy          Exported to commands as NO_PROXY.
      tlsRejectUnauthorized  false = accept a self-signed hub certificate.
                             Prefer the --insecure flag on run/install.
 
@@ -131,6 +137,8 @@ function buildFromFile(configPath: string, values: {
   'no-shell'?: boolean
   'no-files'?: boolean
   insecure?: boolean
+  proxy?: string
+  'no-proxy'?: string
 }): { config: BridgeConfig; changed: boolean } {
   const file = loadConfigFile(configPath)
   const config = resolveConfig(file, {
@@ -141,6 +149,8 @@ function buildFromFile(configPath: string, values: {
     noShell: values['no-shell'],
     noFiles: values['no-files'],
     insecure: values.insecure,
+    proxy: values.proxy,
+    noProxy: values['no-proxy'],
   })
   const changed = file.deviceId !== config.deviceId || !existsSync(configPath)
   return { config, changed }
@@ -165,6 +175,8 @@ function commandInstall(args: string[]): void {
       ...COMMON_OPTIONS,
       'service-user': { type: 'string' },
       binary: { type: 'string' },
+      proxy: { type: 'string' },
+      'no-proxy': { type: 'string' },
       user: { type: 'boolean' },
       start: { type: 'boolean' },
     },
@@ -311,6 +323,7 @@ async function commandDoctor(args: string[]): Promise<void> {
   log(`hub: ${config.hub}`)
   log(`device: ${config.name ?? '(hostname)'}  id: ${config.deviceId}`)
   log(`roots: ${(config.allowedRoots ?? []).join(', ') || '(scratch directory only)'}`)
+  log(`proxy: ${describeProxy(config.proxy) ?? '(none — commands inherit the service environment)'}`)
 
   let failures = 0
   for (const root of config.allowedRoots ?? []) {
