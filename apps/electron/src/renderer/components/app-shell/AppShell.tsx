@@ -2754,7 +2754,8 @@ function AppShellContent({
                     <TooltipContent side="right">{newChatHotkey}</TooltipContent>
                   </Tooltip>
                 </div>
-                {/* Primary Nav: All Sessions (▸ Statuses, Flagged, Archived), Labels | Sources, Skills | Settings */}
+                {/* Primary Nav: All Sessions (▸ Statuses, Flagged, Archived), Labels | Sources, Skills, Projects, Tweaks, Creations, Automations */}
+                {/* Settings is pinned in the footer below, outside this scroll area */}
                 {/* pb-4 provides clearance so the last item scrolls above the mask-fade-bottom gradient */}
                 <div className="flex-1 overflow-y-auto min-h-0 mask-fade-bottom pb-4">
                 <LeftSidebar
@@ -3043,16 +3044,6 @@ function AppShellContent({
                         },
                       ],
                     },
-                    // --- Separator ---
-                    { id: "separator:skills-settings", type: "separator" },
-                    // --- Settings ---
-                    {
-                      id: "nav:settings",
-                      title: t("sidebar.settings"),
-                      icon: Settings,
-                      variant: isSettingsNavigation(navState) ? "default" : "ghost",
-                      onClick: () => handleSettingsClick(),
-                    },
                     // --- What's New ---
                     // {
                     //   id: "nav:whats-new",
@@ -3070,6 +3061,23 @@ function AppShellContent({
                 />
                 {/* Agent Tree: Hierarchical list of agents */}
                 {/* Agents section removed */}
+                </div>
+                {/* Footer: Settings pinned to the bottom, outside the scroll area */}
+                <div className="shrink-0 pb-1">
+                  <LeftSidebar
+                    isCollapsed={false}
+                    getItemProps={getSidebarItemProps}
+                    focusedItemId={focusedSidebarItemId}
+                    links={[
+                      {
+                        id: "nav:settings",
+                        title: t("sidebar.settings"),
+                        icon: Settings,
+                        variant: isSettingsNavigation(navState) ? "default" : "ghost",
+                        onClick: () => handleSettingsClick(),
+                      },
+                    ]}
+                  />
                 </div>
               </div>
 
