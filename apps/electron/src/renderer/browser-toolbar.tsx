@@ -186,9 +186,9 @@ declare global {
        */
       pickElement: (labels?: { add: string }) => Promise<void>
       cancelPick: () => Promise<void>
-      /** Switch to one of this window's tabs, close one, add one, or unlock one. */
+      /** Switch to one of this window's tabs, close one, add one, unlock one, or acknowledge one. */
       tabAction: (
-        action: 'activate' | 'close' | 'new' | 'release',
+        action: 'activate' | 'close' | 'new' | 'release' | 'acknowledge',
         tabId?: string,
         /**
          * For `new` alone: the work the tab is being opened **for**, when a section's
@@ -1107,6 +1107,8 @@ function BrowserToolbarApp() {
 
   const handleSelectTab = useCallback((tabId: string) => {
     void api?.tabAction('activate', tabId)
+    // Looking at the tab is the acknowledgement: the "driven, not working here" dot goes.
+    void api?.tabAction('acknowledge', tabId)
   }, [api])
 
   const handleCloseTab = useCallback((tabId: string) => {

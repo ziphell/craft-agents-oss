@@ -488,6 +488,13 @@ export function BrowserTabStrip({
       .catch((error) => {
         console.warn(`[BrowserTabStrip] Failed to switch tab ${tabId} of ${instance.id}:`, error)
       })
+    // Opening it is the acknowledgement: the "driven, not working here" dot goes with
+    // this click, in this list and on the window's own rail alike.
+    void browserPaneApi
+      .tabAction({ instanceId: instance.id, action: 'acknowledge', tabId })
+      .catch((error) => {
+        console.warn(`[BrowserTabStrip] Failed to acknowledge tab ${tabId} of ${instance.id}:`, error)
+      })
     setActiveInstanceId(instance.id)
     // Name the tab: the switch above is still in flight, so the window's own "active" tab is
     // the previous one for a moment — and watching the wrong tab is the whole mistake.
@@ -612,7 +619,26 @@ export function BrowserTabStrip({
                   ) : (
                     <TabFavicon src={tab.favicon} />
                   )}
-                  <span className="min-w-0 truncate">{label}</span>
+                  {/* The same highlight the browser window's own tab rail paints: a light
+                      sweeping the title says an agent is working in this tab right now. */}
+                  <span className="relative min-w-0 flex-1">
+                    <span className="block truncate">{label}</span>
+                    {tab.lockedBy !== null && (
+                      <span aria-hidden className="tab-title-shimmer pointer-events-none absolute inset-0 truncate">
+                        {label}
+                      </span>
+                    )}
+                  </span>
+                  {/* Finished, not in use any more: the agent has driven this tab and
+                      nobody is working in it now. The same dot the window's own rail
+                      shows — no lock here; holding it is a state of the window's chrome. */}
+                  {tab.lockedBy === null && tab.drivenBy !== null && (
+                    <span
+                      aria-label={t('browser.tabDriven')}
+                      title={t('browser.tabDriven')}
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                    />
+                  )}
                 </StyledDropdownMenuItem>
               )
 

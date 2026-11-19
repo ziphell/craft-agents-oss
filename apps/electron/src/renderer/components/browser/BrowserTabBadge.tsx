@@ -44,11 +44,10 @@ export const BrowserTabBadge = forwardRef<HTMLButtonElement, BrowserTabBadgeProp
       ref={ref}
       type="button"
       className={`
-        group flex items-center gap-1 h-[26px] pl-2.5 pr-1.5 rounded-lg cursor-pointer select-none titlebar-no-drag
+        group relative flex items-center gap-1 h-[26px] pl-2.5 pr-1.5 rounded-lg cursor-pointer select-none titlebar-no-drag
         text-[11px] leading-tight transition-colors max-w-[160px] shadow-minimal
         bg-background
         ${foregroundClass}
-        ${instance.agentControlActive ? 'border border-accent' : ''}
         ${className ?? ''}
       `}
       style={{
@@ -59,6 +58,12 @@ export const BrowserTabBadge = forwardRef<HTMLButtonElement, BrowserTabBadgeProp
       aria-label={`${displayLabel} actions`}
       {...buttonProps}
     >
+      {/*
+        While the agent drives this window, an accent light travels around the
+        badge's edge — the "it is working here" cue now lives in the top bar,
+        where the window is, instead of over the composer's controls.
+      */}
+      {instance.agentControlActive && <span aria-hidden className="browser-badge-orbit" />}
       <span className={`shrink-0 flex items-center justify-center ${isDarkThemeColor ? 'h-3.5 w-3.5' : 'h-3 w-3'}`}>
         {instance.isLoading ? (
           <Spinner className="text-[9px] leading-none" />

@@ -1151,6 +1151,48 @@ html.dark[data-scenic] .fullscreen-overlay-background {
   animation: shimmer-loading 1.2s linear infinite;
 }
 
+/* Browser badge orbit — an accent light travelling around the top bar's browser
+   badge while the agent drives that window. Drawn as a 1px ring (masked conic
+   gradient) so the badge keeps its own background, radius and theme colour. The
+   gradient's start angle is what moves, which is why it is registered. */
+@property --browser-badge-orbit-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes browser-badge-orbit-spin {
+  to { --browser-badge-orbit-angle: 360deg; }
+}
+
+.browser-badge-orbit {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--browser-badge-orbit-angle),
+    color-mix(in oklab, var(--accent) 30%, transparent) 0deg,
+    var(--accent) 45deg,
+    color-mix(in oklab, var(--accent) 30%, transparent) 110deg,
+    color-mix(in oklab, var(--accent) 30%, transparent) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: browser-badge-orbit-spin 2.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .browser-badge-orbit {
+    animation: none;
+    background: var(--accent);
+  }
+}
+
 /* Text shimmer - subtle opacity pulse for inline text (title regeneration, etc.) */
 .animate-shimmer-text {
   animation: shimmer-text 1.2s ease-in-out infinite;

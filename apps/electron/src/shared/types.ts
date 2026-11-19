@@ -163,8 +163,8 @@ export interface BrowserPaneCreateOptions {
  * Manage one browser window's own tabs from the main window.
  *
  * The window is named because a tab only means something inside one; the action is one
- * of four because the four buttons that send it sit together, and `tabId` is absent only
- * for `new`, which has no target yet.
+ * of five because the five verbs sit together, and `tabId` is absent only for `new`,
+ * which has no target yet.
  */
 export interface BrowserPaneTabAction {
   instanceId: string
@@ -172,9 +172,10 @@ export interface BrowserPaneTabAction {
    * `activate` / `close` / `new` manage the tabs. `release` is the person dismissing their
    * own half of a locked tab's overlay: the purple ring, the dim and the input shield go away
    * so they can work in the page, while the agent's hold — and every agent-to-agent rule that
-   * reads it — stays exactly as it was.
+   * reads it — stays exactly as it was. `acknowledge` says the person has opened the tab, so
+   * the "driven, not working here" dot goes.
    */
-  action: 'activate' | 'close' | 'new' | 'release'
+  action: 'activate' | 'close' | 'new' | 'release' | 'acknowledge'
   tabId?: string
 }
 

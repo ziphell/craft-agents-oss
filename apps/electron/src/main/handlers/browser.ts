@@ -355,6 +355,14 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
         return
       }
 
+      if (input.action === 'acknowledge') {
+        // Opening the tab is the person's acknowledgement of what the agent did there, so
+        // the "driven, not working here" dot goes. A held tab keeps its mark: the work is
+        // still in flight and the lock, not the dot, is what says so.
+        if (input.tabId) browserPaneManager.clearDrivenByForTab(input.instanceId, input.tabId)
+        return
+      }
+
       // A tab a person asked for through the strip is theirs, which is what the
       // default already says (`belongsTo: null` — nobody's work asked for
       // it). Stated by leaving it out, so the two surfaces that add tabs (this one

@@ -105,7 +105,8 @@ contextBridge.exposeInMainWorld('browserToolbar', {
   cancelPick: () => ipcRenderer.invoke(CHANNELS.CANCEL_PICK, instanceId),
   /**
    * Manage this window's own tabs from the rail: switch to one, close one, add one,
-   * or take a locked tab back (`release`). The host owns what a tab is, so nothing
+   * take a locked tab back (`release`), or say one has been seen (`acknowledge` drops
+   * the "driven, not working here" dot). The host owns what a tab is, so nothing
    * about it travels back here except through `onStateUpdate`.
    *
    * `work` belongs to `new` alone, and only when the tab is being opened **for** a piece
@@ -113,7 +114,7 @@ contextBridge.exposeInMainWorld('browserToolbar', {
    * which asks for a tab in that conversation's section.
    */
   tabAction: (
-    action: 'activate' | 'close' | 'new' | 'release',
+    action: 'activate' | 'close' | 'new' | 'release' | 'acknowledge',
     tabId?: string,
     work?: TabBelongsTo | null,
   ) => ipcRenderer.invoke(CHANNELS.TABS, instanceId, action, tabId, work),

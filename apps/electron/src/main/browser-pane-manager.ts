@@ -5939,6 +5939,26 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
+   * The person opened this tab: the work it was last driven by has been seen.
+   *
+   * The dot on the rail and in the top bar's tab list means "driven, not working in it
+   * right now"; opening the tab is the whole acknowledgement, so the mark goes. Only the
+   * mark — a tab the agent is holding is left alone, because the work there is still in
+   * flight (its lock is the state, and the dot is not drawn for it anyway).
+   */
+  clearDrivenByForTab(instanceId: string, tabId: string): void {
+    const instance = this.instances.get(instanceId)
+    if (!instance) return
+    const tab = tabById(instance, tabId)
+    if (!tab || tab.drivenBy === null || tab.heldBy !== null) return
+
+    tab.drivenBy = null
+    // Both readers of the mark: the window's own rail and the top bar's tab list.
+    this.pushToolbarState(instance)
+    this.emitStateChange(instance)
+  }
+
+  /**
    * Take one conversation's cursor off every tab it was working from.
    *
    * The conversation is gone, and a session that no longer exists cannot be anywhere: an id left
@@ -7806,7 +7826,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       async (
         _event,
         instanceId: string,
-        action: 'activate' | 'close' | 'new' | 'release',
+        action: 'activate' | 'close' | 'new' | 'release' | 'acknowledge',
         tabId?: string,
         work?: TabBelongsTo | null,
       ) => {
@@ -7815,6 +7835,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
         if (action === 'activate') {
           if (tabId) this.activateTab(inst.id, tabId)
+          return
+        }
+
+        if (action === 'acknowledge') {
+          // Opening the tab is the person's acknowledgement of what an agent did
+          // there, so its "driven, not working here" dot goes.
+          if (tabId) this.clearDrivenByForTab(inst.id, tabId)
           return
         }
 

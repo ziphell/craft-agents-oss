@@ -1194,6 +1194,28 @@ describe('BrowserPaneManager', () => {
         expect(manager.createForSession('sess-a2', { workspaceId: 'ws-a' })).toBe(shared)
       })
 
+      it('drops the driven-by mark when the person opens the tab, but not while the agent holds it', () => {
+        const shared = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
+        const tabId = (manager as any).instances.get(shared).activeTabId
+
+        manager.setAgentControl('sess-a', { displayName: 'A' }, { workspaceId: 'ws-a' })
+        manager.setSessionTab(shared, tabId, 'sess-a')
+        const tab = () => manager.listTabs(shared).find((item) => item.id === tabId)!
+
+        // Working in it: the lock is the state, so opening it changes nothing.
+        manager.clearDrivenByForTab(shared, tabId)
+        expect(tab().drivenBy).toBe('sess-a')
+
+        // The turn ends: the hold goes, the mark stays — the dot the rail draws.
+        manager.clearVisualsForSession('sess-a')
+        expect(tab().lockedBy).toBeNull()
+        expect(tab().drivenBy).toBe('sess-a')
+
+        // The person opens it: opening is the acknowledgement, so the dot goes.
+        manager.clearDrivenByForTab(shared, tabId)
+        expect(tab().drivenBy).toBeNull()
+      })
+
       it('keeps two workspaces apart', () => {
         const a = manager.createForSession('sess-a', { workspaceId: 'ws-a' })
         const b = manager.createForSession('sess-b', { workspaceId: 'ws-b' })

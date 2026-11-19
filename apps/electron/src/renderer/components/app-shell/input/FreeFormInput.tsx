@@ -1953,10 +1953,9 @@ export function FreeFormInput({
 
         {/* Bottom Row: Controls - never shrinks into the scrolling draft region. */}
         <div className="relative shrink-0" data-composer-actions>
-          {/* Status slot overlay - escape interrupt (highest priority), browser status, etc. */}
+          {/* Status slot overlay - escape interrupt hint while a turn is running. */}
           <ToolbarStatusSlot
             showEscapeOverlay={isProcessing && showEscapeOverlay}
-            sessionId={sessionId}
           />
 
           <div className={cn("flex items-center gap-1 px-2 py-2", !compactMode && "border-t border-border/50")}>
