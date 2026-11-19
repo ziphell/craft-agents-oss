@@ -765,8 +765,13 @@ export default function ServerSettingsPage() {
                 </SettingsRow>
 
                 <SettingsRow label={t("settings.server.webuiPassword")}>
-                  <span className="font-mono text-sm text-muted-foreground">
-                    {form.webuiPassword ? (webuiPasswordVisible ? form.webuiPassword : "••••••••••••") : "—"}
+                  <span className={cn(
+                    "max-w-[240px] truncate text-sm text-muted-foreground",
+                    form.webuiPassword && "font-mono",
+                  )}>
+                    {form.webuiPassword
+                      ? (webuiPasswordVisible ? form.webuiPassword : "••••••••••••")
+                      : t("settings.server.webuiPasswordUnset")}
                   </span>
                   {form.webuiPassword && (
                     <>

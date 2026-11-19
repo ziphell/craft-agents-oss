@@ -2421,6 +2421,7 @@
   "settings.server.viaBrowser": "Open in a browser",
   "settings.server.viaBrowserDesc": "Open this address on a phone or tablet and sign in with the browser access token.",
   "settings.server.webuiPassword": "Browser access token",
+  "settings.server.webuiPasswordUnset": "Not set — sign in with the server token",
   "settings.server.wsUrl": "Server WebSocket URL",
   "settings.shortcuts.description": "Keyboard shortcuts",
   "settings.shortcuts.title": "Shortcuts",

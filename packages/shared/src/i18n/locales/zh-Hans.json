@@ -2421,6 +2421,7 @@
   "settings.server.viaBrowser": "用浏览器打开",
   "settings.server.viaBrowserDesc": "在手机或平板的浏览器里打开这个地址，用浏览器访问令牌登录。",
   "settings.server.webuiPassword": "浏览器访问令牌",
+  "settings.server.webuiPasswordUnset": "未设置（可用服务器令牌登录）",
   "settings.server.wsUrl": "服务器 WebSocket 地址",
   "settings.shortcuts.description": "键盘快捷键",
   "settings.shortcuts.title": "快捷键",
