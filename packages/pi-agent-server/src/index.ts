@@ -321,6 +321,17 @@ const pendingSessionToolCalls = new Map<string, { toolName: string; arguments: R
 // Proxy tool definitions from main process
 let proxyToolDefs: ProxyToolDef[] = [];
 
+// Bumped on every register_tools. A session that is being built while a
+// registration lands must be recreated: its tool list came from the older
+// snapshot, and resetting `toolsChanged` at the end of the build would otherwise
+// swallow the registration for the life of that session.
+let proxyToolDefsVersion = 0;
+
+// The single in-flight session build. `set_auto_compaction` and the first prompt
+// can both call ensureSession(); without this they each built their own session
+// and the later finisher overwrote the newer one.
+let sessionCreationInFlight: Promise<AgentSession> | null = null;
+
 // Speculative prefetch for read-only tools (enables parallel execution despite Pi SDK's sequential loop).
 // When the LLM emits multiple call_llm tool calls in a single message, we fire all requests
 // to the main process in parallel on message_end (before executeToolCalls iterates sequentially).
@@ -681,8 +692,19 @@ async function createAuthenticatedRuntime(): Promise<{
   return moduleRuntimePromise;
 }
 
-async function ensureSession(): Promise<AgentSession> {
-  if (piSession) return piSession;
+function ensureSession(): Promise<AgentSession> {
+  if (piSession) return Promise.resolve(piSession);
+
+  // Share one build between concurrent callers (see sessionCreationInFlight).
+  if (!sessionCreationInFlight) {
+    sessionCreationInFlight = createSession().finally(() => {
+      sessionCreationInFlight = null;
+    });
+  }
+  return sessionCreationInFlight;
+}
+
+async function createSession(): Promise<AgentSession> {
   if (!initConfig) throw new Error('Cannot create session: init not received');
 
   const cwd = resolvedCwd();
@@ -771,6 +793,10 @@ async function ensureSession(): Promise<AgentSession> {
     createLsToolDefinition(cwd),
   ];
   const proxyTools = buildProxyTools();
+  // Snapshot the version together with the defs. A register_tools that lands
+  // while createAgentSession() is awaiting is not in this build, so the flag
+  // below must stay set instead of being cleared.
+  const proxyToolsVersion = proxyToolDefsVersion;
   const wrappedAll = wrapToolsWithHooks([...builtinDefs, ...webTools, ...proxyTools]);
   const toolAllowlist = wrappedAll.map(t => t.name);
   debugLog(`Session tools: ${builtinDefs.length} builtin + ${webTools.length} web + ${proxyTools.length} proxy = ${wrappedAll.length} total`);
@@ -885,7 +911,9 @@ async function ensureSession(): Promise<AgentSession> {
   piSession = session;
   piSessionPromptOverride = systemPromptOverride;
 
-  toolsChanged = false;
+  // Keep the flag when a registration arrived during the build: this session's
+  // tool list is already stale, and the next prompt must rebuild it.
+  toolsChanged = proxyToolDefsVersion !== proxyToolsVersion;
   debugLog(`Created Pi session: ${session.sessionId} (${wrappedAll.length} tools)`);
 
   // Notify main process of session ID
@@ -1607,6 +1635,9 @@ function handleRegisterTools(msg: Extract<InboundMessage, { type: 'register_tool
     ...proxyToolDefs.filter(t => !incoming.has(t.name)),
     ...msg.tools,
   ];
+  // Must happen even when no session exists yet: a build that is already in
+  // flight has its own snapshot and will see the mismatch when it finishes.
+  proxyToolDefsVersion++;
   debugLog(`Registered ${msg.tools.length} proxy tools (total: ${proxyToolDefs.length}): ${msg.tools.map(t => t.name).join(', ')}`);
 
   // If session exists, mark for recreation on next prompt.

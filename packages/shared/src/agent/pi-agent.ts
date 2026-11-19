@@ -69,7 +69,7 @@ import {
 import { attachSessionSelfManagementBindings } from './session-self-management-bindings.ts';
 
 // Session tool proxy definitions (for registering with subprocess)
-import { getSessionToolProxyDefs, SESSION_TOOL_NAMES } from './backend/pi/session-tool-defs.ts';
+import { getSessionToolProxyDefs, SESSION_TOOL_NAMES, type SessionToolProxyDef } from './backend/pi/session-tool-defs.ts';
 import { readMediaChannels } from '../media/channels.ts';
 import { asrReady } from '../media/asr.ts';
 import { mediaCapabilities, mediaToolBrief } from '../media/tool-brief.ts';
@@ -269,6 +269,10 @@ export class PiAgent extends BaseAgent {
   // A spawn in progress. Concurrent `ensureSubprocess` callers share it so credential
   // resolution (which awaits) can't let two children race for the same agent.
   private spawnInFlight: Promise<void> | null = null;
+  // Session-scoped proxy defs last registered with the subprocess. Kept so the
+  // per-turn pool registration can re-send the whole surface (see
+  // registerProxyToolsWithSubprocess).
+  private subprocessSessionToolDefs: SessionToolProxyDef[] | null = null;
 
   // Pi session ID (managed by subprocess, reported back)
   private piSessionId: string | null = null;
@@ -568,6 +572,15 @@ export class PiAgent extends BaseAgent {
    * Lazy initialization -- spawns on first use.
    */
   private async ensureSubprocess(): Promise<void> {
+    // `ready` is not the end of startup: the proxy-tool registration is written
+    // after it. A caller that returns at `ready` can send a prompt while the
+    // subprocess is still building its first session, which then sticks with an
+    // incomplete tool surface for the whole conversation. Join the spawn itself.
+    if (this.spawnInFlight) {
+      await this.spawnInFlight;
+      return;
+    }
+
     if (this.subprocess && this.subprocessReady) {
       await this.subprocessReady;
       return;
@@ -593,6 +606,11 @@ export class PiAgent extends BaseAgent {
     // the real cause instead of a child that starts, is killed after `ready`, and reports its
     // own SIGTERM as a startup failure.
     this.assertBackendSessionToolParity();
+
+    // A new child must not inherit the previous spawn's session-tool snapshot:
+    // the filters below are re-evaluated, and this also keeps a per-turn re-send
+    // from firing before the new surface is known.
+    this.subprocessSessionToolDefs = null;
 
     const runtime = getBackendRuntime(this.config);
     const piServerPath = runtime.paths?.piServer;
@@ -786,15 +804,6 @@ export class PiAgent extends BaseAgent {
     await ready;
     this.debug('Pi subprocess is ready');
 
-    // Ensure auto-compaction is explicitly enabled for embedded sessions.
-    // PI defaults this to enabled, but we set it proactively for clarity and resilience.
-    try {
-      const enabled = await this.requestSetAutoCompaction(true);
-      this.debug(`PI auto-compaction enabled: ${enabled}`);
-    } catch (error) {
-      this.debug(`Failed to configure PI auto-compaction (continuing): ${error instanceof Error ? error.message : String(error)}`);
-    }
-
     // Register session-scoped tools as proxy tools in the subprocess.
     // These tools (SubmitPlan, config_validate, source auth, call_llm, etc.)
     // are executed in the main process when the LLM calls them.
@@ -858,29 +867,60 @@ export class PiAgent extends BaseAgent {
       }
     }
 
-    this.send({
-      type: 'register_tools',
-      tools: sessionToolDefs,
-    });
-    this.debug(`Registered ${sessionToolDefs.length} session tools with subprocess`);
+    // Send session tools and pool source tools as ONE message, and do it before
+    // any RPC that can create a session. `set_auto_compaction` below calls
+    // `ensureSession()` in the subprocess, so a registration sent after it would
+    // be too late: the first session would be built without proxy tools, and a
+    // late registration that arrives while that build is in flight used to be
+    // swallowed for the life of the conversation.
+    this.subprocessSessionToolDefs = sessionToolDefs;
+    this.registerProxyToolsWithSubprocess(sessionToolDefs);
 
-    // If pool has source tools, register them with the subprocess.
-    this.registerPoolToolsWithSubprocess();
+    // Ensure auto-compaction is explicitly enabled for embedded sessions.
+    // PI defaults this to enabled, but we set it proactively for clarity and resilience.
+    try {
+      const enabled = await this.sendSetAutoCompaction(true);
+      this.debug(`PI auto-compaction enabled: ${enabled}`);
+    } catch (error) {
+      this.debug(`Failed to configure PI auto-compaction (continuing): ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**
-   * Send pool's proxy tool defs to subprocess for model visibility.
+   * Send one `register_tools` message carrying the whole proxy-tool surface:
+   * session tools first, then pool source tools.
+   *
+   * A single message matters. Session tools used to be sent once at spawn and
+   * pool tools once per turn, so a session built between the two could see
+   * source tools without the session layer — and because the session tools were
+   * never re-sent, that conversation stayed broken (`mcp__session__*` = 0).
+   */
+  private registerProxyToolsWithSubprocess(sessionToolDefs: SessionToolProxyDef[]): void {
+    const poolDefs = this.mcpPool?.getProxyToolDefs() ?? [];
+    this.send({
+      type: 'register_tools',
+      tools: [...sessionToolDefs, ...poolDefs],
+    });
+    this.debug(
+      `Registered ${sessionToolDefs.length} session + ${poolDefs.length} MCP source tools with subprocess`,
+    );
+  }
+
+  /**
+   * Re-register the proxy-tool surface when the pool changes (called on every
+   * `setSourceServers`, i.e. before each turn that has sources). Re-sending the
+   * session tools alongside the pool tools is what heals a registration missed
+   * during startup.
    */
   private registerPoolToolsWithSubprocess(): void {
     if (!this.mcpPool) return;
     const proxyDefs = this.mcpPool.getProxyToolDefs();
-    if (proxyDefs.length > 0) {
-      this.send({
-        type: 'register_tools',
-        tools: proxyDefs,
-      });
-      this.debug(`Registered ${proxyDefs.length} MCP source tools from pool with subprocess`);
-    }
+    if (proxyDefs.length === 0) return;
+
+    // Never send pool tools alone: until the spawn has computed (and sent) the
+    // session defs there is no complete surface to re-send.
+    if (!this.subprocessSessionToolDefs) return;
+    this.registerProxyToolsWithSubprocess(this.subprocessSessionToolDefs);
   }
 
   /**
@@ -2580,10 +2620,11 @@ export class PiAgent extends BaseAgent {
 
   /**
    * Ask subprocess to enable/disable auto-compaction.
+   *
+   * Deliberately does not call `ensureSubprocess`: the only caller runs inside
+   * `spawnSubprocess`, where awaiting the spawn would wait on itself.
    */
-  private async requestSetAutoCompaction(enabled: boolean): Promise<boolean> {
-    await this.ensureSubprocess();
-
+  private sendSetAutoCompaction(enabled: boolean): Promise<boolean> {
     const id = `set-auto-compaction-${++this.rpcIdCounter}`;
     const timeoutMs = 15_000;
 
