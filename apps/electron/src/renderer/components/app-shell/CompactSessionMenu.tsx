@@ -46,6 +46,7 @@ import {
   Link2Off,
   MailOpen,
   MessageSquare,
+  Replace,
   Pencil,
   RefreshCw,
   Send,
@@ -317,6 +318,8 @@ export function CompactSessionMenu({
               hasTransferTargets={hasTransferTargets}
               onShare={closeAfter(actions.share)}
               onOpenShareSub={() => setView('share')}
+              isProcessing={item.isProcessing === true}
+              onNewConversation={closeAfter(actions.newConversation)}
               onSendToWorkspace={closeAfter(onSendToWorkspace)}
               onOpenMessagingSub={() => setView('messaging')}
               onOpenStatusSub={() => setView('status')}
@@ -409,6 +412,9 @@ interface RootPaneProps {
   onOpenProjectsSub: () => void
   onShare?: () => void
   onOpenShareSub: () => void
+  /** Whether a turn is running — a new conversation must wait for it. */
+  isProcessing: boolean
+  onNewConversation?: () => void
   onSendToWorkspace?: () => void
   onOpenMessagingSub: () => void
   onOpenStatusSub: () => void
@@ -443,6 +449,8 @@ function RootPane({
   onOpenProjectsSub,
   onShare,
   onOpenShareSub,
+  isProcessing,
+  onNewConversation,
   onSendToWorkspace,
   onOpenMessagingSub,
   onOpenStatusSub,
@@ -472,6 +480,16 @@ function RootPane({
 
   return (
     <div className="flex flex-col">
+      {/* Start a fresh stretch of this session — the current one is archived, not deleted */}
+      <Row
+        icon={<Replace className="h-4 w-4" />}
+        label={t('sessionMenu.newConversation')}
+        onTap={onNewConversation}
+        disabled={isProcessing}
+      />
+
+      <Separator />
+
       {/* Share / Shared */}
       {!sharedUrl ? (
         <Row icon={<CloudUpload className="h-4 w-4" />} label={t('sessionMenu.share')} onTap={onShare} />
@@ -711,6 +729,8 @@ interface RowProps {
   chevron?: boolean
   radioSelected?: boolean
   destructive?: boolean
+  /** Shown but inert — the action is refused while, say, a turn is running. */
+  disabled?: boolean
   onTap?: () => void
 }
 
@@ -721,16 +741,19 @@ function Row({
   chevron,
   radioSelected,
   destructive,
+  disabled,
   onTap,
 }: RowProps) {
   if (!onTap) return null
   return (
     <button
       type="button"
-      onClick={onTap}
+      onClick={disabled ? undefined : onTap}
+      disabled={disabled}
       className={cn(
         'flex items-center gap-3 w-full px-3 py-3 rounded-[10px] text-left transition-colors',
         'hover:bg-foreground/5 active:bg-foreground/10',
+        disabled && 'opacity-50 pointer-events-none',
         destructive && 'text-destructive hover:bg-destructive/10 active:bg-destructive/15',
       )}
     >

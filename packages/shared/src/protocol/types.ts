@@ -199,6 +199,8 @@ export type ErrorCode =
   | 'SESSION_ID_CONFLICT'
   /** Manual compaction needs the whole turn; the sender must wait or stop it first. */
   | 'COMPACTION_UNAVAILABLE'
+  /** Starting or switching a conversation needs an idle session. */
+  | 'CONVERSATION_UNAVAILABLE'
   | 'ARTIFACT_NOT_PORTABLE'
   | 'TRANSFER_TOO_LARGE'
   | 'TRANSFER_TIMEOUT'
@@ -224,6 +226,7 @@ const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set<ErrorCode>([
   'SESSION_NOT_IDLE',
   'SESSION_ID_CONFLICT',
   'COMPACTION_UNAVAILABLE',
+  'CONVERSATION_UNAVAILABLE',
   'ARTIFACT_NOT_PORTABLE',
   'TRANSFER_TOO_LARGE',
   'TRANSFER_TIMEOUT',

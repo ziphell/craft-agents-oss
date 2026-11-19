@@ -13,6 +13,7 @@ import { ChatDisplay, type ChatDisplayHandle } from '@/components/app-shell/Chat
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { SessionMenu } from '@/components/app-shell/SessionMenu'
 import { CompactSessionMenu } from '@/components/app-shell/CompactSessionMenu'
+import { ConversationSuffix } from '@/components/app-shell/ConversationSuffix'
 import { SessionInfoPopover } from '@/components/app-shell/SessionInfoPopover'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { toast } from 'sonner'
@@ -868,7 +869,12 @@ const ChatPage = React.memo(function ChatPage({ sessionId, assistantHeader }: Ch
   return (
     <>
       <div className="h-full flex flex-col">
-        <PanelHeader  title={displayTitle} badge={assistantHeader?.badge} titleMenu={headerTitle} compactTitleMenu={headerCompactTitle} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+        <PanelHeader  title={displayTitle} badge={assistantHeader?.badge ?? (
+          <ConversationSuffix
+            sessionId={session.id}
+            conversationId={session.conversationId}
+          />
+        )} titleMenu={headerTitle} compactTitleMenu={headerCompactTitle} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
         <div className="flex-1 flex flex-col min-h-0">
           <ChatDisplay
             ref={chatDisplayRef}

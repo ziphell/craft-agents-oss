@@ -57,6 +57,16 @@ export interface Session {
   name?: string
   /** Preview of first user message (from JSONL header, for lazy-loaded sessions) */
   preview?: string
+  /**
+   * Which stretch of this session's conversation `messages` belongs to.
+   *
+   * A session folder keeps one conversation live and archives the earlier ones;
+   * this id names the live one (absent = the session's only conversation, which
+   * is how every session behaved before `/new` existed).
+   */
+  conversationId?: string
+  /** When the live conversation stretch began. */
+  conversationStartedAt?: number
   lastMessageAt: number
   messages: Message[]
   /**
@@ -151,6 +161,40 @@ export interface Session {
   taskAwaitingApproval?: number
   /** Tasks Conductor: generate-time draft orchestrator, hidden from the board until adopted by createTask. */
   taskDraft?: boolean
+}
+
+/**
+ * One stretch of a session's conversation, as the switcher lists it.
+ *
+ * The live stretch is `session.jsonl`; the rest are archived under
+ * `conversations/<id>.jsonl`. Only the live one accepts new messages, and only
+ * the live one has an SDK session to resume — switching is how you get back to
+ * another stretch's model context.
+ */
+export interface SessionConversation {
+  id: string
+  /** When this stretch began (oldest first when rendered). */
+  startedAt: number
+  messageCount: number
+  /** First user message, already truncated for display. */
+  preview?: string
+  lastMessageAt?: number
+  /** True for the stretch the session is currently showing. */
+  isLive: boolean
+}
+
+/**
+ * What `/replace` did, returned to the caller that asked for it.
+ *
+ * The broadcast (`conversation_changed`) carries the same facts for every other
+ * window, but only the initiating client gets a confirmation — a toast driven by
+ * a broadcast stacks once per delivery.
+ */
+export interface NewConversationResult {
+  conversation: SessionConversation
+  previousConversationId?: string
+  /** Messages the archived stretch kept; 0 means there was nothing to archive. */
+  previousMessageCount: number
 }
 
 export interface CreateSessionOptions {
@@ -522,6 +566,18 @@ export type SessionEvent =
   | { type: 'session_metadata_changed'; sessionId: string; changes: Partial<Pick<Session, 'taskNodeCount' | 'taskAwaitingApproval' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'mode' | 'hidden'>> }
   | { type: 'session_deleted'; sessionId: string }
   | { type: 'session_created'; sessionId: string }
+  | {
+      type: 'conversation_changed'
+      sessionId: string
+      /** The stretch now live; `messages` must be replaced wholesale, not appended to. */
+      conversationId: string
+      startedAt: number
+      /** The stretch that was live a moment ago (for "switch back" affordances). */
+      previousConversationId?: string
+      previousMessageCount?: number
+      /** True when the change started an empty conversation rather than restoring an old one. */
+      startedFresh?: boolean
+    }
   | { type: 'session_shared'; sessionId: string; sharedUrl: string }
   | { type: 'session_unshared'; sessionId: string }
   | { type: 'auth_request'; sessionId: string; message: Message; request: SharedAuthRequest }

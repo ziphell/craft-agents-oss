@@ -297,6 +297,8 @@ import type {
   DirectoryListingResult,
   RemoteSessionTransferPayload,
   ImportRemoteSessionTransferResult,
+  SessionConversation,
+  NewConversationResult,
   ConnectedClientInfo,
   DeviceTokenInfo,
 } from '@craft-agent/shared/protocol'
@@ -386,6 +388,12 @@ export interface ElectronAPI {
   createSession(workspaceId: string, options?: CreateSessionOptions): Promise<Session>
   deleteSession(sessionId: string): Promise<void>
   sendMessage(sessionId: string, message: string, attachments?: FileAttachment[], storedAttachments?: StoredAttachmentType[], options?: SendMessageOptions): Promise<void>
+  /** Replace the live conversation with a fresh one (the `/replace` command). Rejects while a turn runs. */
+  newConversation(sessionId: string): Promise<NewConversationResult>
+  /** Every stretch of a session's conversation, newest first. */
+  listConversations(sessionId: string): Promise<SessionConversation[]>
+  /** Make an archived conversation the live one again. Rejects while a turn runs. */
+  switchConversation(sessionId: string, conversationId: string): Promise<SessionConversation>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
   cancelQueuedMessage(sessionId: string, messageId: string, content?: string): Promise<{ cancelled: boolean }>
   sendQueuedMessageNow(

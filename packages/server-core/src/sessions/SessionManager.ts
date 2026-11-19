@@ -63,6 +63,7 @@ import {
   // Session persistence functions
   listSessions as listStoredSessions,
   loadSession as loadStoredSession,
+  loadSessionHeader,
   saveSession as saveStoredSession,
   createSession as createStoredSession,
   deleteSession as deleteStoredSession,
@@ -77,6 +78,12 @@ import {
   getSessionPath as getSessionStoragePath,
   ensureSessionDir,
   getSessionFilePath,
+  // Conversation stretches (one live per session, the rest archived)
+  generateConversationId,
+  getConversationFilePath,
+  archiveLiveConversation,
+  promoteArchivedConversation,
+  listConversations as listStoredConversations,
   generateSessionId,
   sessionPersistenceQueue,
   getHeaderMetadataSignature,
@@ -113,7 +120,7 @@ import { isParentTaskTool } from '@craft-agent/shared/utils/toolNames'
 import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
-import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, CodedError, generateMessageId } from '@craft-agent/shared/protocol'
+import { type Session, type SessionEvent, type SessionConversation, type NewConversationResult, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, CodedError, generateMessageId } from '@craft-agent/shared/protocol'
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath, expandPath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
@@ -800,6 +807,13 @@ interface ManagedSession {
   poolServer?: McpPoolServer
   // SDK session ID for conversation continuity
   sdkSessionId?: string
+  /**
+   * Which stretch of this session's conversation is live (see `SessionConfig`).
+   * Absent only for sessions created before conversation stretches existed.
+   */
+  conversationId?: string
+  /** When the live conversation stretch began. */
+  conversationStartedAt?: number
   /** Accept & Compact state; persisted with the session header. */
   pendingPlanExecution?: StoredSession['pendingPlanExecution']
   // Token usage for display
@@ -1195,6 +1209,27 @@ function resolveSupportsBranching(managed: ManagedSession): boolean {
 const DEFAULT_TOKEN_USAGE = {
   inputTokens: 0, outputTokens: 0, totalTokens: 0,
   contextTokens: 0, costUsd: 0,
+}
+
+/**
+ * The summary row for the conversation a session is currently showing.
+ *
+ * Reads the live stretch's counters straight off the managed session: after a
+ * swap or a reset they are the values the next persist will write.
+ */
+function liveConversationSummary(
+  conversationId: string,
+  startedAt: number,
+  managed: ManagedSession,
+): SessionConversation {
+  return {
+    id: conversationId,
+    startedAt,
+    messageCount: managed.messages.length,
+    preview: managed.preview,
+    lastMessageAt: managed.lastMessageAt,
+    isLive: true,
+  }
 }
 
 /**
@@ -7542,6 +7577,226 @@ export class SessionManager implements ISessionManager {
     message.annotations = existing.filter(a => a.id !== annotationId)
     this.persistSession(managed)
     this.sendEvent({ type: 'message_annotations_updated', sessionId, messageId, annotations: message.annotations }, managed.workspace.id)
+  }
+
+  // -------------------------------------------------------------------------
+  // Conversation stretches
+  //
+  // A session folder holds one live conversation (`session.jsonl`) and archives
+  // the earlier ones (`conversations/<id>.jsonl`). `/new` and "switch back" are
+  // both swaps of which file is live; the session itself — folder, memory,
+  // sources, model, permission mode — never changes.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Start a fresh conversation inside this session's folder.
+   *
+   * Only the transcript resets: the current stretch is archived, a new empty one
+   * becomes live, and the SDK session id is dropped so the next turn opens a model
+   * conversation from zero rather than resuming the archived one.
+   */
+  async startNewConversation(sessionId: string): Promise<NewConversationResult> {
+    const managed = this.requireIdleSession(sessionId, 'start a new conversation')
+    await this.ensureMessagesLoaded(managed)
+
+    // Nothing to archive: `/replace` on an already-empty conversation keeps the one
+    // it has, rather than minting a second (empty) stretch every time it is typed.
+    if (!managed.messages.some(m => m.role !== 'status')) {
+      return {
+        conversation: liveConversationSummary(
+          managed.conversationId ?? sessionId,
+          managed.conversationStartedAt ?? managed.createdAt ?? Date.now(),
+          managed,
+        ),
+        previousMessageCount: 0,
+      }
+    }
+
+    const liveIdBeforeSwap = await this.swapPrecondition(managed)
+    const previousMessageCount = managed.messages.length
+
+    // Move the stretch that was live into `conversations/` BEFORE anything writes
+    // the new `session.jsonl` — otherwise the empty conversation would overwrite
+    // the transcript this command is supposed to keep.
+    const archivedId = archiveLiveConversation(managed.workspace.rootPath, sessionId)
+    const previousConversationId = archivedId ?? liveIdBeforeSwap
+
+    const now = Date.now()
+    const conversationId = generateConversationId(now)
+    this.resetConversationState(managed, conversationId, now)
+
+    // The archived file is on disk; writing the empty live one completes the swap
+    // (and is what crash recovery restores if we stop here).
+    this.persistSession(managed)
+    await this.flushSession(sessionId)
+
+    this.sendEvent({
+      type: 'conversation_changed',
+      sessionId,
+      conversationId,
+      startedAt: now,
+      previousConversationId,
+      previousMessageCount,
+      startedFresh: true,
+    }, managed.workspace.id)
+
+    return {
+      conversation: liveConversationSummary(conversationId, now, managed),
+      previousConversationId,
+      previousMessageCount,
+    }
+  }
+
+  /**
+   * Make an archived conversation the live one and return to it.
+   *
+   * Message history is replaced wholesale — this is not a merge. Segment-level
+   * state (messages, SDK session, token usage) comes from the restored file;
+   * session-level settings stay exactly as the person left them.
+   */
+  async switchConversation(sessionId: string, conversationId: string): Promise<SessionConversation> {
+    const managed = this.requireIdleSession(sessionId, 'switch conversations')
+    await this.ensureMessagesLoaded(managed)
+
+    const liveId = managed.conversationId ?? sessionId
+    if (conversationId === liveId) {
+      return liveConversationSummary(
+        liveId,
+        managed.conversationStartedAt ?? managed.createdAt ?? Date.now(),
+        managed,
+      )
+    }
+
+    // Validate the target before touching any file: a bad id must not leave the
+    // session without a live conversation.
+    const targetPath = getConversationFilePath(managed.workspace.rootPath, sessionId, conversationId)
+    if (!existsSync(targetPath)) {
+      throw new Error(`Conversation not found: ${conversationId}`)
+    }
+
+    const previousConversationId = await this.swapPrecondition(managed)
+    const previousMessageCount = managed.messages.length
+
+    archiveLiveConversation(managed.workspace.rootPath, sessionId)
+    if (!promoteArchivedConversation(managed.workspace.rootPath, sessionId, conversationId)) {
+      throw new Error(`Failed to switch to conversation ${conversationId}`)
+    }
+
+    const restored = loadStoredSession(managed.workspace.rootPath, sessionId)
+    const header = loadSessionHeader(managed.workspace.rootPath, sessionId)
+    if (!restored || !header) {
+      throw new Error(`Failed to load conversation ${conversationId} after switching`)
+    }
+
+    managed.messages = restored.messages.map(storedToMessage)
+    managed.messagesLoaded = true
+    managed.sdkSessionId = restored.sdkSessionId
+    managed.tokenUsage = restored.tokenUsage ?? { ...DEFAULT_TOKEN_USAGE }
+    managed.conversationId = header.conversationId ?? conversationId
+    managed.conversationStartedAt = header.conversationStartedAt ?? header.createdAt
+    managed.lastMessageAt = header.lastMessageAt ?? header.createdAt
+    managed.preview = header.preview
+    managed.messageCount = header.messageCount
+    managed.lastMessageRole = header.lastMessageRole
+    managed.lastFinalMessageId = header.lastFinalMessageId
+    managed.wasInterrupted = false
+
+    // Rewrite the live header from in-memory state so session-level fields the
+    // person changed while the other stretch was live (name, labels, model, …)
+    // are not reverted by the archived copy.
+    this.persistSession(managed)
+    await this.flushSession(sessionId)
+
+    this.sendEvent({
+      type: 'conversation_changed',
+      sessionId,
+      conversationId: managed.conversationId ?? conversationId,
+      startedAt: managed.conversationStartedAt ?? managed.createdAt ?? Date.now(),
+      previousConversationId,
+      previousMessageCount,
+      startedFresh: false,
+    }, managed.workspace.id)
+
+    return liveConversationSummary(
+      managed.conversationId ?? conversationId,
+      managed.conversationStartedAt ?? managed.createdAt ?? Date.now(),
+      managed,
+    )
+  }
+
+  /** Every stretch of this session's conversation, newest first. */
+  listConversations(sessionId: string): SessionConversation[] {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return []
+
+    const summaries = listStoredConversations(managed.workspace.rootPath, sessionId)
+    // A session created in this process but never persisted (or one whose live
+    // file has not been written yet) still needs its row.
+    if (!summaries.some(s => s.isLive)) {
+      summaries.push(liveConversationSummary(
+        managed.conversationId ?? sessionId,
+        managed.conversationStartedAt ?? managed.createdAt ?? Date.now(),
+        managed,
+      ))
+    }
+    return summaries.sort((a, b) => b.startedAt - a.startedAt)
+  }
+
+  /**
+   * Refuse a conversation swap while the session is busy.
+   *
+   * A swap mid-turn would need a decision about which conversation the in-flight
+   * work belongs to; queueing the swap instead is what `/compact` used to do and
+   * it only produced surprises. Same answer as manual compaction: wait or stop.
+   */
+  private requireIdleSession(sessionId: string, action: string): ManagedSession {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) throw new Error(`Session not found: ${sessionId}`)
+    if (managed.isProcessing || managed.messageQueue.length > 0) {
+      throw new CodedError(
+        'CONVERSATION_UNAVAILABLE',
+        `Cannot ${action} while a reply is in progress. Wait for the current turn to finish.`,
+      )
+    }
+    return managed
+  }
+
+  /**
+   * Let go of the live agent and land pending writes before a file swap.
+   *
+   * Returns the id the live stretch will be archived under. The queue's remembered
+   * header signature is dropped with the file it described, so the write that
+   * follows the swap is not merged with the archived header's metadata.
+   */
+  private async swapPrecondition(managed: ManagedSession): Promise<string | undefined> {
+    await this.flushSession(managed.id)
+    sessionPersistenceQueue.cancel(managed.id)
+    await this.disposeManagedAgentRuntime(managed, 'conversation swap')
+
+    return managed.conversationId ?? managed.id
+  }
+
+  /** Reset everything that belongs to one conversation stretch. */
+  private resetConversationState(managed: ManagedSession, conversationId: string, startedAt: number): void {
+    // Read tracking belongs to the transcript being replaced: an empty conversation
+    // has nothing unread, and the old read cursor names a message it no longer holds.
+    const hadUnread = managed.hasUnread === true
+    managed.lastReadMessageId = undefined
+    managed.hasUnread = false
+    if (hadUnread) this.emitUnreadSummaryChanged()
+
+    managed.messages = []
+    managed.messagesLoaded = true
+    managed.sdkSessionId = undefined
+    managed.tokenUsage = { ...DEFAULT_TOKEN_USAGE }
+    managed.conversationId = conversationId
+    managed.conversationStartedAt = startedAt
+    managed.lastMessageAt = startedAt
+    managed.preview = undefined
+    managed.messageCount = 0
+    managed.lastMessageRole = undefined
+    managed.lastFinalMessageId = undefined
+    managed.wasInterrupted = false
   }
 
   async deleteSession(sessionId: string): Promise<void> {

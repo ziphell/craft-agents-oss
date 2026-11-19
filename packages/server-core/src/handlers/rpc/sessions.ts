@@ -261,6 +261,23 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
     return sessionManager.deleteSession(sessionId)
   })
 
+  // Start a fresh conversation inside an existing session (the `/new` command).
+  // The session folder, its memory and its settings stay; only the transcript
+  // resets. Rejects while a turn runs — see `requireIdleSession`.
+  server.handle(RPC_CHANNELS.sessions.NEW_CONVERSATION, async (_ctx, sessionId: string) => {
+    return sessionManager.startNewConversation(sessionId)
+  })
+
+  // Every stretch of a session's conversation, newest first (for the switcher).
+  server.handle(RPC_CHANNELS.sessions.LIST_CONVERSATIONS, async (_ctx, sessionId: string) => {
+    return sessionManager.listConversations(sessionId)
+  })
+
+  // Make an archived conversation the live one again.
+  server.handle(RPC_CHANNELS.sessions.SWITCH_CONVERSATION, async (_ctx, sessionId: string, conversationId: string) => {
+    return sessionManager.switchConversation(sessionId, conversationId)
+  })
+
   // Send a message to a session (with optional file attachments).
   //
   // Behavior:

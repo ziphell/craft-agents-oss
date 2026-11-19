@@ -13,7 +13,7 @@ import {
   StyledDropdownMenuSubTrigger,
   StyledDropdownMenuSubContent,
 } from '@/components/ui/styled-dropdown'
-import { COMPACT_COMMAND, LAYER_COMMANDS, type SlashCommand } from '@/components/ui/slash-command-menu'
+import { COMPACT_COMMAND, LAYER_COMMANDS, NEW_CONVERSATION_COMMAND, type SlashCommand } from '@/components/ui/slash-command-menu'
 import { FreeFormInputContextBadge } from './FreeFormInputContextBadge'
 import { buildComposerMenuItems, type ComposerMenuItem } from './composer-menu'
 import { cn } from '@/lib/utils'
@@ -56,6 +56,8 @@ export interface ComposerPlusMenuProps {
   onAttachFromComputer?: () => void
   onSelectLayer: (layer: SessionMode) => void
   onCompact: () => void
+  /** Start a fresh conversation stretch in this session (the current one is kept). */
+  onNewConversation: () => void
   'data-tutorial'?: string
 }
 
@@ -69,6 +71,7 @@ export function ComposerPlusMenu({
   onAttachFromComputer,
   onSelectLayer,
   onCompact,
+  onNewConversation,
   'data-tutorial': dataTutorial,
 }: ComposerPlusMenuProps) {
   const { t } = useTranslation()
@@ -105,6 +108,9 @@ export function ComposerPlusMenu({
     if (item.id === 'compact') {
       return { label: COMPACT_COMMAND.label, icon: COMPACT_COMMAND.icon }
     }
+    if (item.id === 'replace') {
+      return { label: NEW_CONVERSATION_COMMAND.label, icon: NEW_CONVERSATION_COMMAND.icon }
+    }
     const command = layerCommandsById.get(item.id)
     return command
       ? { label: command.label, icon: command.icon }
@@ -114,6 +120,7 @@ export function ComposerPlusMenu({
   const handleSelect = (item: ComposerMenuItem) => {
     if (item.id === 'attach') onAttach()
     else if (item.id === 'compact') onCompact()
+    else if (item.id === 'replace') onNewConversation()
     // The menu sets the layer; it never unsets one. Clearing stays where the
     // layer is shown — the X on the input's layer chip.
     else onSelectLayer(item.id)

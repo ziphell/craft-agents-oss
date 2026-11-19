@@ -14,6 +14,8 @@ import type { AuthResult, DeviceToolInfo } from '@craft-agent/shared/agent'
 import type {
   Session,
   SessionStatus,
+  SessionConversation,
+  NewConversationResult,
   CreateSessionOptions,
   FileAttachment,
   SendMessageOptions,
@@ -177,6 +179,17 @@ export interface ISessionManager {
   ): boolean
   respondToCredential(sessionId: string, requestId: string, response: CredentialResponse): Promise<boolean>
   getSessionPermissionModeState(sessionId: string): PermissionModeState | null
+
+  // ---------------------------------------------------------------------------
+  // Conversation stretches (one live per session, the rest archived)
+  // ---------------------------------------------------------------------------
+
+  /** Start a fresh conversation in this session's folder; rejects while busy. */
+  startNewConversation(sessionId: string): Promise<NewConversationResult>
+  /** Make an archived conversation the live one; rejects while busy. */
+  switchConversation(sessionId: string, conversationId: string): Promise<SessionConversation>
+  /** Every stretch of a session's conversation, newest first. */
+  listConversations(sessionId: string): SessionConversation[]
 
   // ---------------------------------------------------------------------------
   // Plans

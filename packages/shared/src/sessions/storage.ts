@@ -21,12 +21,13 @@ import {
   rmSync,
   statSync,
   unlinkSync,
+  renameSync,
 } from 'fs';
 import { join, basename } from 'path';
 import { getWorkspaceSessionsPath } from '../workspaces/storage.ts';
 import { generateUniqueSessionId } from './slug-generator.ts';
 import { toPortablePath, expandPath } from '../utils/paths.ts';
-import { sanitizeSessionId } from './validation.ts';
+import { sanitizeSessionId, isValidSessionId } from './validation.ts';
 import { perf } from '../utils/perf.ts';
 import type {
   SessionConfig,
@@ -224,6 +225,10 @@ export async function createSession(
     name: options?.name,
     createdAt: now,
     lastUsedAt: now,
+    // The first conversation stretch is known by the session's own id; `/new`
+    // archives it under that name and mints a new one.
+    conversationId: sessionId,
+    conversationStartedAt: now,
     workingDirectory: options?.workingDirectory,
     sdkCwd,
     permissionMode: options?.permissionMode,
@@ -300,6 +305,8 @@ export async function getOrCreateSessionById(
     sdkCwd,
     createdAt: now,
     lastUsedAt: now,
+    conversationId: sessionId,
+    conversationStartedAt: now,
   };
 
   const storedSession: StoredSession = {
@@ -346,6 +353,7 @@ export { sessionPersistenceQueue, getHeaderMetadataSignature } from './persisten
 export function loadSession(workspaceRootPath: string, sessionId: string): StoredSession | null {
   const end = perf.start('session.loadSession', { sessionId });
 
+  recoverInterruptedConversationSwap(workspaceRootPath, sessionId);
   const jsonlPath = getSessionFilePath(workspaceRootPath, sessionId);
   if (existsSync(jsonlPath)) {
     const session = readSessionJsonl(jsonlPath);
@@ -366,6 +374,7 @@ export function loadSession(workspaceRootPath: string, sessionId: string): Store
  * that may be long: `loadSession` reads every message, which is the wrong cost for one field.
  */
 export function loadSessionHeader(workspaceRootPath: string, sessionId: string): SessionHeader | null {
+  recoverInterruptedConversationSwap(workspaceRootPath, sessionId);
   const jsonlPath = getSessionFilePath(workspaceRootPath, sessionId);
   if (!existsSync(jsonlPath)) return null;
   return readSessionHeader(jsonlPath);
@@ -393,6 +402,9 @@ export function listSessions(workspaceRootPath: string): SessionMetadata[] {
     if (entry.isDirectory()) {
       const sessionId = entry.name;
       const sessionDir = join(sessionsDir, sessionId);
+      // A crash during a conversation swap leaves the live file in `conversations/`;
+      // without this the session would simply disappear from the list.
+      recoverInterruptedConversationSwap(workspaceRootPath, sessionId);
       const jsonlFile = join(sessionDir, 'session.jsonl');
 
       // Clean up orphaned .tmp files from crashed atomic writes.
@@ -498,6 +510,172 @@ export async function clearSessionMessages(workspaceRootPath: string, sessionId:
     };
     await saveSession(session);
   }
+}
+
+// ============================================================
+// Conversation stretches
+//
+// One stretch of a session's conversation is live (`session.jsonl`, unchanged
+// path, so every reader keeps working). Earlier stretches are archived as
+// `conversations/<conversationId>.jsonl`. Starting a new conversation and
+// switching back to an old one are both just swaps of which file is live.
+// ============================================================
+
+/**
+ * A conversation stretch's id.
+ *
+ * Sortable by start time and unique enough for a file name. Sessions that never
+ * start a second stretch keep using the session id itself, so legacy headers
+ * need no migration.
+ */
+export function generateConversationId(startedAt = Date.now()): string {
+  return `conv-${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** Directory holding the conversation stretches a session is not currently showing. */
+export function getConversationsPath(workspaceRootPath: string, sessionId: string): string {
+  return join(getSessionPath(workspaceRootPath, sessionId), 'conversations');
+}
+
+/** File of one archived conversation stretch. */
+export function getConversationFilePath(
+  workspaceRootPath: string,
+  sessionId: string,
+  conversationId: string,
+): string {
+  // Defense-in-depth: the id arrives from a client and becomes a file name.
+  if (!isValidSessionId(conversationId)) {
+    throw new Error(`Invalid conversation id: ${conversationId}`);
+  }
+  return join(getConversationsPath(workspaceRootPath, sessionId), `${conversationId}.jsonl`);
+}
+
+/** The id the live conversation stretch is known by (a legacy session uses its own id). */
+export function getLiveConversationId(workspaceRootPath: string, sessionId: string): string {
+  return loadSessionHeader(workspaceRootPath, sessionId)?.conversationId ?? sessionId;
+}
+
+/**
+ * Finish a conversation swap that a crash interrupted.
+ *
+ * Swapping renames the live file out before the incoming one is renamed in, so
+ * the only state a crash can leave is "no `session.jsonl`, archives on disk".
+ * The newest archive is the stretch that was live, so restoring it is the honest
+ * outcome: the swap simply did not happen.
+ */
+function recoverInterruptedConversationSwap(workspaceRootPath: string, sessionId: string): void {
+  const liveFile = getSessionFilePath(workspaceRootPath, sessionId);
+  if (existsSync(liveFile)) return;
+
+  const dir = getConversationsPath(workspaceRootPath, sessionId);
+  if (!existsSync(dir)) return;
+
+  let newest: { file: string; mtime: number } | undefined;
+  for (const entry of readdirSync(dir)) {
+    if (!entry.endsWith('.jsonl')) continue;
+    try {
+      const mtime = statSync(join(dir, entry)).mtimeMs;
+      if (!newest || mtime > newest.mtime) newest = { file: join(dir, entry), mtime };
+    } catch {
+      // The file vanished between readdir and stat; nothing to restore from it.
+    }
+  }
+  if (!newest) return;
+
+  try {
+    renameSync(newest.file, liveFile);
+    debug(`[sessions] Restored interrupted conversation swap for ${sessionId}`);
+  } catch (error) {
+    debug(`[sessions] Failed to restore interrupted conversation swap for ${sessionId}:`, error);
+  }
+}
+
+/**
+ * Move the live conversation into `conversations/` and return its id.
+ *
+ * The header inside the file already names the stretch (`conversationId`), or —
+ * for a session that never started a second stretch — the session id.
+ */
+export function archiveLiveConversation(workspaceRootPath: string, sessionId: string): string | undefined {
+  const liveFile = getSessionFilePath(workspaceRootPath, sessionId);
+  if (!existsSync(liveFile)) return undefined;
+
+  const archivedId = getLiveConversationId(workspaceRootPath, sessionId);
+  const dir = getConversationsPath(workspaceRootPath, sessionId);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  const target = getConversationFilePath(workspaceRootPath, sessionId, archivedId);
+  // The same id archived twice means an earlier swap left a copy behind; the live
+  // file is the newer truth, so it replaces the copy.
+  try { unlinkSync(target); } catch { /* nothing to replace */ }
+  renameSync(liveFile, target);
+  return archivedId;
+}
+
+/**
+ * Make an archived conversation the live one.
+ *
+ * Callers archive the current live stretch first (see `archiveLiveConversation`);
+ * throwing here keeps a half-done swap from silently overwriting one.
+ */
+export function promoteArchivedConversation(
+  workspaceRootPath: string,
+  sessionId: string,
+  conversationId: string,
+): boolean {
+  const from = getConversationFilePath(workspaceRootPath, sessionId, conversationId);
+  if (!existsSync(from)) return false;
+
+  const liveFile = getSessionFilePath(workspaceRootPath, sessionId);
+  if (existsSync(liveFile)) {
+    throw new Error(`Session ${sessionId} still has a live conversation; archive it before promoting ${conversationId}`);
+  }
+  renameSync(from, liveFile);
+  return true;
+}
+
+/** One stretch of a session's conversation, for the switcher. */
+export interface ConversationSummary {
+  id: string;
+  /** When this stretch began. */
+  startedAt: number;
+  messageCount: number;
+  /** First user message, from the header (already truncated). */
+  preview?: string;
+  lastMessageAt?: number;
+  /** True for the stretch the session is currently showing. */
+  isLive: boolean;
+}
+
+function headerToConversationSummary(header: SessionHeader, fallbackId: string, isLive: boolean): ConversationSummary {
+  return {
+    id: header.conversationId ?? fallbackId,
+    startedAt: header.conversationStartedAt ?? header.createdAt,
+    messageCount: header.messageCount,
+    preview: header.preview,
+    lastMessageAt: header.lastMessageAt,
+    isLive,
+  };
+}
+
+/** Every stretch of a session's conversation, newest first. */
+export function listConversations(workspaceRootPath: string, sessionId: string): ConversationSummary[] {
+  const summaries: ConversationSummary[] = [];
+
+  const liveHeader = loadSessionHeader(workspaceRootPath, sessionId);
+  if (liveHeader) summaries.push(headerToConversationSummary(liveHeader, sessionId, true));
+
+  const dir = getConversationsPath(workspaceRootPath, sessionId);
+  if (existsSync(dir)) {
+    for (const entry of readdirSync(dir)) {
+      if (!entry.endsWith('.jsonl')) continue;
+      const header = readSessionHeader(join(dir, entry));
+      if (!header) continue;
+      summaries.push(headerToConversationSummary(header, entry.replace(/\.jsonl$/, ''), false));
+    }
+  }
+
+  return summaries.sort((a, b) => b.startedAt - a.startedAt);
 }
 
 /**

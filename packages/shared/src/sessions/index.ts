@@ -46,6 +46,15 @@ export {
   deleteSession,
   clearSessionMessages,
   getOrCreateLatestSession,
+  // Conversation stretches (one live per session, the rest archived)
+  generateConversationId,
+  getConversationsPath,
+  getConversationFilePath,
+  getLiveConversationId,
+  archiveLiveConversation,
+  promoteArchivedConversation,
+  listConversations,
+  type ConversationSummary,
   // Metadata updates
   updateSessionSdkId,
   updateSessionMetadata,

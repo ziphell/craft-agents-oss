@@ -15,8 +15,8 @@ import type { SessionMode } from '@craft-agent/shared/protocol'
  * list of the same three words.
  */
 
-/** Everything the menu can offer: attaching a file, the layer, or compacting. */
-export type ComposerMenuItemId = 'attach' | SessionMode | 'compact'
+/** Everything the menu can offer: attaching a file, the layer, compacting, or a fresh conversation. */
+export type ComposerMenuItemId = 'attach' | SessionMode | 'compact' | 'replace'
 
 export interface ComposerMenuItem {
   id: ComposerMenuItemId
@@ -67,6 +67,14 @@ export function buildComposerMenuItems({
     active: false,
     // A turn's model and context are fixed when it is sent, so summarizing the
     // context is the one command that makes no sense mid-turn.
+    disabled: isProcessing,
+  })
+
+  items.push({
+    id: 'replace',
+    separatorBefore: false,
+    active: false,
+    // Swapping which transcript the session shows is refused mid-turn too.
     disabled: isProcessing,
   })
 

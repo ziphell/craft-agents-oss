@@ -26,6 +26,8 @@ import type { StoredAttachment, MessageRole, ToolStatus, AuthRequestType, AuthSt
 export const SESSION_PERSISTENT_FIELDS = [
   // Identity
   'id', 'workspaceRootPath', 'sdkSessionId', 'sdkCwd',
+  // Conversation stretch (a session folder keeps one live, the rest archived)
+  'conversationId', 'conversationStartedAt',
   // Timestamps
   'createdAt', 'lastUsedAt', 'lastMessageAt',
   // Display
@@ -143,6 +145,18 @@ export interface SessionConfig {
   /** Timestamp of last meaningful message (user or final assistant). Used for date grouping in session list.
    *  Separate from lastUsedAt which tracks any session access (auto-save, open to read, etc.). */
   lastMessageAt?: number;
+  /**
+   * Which stretch of this session's conversation is live.
+   *
+   * A session folder holds one conversation at a time (`session.jsonl`) and keeps
+   * the earlier ones archived (`conversations/<id>.jsonl`). This id names the live
+   * one, so switching back to an archived stretch reuses its identity instead of
+   * minting a new one every time. Absent on sessions that never started a second
+   * stretch — those are a single conversation with the session's own id.
+   */
+  conversationId?: string;
+  /** When the live conversation stretch began (orders the switcher; the session's createdAt for the first one). */
+  conversationStartedAt?: number;
   /**
    * What this conversation is, when it is not an ordinary one: `bot` is the assistant, which
    * can hand work to another workspace. Everything else about it — model, connection, sources,
@@ -310,6 +324,13 @@ export interface SessionHeader {
   lastUsedAt: number;
   /** Timestamp of last meaningful message — persisted separately from lastUsedAt for stable date grouping across restarts. */
   lastMessageAt?: number;
+  /**
+   * Which stretch of this session's conversation is live (see `SessionConfig`).
+   * Absent on sessions that never started a second stretch.
+   */
+  conversationId?: string;
+  /** When the live conversation stretch began. */
+  conversationStartedAt?: number;
   /** Whether this session is flagged */
   isFlagged?: boolean;
   /** Permission mode for this session ('safe', 'ask', 'guarded', 'allow-all') */
@@ -435,6 +456,10 @@ export interface SessionMetadata {
   lastUsedAt: number;
   /** Timestamp of last meaningful message — used for date grouping. Falls back to lastUsedAt for pre-fix sessions. */
   lastMessageAt?: number;
+  /** Which stretch of this session's conversation is live (absent = its only one). */
+  conversationId?: string;
+  /** When the live conversation stretch began. */
+  conversationStartedAt?: number;
   messageCount: number;
   /** Preview of first user message */
   preview?: string;

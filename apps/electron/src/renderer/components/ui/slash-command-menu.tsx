@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from 'cmdk'
-import { Check, Minimize2, Target, FileText, ListChecks } from 'lucide-react'
+import { Check, Minimize2, Target, FileText, ListChecks, Replace } from 'lucide-react'
 import { Icon_Folder } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
 import { DEFAULT_PERMISSION_MODES, PERMISSION_MODE_CONFIG, PERMISSION_MODE_ORDER, isPermissionMode, type PermissionMode } from '@craft-agent/shared/agent/modes'
@@ -14,7 +14,7 @@ import { DEFAULT_PERMISSION_MODES, PERMISSION_MODE_CONFIG, PERMISSION_MODE_ORDER
 export const LAYER_COMMAND_IDS = ['goal', 'spec', 'plan'] as const
 export type LayerCommandId = (typeof LAYER_COMMAND_IDS)[number]
 
-export type SlashCommandId = PermissionMode | 'compact' | LayerCommandId
+export type SlashCommandId = PermissionMode | 'compact' | 'replace' | LayerCommandId
 
 /** Union type for all item types in the slash menu */
 export type SlashItemType = 'command' | 'folder'
@@ -108,6 +108,13 @@ const compactCommand: SlashCommand = {
   icon: <Minimize2 className={MENU_ICON_SIZE} />,
 }
 
+const newConversationCommand: SlashCommand = {
+  id: 'replace',
+  label: 'Replace Conversation',
+  description: 'Swap in a fresh conversation; the current one is kept and can be switched back to',
+  icon: <Replace className={MENU_ICON_SIZE} />,
+}
+
 // The three project layers. Labels stay in English on purpose: unlike the
 // permission modes these name the layer a conversation works on (goal.md /
 // *.spec.md / *.plan.md), not a UI noun that should follow the locale.
@@ -141,9 +148,13 @@ export const LAYER_COMMANDS: SlashCommand[] = layerCommands
  */
 export const COMPACT_COMMAND: SlashCommand = compactCommand
 
+/** The `/new` command, for surfaces that offer it outside the `/` list. */
+export const NEW_CONVERSATION_COMMAND: SlashCommand = newConversationCommand
+
 export const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
   ...permissionModeCommands,
   compactCommand,
+  newConversationCommand,
 ]
 
 export const DEFAULT_SLASH_COMMAND_GROUPS: CommandGroup[] = [
@@ -625,7 +636,7 @@ export function useInlineSlashCommand({
     result.push({
       id: 'commands',
       label: 'Commands',
-      items: [...(showLayerCommands ? layerCommands : []), compactCommand],
+      items: [...(showLayerCommands ? layerCommands : []), compactCommand, newConversationCommand],
     })
 
     // Recent folders section - sorted alphabetically by folder name, show all

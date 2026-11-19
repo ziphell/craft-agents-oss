@@ -1171,6 +1171,28 @@ export default function App() {
         return
       }
 
+      if (event.type === 'conversation_changed') {
+        // The server replaced the transcript wholesale. Refetch instead of patching:
+        // paging, token usage and the derived preview all follow the new stretch.
+        window.electronAPI.getSessionMessages(sessionId)
+          .then((conversationSession: Session | null) => {
+            if (!conversationSession) return
+            replaceLoadedSession(conversationSession)
+            syncSessionOptionsFromSession(conversationSession)
+
+            // Keep the list row's preview/date in step with the stretch now shown.
+            const metaMap = store.get(sessionMetaMapAtom)
+            const nextMetaMap = new Map(metaMap)
+            nextMetaMap.set(sessionId, extractSessionMeta(conversationSession))
+            store.set(sessionMetaMapAtom, nextMetaMap)
+          })
+          .catch((error: unknown) => console.error('Failed to handle conversation_changed event:', error))
+
+        // No toast here: this is a broadcast, and a toast per delivery stacks. The
+        // caller that triggered the swap confirms it from the RPC result.
+        return
+      }
+
       const agentEvent = event as unknown as AgentEvent
 
       // Track activity for stale session watchdog
@@ -1478,6 +1500,27 @@ export default function App() {
     const sendingMidStream = store.get(sessionAtomFamily(sessionId))?.isProcessing === true
     let optimisticMessageId: string | undefined
     try {
+
+      // `/replace` swaps in a fresh conversation in this session. It is a command,
+      // not a message: no bubble, no attachment work, and a rejection is a toast
+      // rather than a transcript error row.
+      if (/^\/replace(\s|$)/i.test(message.trim())) {
+        try {
+          const result = await window.electronAPI.newConversation(sessionId)
+          if (result.previousMessageCount > 0) {
+            toast.success(t('chat.newConversationStarted', { count: result.previousMessageCount }), {
+              id: `replace-conversation:${sessionId}`,
+            })
+          }
+        } catch (error) {
+          toast.error(
+            (error as { code?: string } | null)?.code === 'CONVERSATION_UNAVAILABLE'
+              ? t('chat.newConversationUnavailable')
+              : t('chat.conversationSwitchFailed'),
+          )
+        }
+        return
+      }
 
       // Step 1: Store attachments and get persistent metadata
       let storedAttachments: StoredAttachment[] | undefined

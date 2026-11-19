@@ -14,6 +14,7 @@
 
 import * as React from 'react'
 import { useTranslation } from "react-i18next"
+import { toast } from 'sonner'
 import { useAtomValue } from 'jotai'
 import {
   Archive,
@@ -34,6 +35,8 @@ import {
   FolderKanban,
   Check,
   Bot,
+  Replace,
+  MessagesSquare,
 } from 'lucide-react'
 import { useMenuComponents } from '@/components/ui/menu-context'
 import { getStateColor, getStateIcon, type SessionStatusId } from '@/config/session-status-config'
@@ -42,6 +45,7 @@ import type { LabelConfig } from '@craft-agent/shared/labels'
 import { LabelMenuItems, StatusMenuItems, ShareMenuItems } from './SessionMenuParts'
 import { getFileManagerName } from '@/lib/platform'
 import type { SessionMeta } from '@/atoms/sessions'
+import type { SessionConversation } from '@craft-agent/shared/protocol'
 import { getSessionStatus, hasUnreadMeta, hasMessagesMeta } from '@/utils/session'
 import { MessagingSessionMenuItem } from '@/components/messaging/MessagingSessionMenuItem'
 import { useSessionMenuActions } from '@/hooks/useSessionMenuActions'
@@ -122,11 +126,83 @@ export function SessionMenu({
 
   const actions = useSessionMenuActions({ item, onLabelsChange })
 
+  // Conversation stretches this session has been cut into. The menu content only
+  // mounts when it opens, so this is one read per open — not per render.
+  const [conversations, setConversations] = React.useState<SessionConversation[]>([])
+  React.useEffect(() => {
+    let cancelled = false
+    window.electronAPI
+      .listConversations(item.id)
+      .then(list => { if (!cancelled) setConversations(list) })
+      .catch(() => { /* the submenu simply stays hidden */ })
+    return () => { cancelled = true }
+  }, [item.id])
+
+  const orderedConversations = React.useMemo(
+    () => [...conversations].sort((a, b) => a.startedAt - b.startedAt),
+    [conversations],
+  )
+
+  const switchToConversation = React.useCallback(async (conversationId: string) => {
+    try {
+      await window.electronAPI.switchConversation(item.id, conversationId)
+    } catch (error) {
+      toast.error(
+        (error as { code?: string } | null)?.code === 'CONVERSATION_UNAVAILABLE'
+          ? t('chat.newConversationUnavailable')
+          : t('chat.conversationSwitchFailed'),
+      )
+    }
+  }, [item.id, t])
+
   // Get menu components from context (works with both DropdownMenu and ContextMenu)
   const { MenuItem, Separator, Sub, SubTrigger, SubContent } = useMenuComponents()
 
   return (
     <>
+      {/* Start a fresh stretch of this session — the current one is archived, not deleted */}
+      <MenuItem onClick={() => void actions.newConversation()} disabled={item.isProcessing}>
+        <Replace className="h-3.5 w-3.5" />
+        <span className="flex-1">{t("sessionMenu.newConversation")}</span>
+      </MenuItem>
+
+      {/* Only meaningful once the session has been cut into more than one stretch */}
+      {orderedConversations.length > 1 && (
+        <Sub>
+          <SubTrigger className="pr-2">
+            <MessagesSquare className="h-3.5 w-3.5" />
+            <span className="flex-1">{t("chat.conversations")}</span>
+            <span className="text-[11px] text-muted-foreground">
+              {orderedConversations.length}
+            </span>
+          </SubTrigger>
+          <SubContent>
+            {orderedConversations.map((conversation, index) => (
+              <MenuItem
+                key={conversation.id}
+                disabled={conversation.isLive || item.isProcessing}
+                onClick={() => void switchToConversation(conversation.id)}
+              >
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="flex items-center gap-1.5">
+                    <span className="truncate">
+                      {t('chat.conversationChip', { index: index + 1, total: orderedConversations.length })}
+                    </span>
+                    {conversation.isLive && <Check className="h-3.5 w-3.5" />}
+                  </span>
+                  {/* The first message is how a person tells two stretches apart. */}
+                  <span className="truncate text-[11px] text-muted-foreground">
+                    {conversation.preview || t('chat.conversationEmpty')}
+                  </span>
+                </div>
+              </MenuItem>
+            ))}
+          </SubContent>
+        </Sub>
+      )}
+
+      <Separator />
+
       {/* Share/Shared based on shared state */}
       {!sharedUrl ? (
         <MenuItem onClick={actions.share}>

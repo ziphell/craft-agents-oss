@@ -48,6 +48,8 @@ export interface SessionMenuActions {
   openInNewPanel: () => void
   /** Open the session's published share URL in the system browser (no-op if not shared). */
   openSharedInBrowser: () => void
+  /** Start a fresh conversation stretch inside this session (archives the current one). */
+  newConversation: () => Promise<void>
   /** Copy the session's published share URL to the clipboard (no-op if not shared). */
   copySharedLink: () => Promise<void>
   /** Re-publish the share to bump the snapshot. */
@@ -173,6 +175,27 @@ export function useSessionMenuActions({
     window.electronAPI.openUrl(sharedUrl)
   }, [sharedUrl])
 
+  const newConversation = React.useCallback(async () => {
+    try {
+      const result = await window.electronAPI.newConversation(sessionId)
+      // Confirmation belongs to the client that asked. Nothing archived (an empty
+      // conversation) means nothing happened, so it stays silent.
+      if (result.previousMessageCount > 0) {
+        // Same id on every attempt: a second confirmation replaces the first
+        // instead of stacking if the action is fired twice.
+        toast.success(t('chat.newConversationStarted', { count: result.previousMessageCount }), {
+          id: `replace-conversation:${sessionId}`,
+        })
+      }
+    } catch (error) {
+      toast.error(
+        (error as { code?: string } | null)?.code === 'CONVERSATION_UNAVAILABLE'
+          ? t('chat.newConversationUnavailable')
+          : t('chat.newConversationFailed'),
+      )
+    }
+  }, [sessionId, t])
+
   const copySharedLink = React.useCallback(async () => {
     if (!sharedUrl) return
     await navigator.clipboard.writeText(sharedUrl)
@@ -208,6 +231,7 @@ export function useSessionMenuActions({
     refreshTitle,
     openInNewPanel,
     openSharedInBrowser,
+    newConversation,
     copySharedLink,
     updateShare,
     revokeShare,

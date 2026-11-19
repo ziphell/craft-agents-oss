@@ -982,6 +982,17 @@ export function FreeFormInput({
     if (!isProcessing) onSubmit('/compact', undefined)
   }, [isProcessing, onSubmit])
 
+  // `/replace` archives this conversation and starts an empty one in the same session.
+  // Selecting it submits the command; App's send handler intercepts it before any
+  // message row is created.
+  const handleNewConversationClick = React.useCallback(() => {
+    if (isProcessing) {
+      toast.error(t('chat.newConversationUnavailable'))
+      return
+    }
+    onSubmit('/replace', undefined)
+  }, [isProcessing, onSubmit, t])
+
   // Handle slash command selection (`/` offers the layer and the commands that
   // act on this conversation — not the permission modes, which have their own
   // badge above the composer).
@@ -990,7 +1001,8 @@ export function FreeFormInput({
       if (sessionId) window.electronAPI.sessionCommand(sessionId, { type: 'setMode', mode: commandId })
     }
     else if (commandId === 'compact') handleCompactClick()
-  }, [handleCompactClick, sessionId])
+    else if (commandId === 'replace') handleNewConversationClick()
+  }, [handleCompactClick, handleNewConversationClick, sessionId])
 
   // Handle folder selection from slash command menu
   const handleSlashFolderSelect = React.useCallback((path: string) => {
@@ -1362,6 +1374,13 @@ export function FreeFormInput({
     // typing it should say why instead of queueing a maintenance command.
     if (isProcessing && /^\/compact(\s|$)/i.test(input.trim())) {
       toast.error(t('chat.compactUnavailable'))
+      return false
+    }
+
+    // Starting a conversation swaps which transcript the session shows, which a
+    // running turn has no answer for. Same rule, same reason as compaction.
+    if (isProcessing && /^\/replace(\s|$)/i.test(input.trim())) {
+      toast.error(t('chat.newConversationUnavailable'))
       return false
     }
 
@@ -1985,6 +2004,7 @@ export function FreeFormInput({
             onAttachFromComputer={isRemoteWindow ? handleAttachFromComputer : undefined}
             onSelectLayer={selectLayer}
             onCompact={handleCompactClick}
+            onNewConversation={handleNewConversationClick}
           />
           {onSourcesChange && (
             <div className="relative shrink min-w-0">
@@ -2086,6 +2106,7 @@ export function FreeFormInput({
             onAttachFromComputer={isRemoteWindow ? handleAttachFromComputer : undefined}
             onSelectLayer={selectLayer}
             onCompact={handleCompactClick}
+            onNewConversation={handleNewConversationClick}
             data-tutorial="composer-plus-menu"
           />
 
