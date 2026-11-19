@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Copy, Eye, EyeOff, AlertTriangle, RotateCw, Pencil, Trash2, MoreHorizontal, Plus, Info } from 'lucide-react'
+import { Copy, Eye, EyeOff, AlertTriangle, RotateCw, Pencil, Trash2, MoreHorizontal, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
@@ -732,12 +732,6 @@ export default function ServerSettingsPage() {
           {/* What to hand out, and to whom — only visible when server mode is on. */}
           {showServerDetails && (
             <SettingsSection title={t("settings.server.connectionSection")}>
-              {settingsReadOnly && (
-                <div className="flex items-start gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                  <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>{t("settings.server.envManagedNotice")}</span>
-                </div>
-              )}
               <SettingsCard>
                 <SettingsInputRow
                   label={t("settings.server.port")}
