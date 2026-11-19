@@ -11,8 +11,8 @@
  *   bun run server:dist:linux
  *
  * Build host: Linux x64 with Bun 1.3.14, Node 22, git, unzip, ar and tar.
- * Existing artifacts (webui/dist, resources/*, playwright browsers) are reused;
- * only missing ones are built, so a re-pack after a code change is quick.
+ * Downloaded assets (resources/*, playwright browsers) are reused; bundles compiled
+ * from our sources (webui, render-host) are rebuilt when their sources are newer.
  */
 
 import {
@@ -133,6 +133,31 @@ async function build(name: string, cmd: string[]): Promise<void> {
   if (code !== 0) fail(`${name} failed with exit code ${code}`)
 }
 
+/** Newest modification time under a directory (0 when it does not exist). */
+function newestMtime(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let newest = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    newest = Math.max(newest, entry.isDirectory() ? newestMtime(path) : statSync(path).mtimeMs)
+  }
+  return newest
+}
+
+/**
+ * True when a bundle built from this repo is missing or older than its sources.
+ *
+ * "Build only when missing" is right for downloaded assets, but wrong for things
+ * compiled from our own sources: after a pull the previous bundle still satisfies
+ * the existence check, so every package kept shipping the old UI. git sets mtimes
+ * on checkout, which makes them a cheap, reliable staleness signal.
+ */
+function isStale(artifact: string, sourceDirs: string[]): boolean {
+  if (!existsSync(artifact)) return true
+  const builtAt = statSync(artifact).mtimeMs
+  return sourceDirs.some((dir) => newestMtime(join(ROOT, dir)) > builtAt)
+}
+
 /**
  * Assert that a directory holds everything the package needs.
  *
@@ -176,14 +201,26 @@ console.log(`  ✓ bun ${process.execPath}`)
 rmSync(join(DIST_DIR, `craft-server-${VERSION}-linux-x64.tar.gz`), { force: true })
 
 // ---------------------------------------------------------------------------
-// Assets (built only when missing)
+// Assets (downloaded ones only when missing; source-built ones when stale)
 // ---------------------------------------------------------------------------
 
 step('Assets')
-if (existsSync(join(ROOT, 'apps', 'webui', 'dist', 'index.html'))) {
-  console.log('  ✓ webui/dist')
-} else {
+// The Web UI bundles the Electron renderer (the webui app reuses it), so a change
+// anywhere in those source trees must invalidate the previous bundle.
+const webuiSources = [
+  'apps/webui/src',
+  'apps/electron/src/renderer',
+  'apps/electron/src/transport',
+  'apps/electron/src/shared',
+  'packages/shared/src',
+  'packages/server-core/src',
+  'packages/ui/src',
+  'packages/core/src',
+]
+if (isStale(join(ROOT, 'apps', 'webui', 'dist', 'index.html'), webuiSources)) {
   await build('webui', ['bun', 'run', 'webui:build'])
+} else {
+  console.log('  ✓ webui/dist (up to date)')
 }
 
 if (existsSync(join(RES, 'models', 'silero_vad.onnx'))) {
@@ -267,10 +304,13 @@ if (existsSync(join(RES, 'office-native', 'xlsx-sidecar'))) {
   await build('xlsx sidecar', ['bun', 'run', 'scripts/build-office-native.ts', '--from', extracted])
 }
 
-if (existsSync(join(ROOT, 'packages', 'render-host', 'dist', 'cli.mjs'))) {
-  console.log('  ✓ render-host bundle')
-} else {
+if (isStale(join(ROOT, 'packages', 'render-host', 'dist', 'cli.mjs'), [
+  'packages/render-host/src',
+  'packages/shared/src',
+])) {
   await build('render-host', ['bun', 'run', '--cwd', 'packages/render-host', 'build:cli'])
+} else {
+  console.log('  ✓ render-host bundle (up to date)')
 }
 
 const expectedRevision = (() => {
