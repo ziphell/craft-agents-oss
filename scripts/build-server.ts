@@ -414,19 +414,29 @@ async function downloadBunForServer(config: ServerBuildConfig): Promise<void> {
     return;
   }
 
-  // Download to electron's vendor dir using shared helper, then copy
-  const buildConfig: BuildConfig = {
-    platform,
-    arch,
-    upload: false,
-    uploadLatest: false,
-    uploadScript: false,
-    rootDir: config.rootDir,
-    electronDir: config.electronDir,
-  };
-  await downloadBun(buildConfig);
-
+  // Reuse the copy downloaded for the Electron build. `bunDest` lives in the output
+  // directory, which is wiped at the start of every run, so it can never act as the
+  // cache — without this each package run re-downloaded and re-verified ~35 MB.
+  // The cached file is checked against the target platform/arch: a linux-x64 Bun
+  // must not be copied into a darwin build.
   const electronBunPath = join(config.electronDir, 'vendor', 'bun', 'bun');
+  const wantedFormat = platform === 'darwin' ? 'macho' : 'elf';
+  const cached = existsSync(electronBunPath) ? describeBinary(electronBunPath) : null;
+  if (cached && cached.format === wantedFormat && cached.arch === arch) {
+    console.log(`  Using cached Bun (${platform}-${arch})`);
+  } else {
+    const buildConfig: BuildConfig = {
+      platform,
+      arch,
+      upload: false,
+      uploadLatest: false,
+      uploadScript: false,
+      rootDir: config.rootDir,
+      electronDir: config.electronDir,
+    };
+    await downloadBun(buildConfig);
+  }
+
   if (!existsSync(electronBunPath)) {
     throw new Error(`Bun binary not found after download at ${electronBunPath}`);
   }
@@ -806,8 +816,12 @@ echo "Binaries configured."
 # Generate token if not set
 if [ -z "\${CRAFT_SERVER_TOKEN:-}" ]; then
   TOKEN=\$(openssl rand -hex 32)
+  # Persist the browser password too: without it the hub mints a new one on every
+  # start, which drops every logged-in browser session.
+  WEBUI_PASSWORD="\${CRAFT_WEBUI_PASSWORD:-$(openssl rand -hex 24)}"
   cat > "$DIR/.env" <<ENVFILE
 CRAFT_SERVER_TOKEN=$TOKEN
+CRAFT_WEBUI_PASSWORD=$WEBUI_PASSWORD
 
 # TLS — uncomment and set paths to enable wss://
 # CRAFT_RPC_TLS_CERT=/path/to/cert.pem
@@ -815,11 +829,14 @@ CRAFT_SERVER_TOKEN=$TOKEN
 # CRAFT_RPC_TLS_CA=/path/to/ca.pem
 ENVFILE
   echo ""
-  echo "Generated server token (saved to $DIR/.env)"
+  echo "Generated server token and browser password (saved to $DIR/.env)"
 else
   TOKEN="\$CRAFT_SERVER_TOKEN"
   echo ""
   echo "Using CRAFT_SERVER_TOKEN from environment."
+  if [ -z "\${CRAFT_WEBUI_PASSWORD:-}" ]; then
+    echo "CRAFT_WEBUI_PASSWORD is not set: the hub will mint a new browser password on every start."
+  fi
 fi
 
 # Systemd installation

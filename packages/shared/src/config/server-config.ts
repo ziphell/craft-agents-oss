@@ -71,6 +71,14 @@ export interface ServerStatus {
   lanHost: string
   /** Configured public WS URL (reverse proxy / port mapping), when set */
   publicWsUrl?: string
+  /**
+   * Where the running listener takes its configuration from.
+   *
+   * `env` — a headless hub: every listener value and credential is read from the environment and
+   * nothing is editable (a saved config would never be consulted). `config` — the desktop app,
+   * where config.json is authoritative. Undefined for older peers.
+   */
+  configSource?: 'env' | 'config'
   /** Set when the configured port was unavailable and a random one was used instead */
   bindError?: string
 }

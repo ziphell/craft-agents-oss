@@ -482,8 +482,14 @@ const tar = Bun.spawn({
     archive,
     // One versioned root directory, like an installer: extracting into a shared
     // directory must not scatter `bin/ resources/ node_modules/` across it.
+    //
+    // `flags=rh` is load-bearing. `r` limits the substitution to member names
+    // (without it GNU tar rewrites symlink targets too, so `../../packages/core`
+    // becomes `craft-server-<ver>/../../packages/core` and every workspace link
+    // dangles once `--strip-components=1` removes the prefix). `h` keeps hard-link
+    // targets in step with those renamed members, or extraction cannot find them.
     '--transform',
-    `s,^,${topLevel}/,`,
+    `flags=rh;s,^,${topLevel}/,`,
     '--sort=name',
     '--owner=0',
     '--group=0',
@@ -496,6 +502,23 @@ const tar = Bun.spawn({
   stderr: 'inherit',
 })
 if ((await tar.exited) !== 0) fail('tar failed')
+
+// Extraction is the only place this can be proven: `--transform` with the wrong
+// flags rewrites symlink targets (dangling workspace links) or leaves hard-link
+// targets pointing at unprefixed members. Both survive the build and only show up
+// as `Cannot find module` after a user unpacks the archive.
+const listing = Bun.spawnSync({
+  cmd: ['env', '-u', 'LD_LIBRARY_PATH', 'tar', '-tvzf', archive],
+})
+if (listing.exitCode !== 0) fail('Could not list the archive for verification')
+const brokenMembers = listing.stdout
+  .toString()
+  .split('\n')
+  .filter((line) => line.includes(` -> ${topLevel}/`) || (line.includes(' link to ') && !line.includes(`link to ${topLevel}/`)))
+if (brokenMembers.length > 0) {
+  fail(`Archive has ${brokenMembers.length} link target(s) with the wrong prefix, e.g.\n  ${brokenMembers[0]}`)
+}
+console.log('  ✓ member names and link targets agree')
 
 const checksumFile = `${archive}.sha256`
 const checksum = Bun.spawnSync({ cmd: ['sha256sum', archive.split('/').pop()!], cwd: DIST_DIR })

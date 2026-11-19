@@ -62,7 +62,7 @@ export function registerCoreRpcHandlers(
   registerProjectFilesHandlers(server, deps)
   registerCanvasHandlers(server, deps)
   if (serverCtx) registerServerHandlers(server, deps, serverCtx)
-  registerSettingsHandlers(server, deps)
+  registerSettingsHandlers(server, deps, serverCtx)
   registerProjectsHandlers(server, deps)
   registerDrawioHandlers(server, deps)
   registerOfficeHandlers(server, deps)

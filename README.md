@@ -185,7 +185,7 @@ bun run webui:build               # apps/webui/dist (served on the RPC port)
 
 Optional assets — drawio, the Office editors, the headless-Chromium printer, and the WhatsApp worker — are built separately and are not required to boot. Without them those features report themselves as not installed (PDF export is refused by name). Build steps for each are in [docs/dev-environment.md §4.6](docs/dev-environment.md#46-服务端静态资源drawio--office--render-host--wa-worker).
 
-For a self-contained Linux tarball that runs without Docker (Bun, Node and Chromium included), see [docs/build-server-linux.md](docs/build-server-linux.md) — it also contains the deployment guide (systemd, TLS, reverse proxy, upgrades).
+For a self-contained Linux tarball that runs without Docker (Bun, Node and Chromium included), see [docs/build-server-linux.md](docs/build-server-linux.md). Installing and running it — systemd, TLS, reverse proxy, upgrades — is in [docs/deployment.md](docs/deployment.md).
 
 ### Connecting the Desktop App
 

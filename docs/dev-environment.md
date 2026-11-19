@@ -250,7 +250,7 @@ bun run packages/server/src/index.ts
 
 `bun run server:dist:linux` 一条命令产出可移植的 tar 包：自带 Bun / Node / Chromium / Office / drawio，去掉开发依赖与非本平台制品，目标机解压即用。
 
-完整的构建机要求、脚本步骤、手工等价命令、裁剪与部署排错见 **[Linux 服务端构建与打包指南](build-server-linux.md)**。
+完整的构建机要求、脚本步骤、手工等价命令与裁剪见 **[Linux 服务端构建与打包指南](build-server-linux.md)**；目标机安装与运维（systemd、TLS、反代、升级）见 **[Linux 服务端部署指南](deployment.md)**。
 
 单项资源（drawio / office / 打印宿主）的构建命令见 [§4.6](#46-服务端静态资源drawio--office--render-host--wa-worker)。
 

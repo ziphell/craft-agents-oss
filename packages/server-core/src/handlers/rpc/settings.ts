@@ -1,12 +1,15 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { networkInterfaces } from 'node:os'
 import { dirname } from 'path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
+import type { ServerConfig, ServerStatus } from '@craft-agent/shared/config/server-config'
 import { getPreferencesPath, getSessionDraft, setSessionDraft, deleteSessionDraft, getAllSessionDrafts, getWorkspaceByNameOrId, getDefaultThinkingLevel, setDefaultThinkingLevel } from '@craft-agent/shared/config'
 import { isValidThinkingLevel, normalizeThinkingLevel, THINKING_LEVEL_IDS } from '@craft-agent/shared/agent/thinking-levels'
 
 const VALID_THINKING_LEVELS_LIST = THINKING_LEVEL_IDS.map(id => `'${id}'`).join(', ')
 import { getWorkspaceOrThrow } from '@craft-agent/server-core/handlers'
 import type { RpcServer } from '@craft-agent/server-core/transport'
+import type { ServerHandlerContext } from '@craft-agent/server-core/bootstrap'
 import type { HandlerDeps } from '../handler-deps'
 import { requestClientOpenFileDialog } from '@craft-agent/server-core/transport'
 import { isValidWorkingDirectory } from '../../utils/path-validation'
@@ -52,6 +55,9 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.tools.GET_DEEPSEEK_FETCH_KEY_STATUS,
   RPC_CHANNELS.tools.SET_DEEPSEEK_FETCH_KEY,
   RPC_CHANNELS.settings.GET_NETWORK_PROXY,
+  RPC_CHANNELS.settings.GET_SERVER_CONFIG,
+  RPC_CHANNELS.settings.SET_SERVER_CONFIG,
+  RPC_CHANNELS.settings.GET_SERVER_STATUS,
   RPC_CHANNELS.dialog.OPEN_FOLDER,
   RPC_CHANNELS.rtk.GET_ENABLED,
   RPC_CHANNELS.rtk.SET_ENABLED,
@@ -59,7 +65,76 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.rtk.GET_GAIN,
 ] as const
 
-export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): void {
+/**
+ * The hub's listener is configured by its environment, not by the desktop app's
+ * saved Server Mode config. These helpers present that environment in the same
+ * shape the settings page reads (`ServerConfig` / `ServerStatus`), so the page
+ * works in a browser and the credentials can be copied out to other machines.
+ */
+const HUB_HOST = process.env.CRAFT_RPC_HOST?.trim() || '127.0.0.1'
+const HUB_PORT = Number(process.env.CRAFT_RPC_PORT ?? 9100) || 9100
+const HUB_TLS = Boolean(process.env.CRAFT_RPC_TLS_CERT && process.env.CRAFT_RPC_TLS_KEY)
+const HUB_PUBLIC_WS_URL = process.env.CRAFT_WEBUI_WS_URL?.trim() || undefined
+
+function hubAllowsExternal(): boolean {
+  return HUB_HOST === '0.0.0.0' || HUB_HOST === '::'
+}
+
+/** Address another machine on this network would use; loopback-only hosts still report one. */
+function hubLanHost(): string {
+  const candidates: string[] = []
+  for (const nets of Object.values(networkInterfaces())) {
+    for (const net of nets ?? []) {
+      if (net.family !== 'IPv4' || net.internal) continue
+      candidates.push(net.address)
+    }
+  }
+  const isPrivateIpv4 = (ip: string): boolean =>
+    ip.startsWith('10.') || ip.startsWith('192.168.') || /^172\.(1[6-9]|2\d|3[01])\./.test(ip)
+  return candidates.find(isPrivateIpv4) ?? candidates[0] ?? '127.0.0.1'
+}
+
+function hubServerConfig(ctx?: ServerHandlerContext): ServerConfig {
+  return {
+    enabled: true,
+    port: HUB_PORT,
+    allowExternal: hubAllowsExternal(),
+    tlsCertPath: process.env.CRAFT_RPC_TLS_CERT?.trim() || undefined,
+    tlsKeyPath: process.env.CRAFT_RPC_TLS_KEY?.trim() || undefined,
+    publicWsUrl: HUB_PUBLIC_WS_URL,
+    // The browser access token is the credential this page hands out: a hub is
+    // administered from a browser, and the Web UI password is what another person
+    // needs to sign in. The server token stays in the environment — remote windows
+    // hold it already, and the desktop app never shows it.
+    webuiPassword: ctx?.webuiPassword ?? process.env.CRAFT_WEBUI_PASSWORD?.trim() ?? undefined,
+  }
+}
+
+function hubServerStatus(): ServerStatus {
+  const lanHost = hubLanHost()
+  const protocol = HUB_TLS ? 'wss' : 'ws'
+  const displayHost = hubAllowsExternal() ? lanHost : HUB_HOST
+  return {
+    running: true,
+    host: HUB_HOST,
+    port: HUB_PORT,
+    tls: HUB_TLS,
+    url: `${protocol}://${displayHost}:${HUB_PORT}`,
+    needsRestart: false,
+    insecureWarning: hubAllowsExternal() && !HUB_TLS,
+    allowExternal: hubAllowsExternal(),
+    lanHost,
+    publicWsUrl: HUB_PUBLIC_WS_URL,
+    // Every value above comes from the environment; nothing here is editable.
+    configSource: 'env',
+  }
+}
+
+export function registerSettingsHandlers(
+  server: RpcServer,
+  deps: HandlerDeps,
+  serverCtx?: ServerHandlerContext,
+): void {
   // ============================================================
   // Settings - Default Thinking Level (App-Level)
   // ============================================================
@@ -465,4 +540,24 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     const { getNetworkProxySettings } = await import('@craft-agent/shared/config/storage')
     return getNetworkProxySettings()
   })
+
+  // ============================================================
+  // Server Mode (hub listener)
+  // ============================================================
+  //
+  // A hub has no Electron main process, so the handlers the desktop app registers
+  // for its embedded server do not exist here. The settings page still reads them
+  // in a browser, so they answer from the hub's own environment.
+
+  server.handle(RPC_CHANNELS.settings.GET_SERVER_CONFIG, async () => hubServerConfig(serverCtx))
+
+  server.handle(RPC_CHANNELS.settings.SET_SERVER_CONFIG, async () => {
+    throw new Error(
+      'Server settings are provided by the host environment (CRAFT_RPC_HOST, CRAFT_RPC_PORT, ' +
+        'CRAFT_RPC_TLS_CERT/KEY, CRAFT_WEBUI_WS_URL, CRAFT_SERVER_TOKEN, CRAFT_WEBUI_PASSWORD). ' +
+        'Change them there and restart the service.',
+    )
+  })
+
+  server.handle(RPC_CHANNELS.settings.GET_SERVER_STATUS, async () => hubServerStatus())
 }

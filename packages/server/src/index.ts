@@ -312,6 +312,7 @@ const instance = await (async () => {
       tls,
       // Session cookies are a Web UI credential, verified with the key derived from this hub's
       // token and Web UI password.
+      webuiPassword,
       validateSessionCookie: async (cookieHeader) =>
         (await validateSession(cookieHeader, webuiSessionKey)) !== null,
       tokenRegistry: tokens,

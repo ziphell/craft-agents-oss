@@ -1152,50 +1152,83 @@ app.whenReady().then(async () => {
       // Read embedded server config (Server settings design)
       const { getServerConfig } = await import('@craft-agent/shared/config')
       const embeddedServerConfig = getServerConfig()
-      const serverModeEnabled = embeddedServerConfig.enabled
 
-      // Derive host/port/token from server config (or env overrides)
-      const serverToken = serverModeEnabled && embeddedServerConfig.token
-        ? embeddedServerConfig.token
-        : randomUUID()
+      /**
+       * Headless is an operator-run hub: every listener value and credential comes from the
+       * environment, with no config.json fallback — the same contract packages/server has.
+       * A desktop window keeps config.json authoritative: a variable in someone's shell must
+       * not silently change their app.
+       */
+      const configSource: 'env' | 'config' = isHeadless ? 'env' : 'config'
+      const serverModeEnabled = isHeadless ? true : embeddedServerConfig.enabled
+
+      const envServerToken = isHeadless ? process.env.CRAFT_SERVER_TOKEN?.trim() || undefined : undefined
+      const envWebuiPassword = isHeadless ? process.env.CRAFT_WEBUI_PASSWORD?.trim() || undefined : undefined
+      const envTlsCertPath = isHeadless ? process.env.CRAFT_RPC_TLS_CERT?.trim() || undefined : undefined
+      const envTlsKeyPath = isHeadless ? process.env.CRAFT_RPC_TLS_KEY?.trim() || undefined : undefined
+      const envTlsCaPath = isHeadless ? process.env.CRAFT_RPC_TLS_CA?.trim() || undefined : undefined
+      const envPublicWsUrl = isHeadless ? process.env.CRAFT_WEBUI_WS_URL?.trim() || undefined : undefined
+      const envRpcPort = process.env.CRAFT_RPC_PORT
+        ? parseInt(process.env.CRAFT_RPC_PORT, 10)
+        : undefined
+
+      if (isHeadless) {
+        // Fail fast rather than quietly running a hub with a value nobody intended.
+        if (!envServerToken) throw new Error('CRAFT_HEADLESS requires CRAFT_SERVER_TOKEN.')
+        if (!envWebuiPassword) throw new Error('CRAFT_HEADLESS requires CRAFT_WEBUI_PASSWORD.')
+        if (!!envTlsCertPath !== !!envTlsKeyPath) {
+          throw new Error('CRAFT_HEADLESS TLS requires both CRAFT_RPC_TLS_CERT and CRAFT_RPC_TLS_KEY.')
+        }
+      }
+
+      // Derive host/port/token from the environment (headless) or server config (desktop)
+      const serverToken = envServerToken
+        ?? (serverModeEnabled && embeddedServerConfig.token ? embeddedServerConfig.token : randomUUID())
       // The Web UI follows Server Mode — it is always on while the server is. Its password is
       // still its own credential, minted on first enable and kept in the config so the settings
       // page can show (and reset) it. Session cookies are signed with a key derived from that
       // password and the server token, so changing either one ends browser sessions.
-      let webuiPassword = embeddedServerConfig.webuiPassword ?? ''
-      if (serverModeEnabled && !webuiPassword) {
+      let webuiPassword = envWebuiPassword ?? embeddedServerConfig.webuiPassword ?? ''
+      if (configSource === 'config' && serverModeEnabled && !webuiPassword) {
         webuiPassword = randomUUID()
         const { setServerConfig: setConfig } = await import('@craft-agent/shared/config')
         setConfig({ ...embeddedServerConfig, webuiPassword })
         mainLog.info('[server-mode] Web UI password generated')
       }
       const webuiSessionKey = deriveWebuiSessionKey(serverToken, webuiPassword)
-      // External binding is its own switch: server mode on + allowExternal (default true).
-      const allowExternal = serverModeEnabled && embeddedServerConfig.allowExternal !== false
+      // External binding: the environment host in headless, Server Mode + allowExternal on desktop.
+      const allowExternal = configSource === 'env'
+        ? process.env.CRAFT_RPC_HOST === '0.0.0.0' || process.env.CRAFT_RPC_HOST === '::'
+        : (serverModeEnabled && embeddedServerConfig.allowExternal !== false)
       const rpcHost = process.env.CRAFT_RPC_HOST
         ?? (allowExternal ? '0.0.0.0' : '127.0.0.1')
-      const configuredPort = process.env.CRAFT_RPC_PORT
-        ? parseInt(process.env.CRAFT_RPC_PORT, 10)
-        : (serverModeEnabled ? embeddedServerConfig.port : 0)
+      const configuredPort = envRpcPort
+        ?? (configSource === 'env' ? 9100 : (serverModeEnabled ? embeddedServerConfig.port : 0))
+      const publicWsUrl = configSource === 'env'
+        ? envPublicWsUrl
+        : embeddedServerConfig.publicWsUrl || undefined
 
       // Port conflict handling (startup only): a taken configured port degrades to
       // a random one instead of failing startup, and is surfaced in ServerStatus.
       let rpcPort = configuredPort
       let bindError: string | undefined
-      if (serverModeEnabled && !process.env.CRAFT_RPC_PORT && configuredPort > 0
+      if (serverModeEnabled && envRpcPort === undefined && configuredPort > 0
         && !(await isPortAvailable(configuredPort, rpcHost))) {
         rpcPort = 0
         bindError = `Port ${configuredPort} is in use`
         mainLog.warn(`[server-mode] Port ${configuredPort} is in use — falling back to a random port`)
       }
 
-      // Load TLS certificates if configured
+      // Load TLS certificates if configured (headless: environment paths only)
+      const tlsCertPath = configSource === 'env' ? envTlsCertPath : embeddedServerConfig.tlsCertPath
+      const tlsKeyPath = configSource === 'env' ? envTlsKeyPath : embeddedServerConfig.tlsKeyPath
       let tls: import('@craft-agent/server-core/transport').WsRpcTlsOptions | undefined
-      if (serverModeEnabled && embeddedServerConfig.tlsCertPath && embeddedServerConfig.tlsKeyPath) {
+      if (serverModeEnabled && tlsCertPath && tlsKeyPath) {
         try {
           tls = {
-            cert: readFileSync(embeddedServerConfig.tlsCertPath),
-            key: readFileSync(embeddedServerConfig.tlsKeyPath),
+            cert: readFileSync(tlsCertPath),
+            key: readFileSync(tlsKeyPath),
+            ...(envTlsCaPath ? { ca: readFileSync(envTlsCaPath) } : {}),
           }
           mainLog.info('[server-mode] TLS enabled')
         } catch (err) {
@@ -1446,8 +1479,9 @@ app.whenReady().then(async () => {
             const grant = instance.tokens.authorize(token, { deviceId: clientIdentity().deviceId, probe: true })
             return grant !== null && grant.scope !== 'device'
           },
-          // Reverse-proxy / port-mapping support comes from config, not env vars.
-          publicWsUrl: embeddedServerConfig.publicWsUrl || undefined,
+          // Reverse-proxy / port-mapping support: CRAFT_WEBUI_WS_URL on a headless hub, the
+          // saved config on the desktop.
+          publicWsUrl,
           wsProtocol: tls ? 'wss' : 'ws',
           wsPort: instance.port,
           getHealthCheck: () => webuiHealthCheck?.() ?? { status: 'starting' },
@@ -1601,7 +1635,7 @@ app.whenReady().then(async () => {
         enabled: serverModeEnabled,
         allowExternal,
         bindError,
-        publicWsUrl: embeddedServerConfig.publicWsUrl || undefined,
+        publicWsUrl,
       }
 
       // Server settings are part of the app's surface: whoever holds a valid credential is already
@@ -1616,12 +1650,30 @@ app.whenReady().then(async () => {
         // needs it, and this channel is reachable from a remote window. The main process keeps it.
         const view = { ...getConfig() }
         delete view.token
+        if (configSource === 'env') {
+          // Report what the listener actually uses; the saved config is not consulted at all.
+          view.enabled = true
+          view.port = configuredPort
+          view.allowExternal = allowExternal
+          view.tlsCertPath = tlsCertPath
+          view.tlsKeyPath = tlsKeyPath
+          view.webuiPassword = webuiPassword
+          view.publicWsUrl = publicWsUrl
+        }
         return view
       })
 
       instance.wsServer.handle(RPC_CHANNELS.settings.SET_SERVER_CONFIG, async (_ctx: unknown, config: unknown) => {
         const { setServerConfig: setConfig } = await import('@craft-agent/shared/config')
         const cfg = config as import('@craft-agent/shared/config/server-config').ServerConfig
+        // A headless hub reads everything from the environment; writing config here would create
+        // a value the next start ignores. Refuse the save instead of storing misleading state.
+        if (configSource === 'env') {
+          throw new Error(
+            'This hub is configured by the environment (CRAFT_RPC_HOST/PORT, CRAFT_SERVER_TOKEN, ' +
+              'CRAFT_WEBUI_PASSWORD, CRAFT_RPC_TLS_CERT/KEY). Change them there and restart.',
+          )
+        }
         // Validate port range
         if (cfg.port < 1024 || cfg.port > 65535) {
           throw new Error(`Port must be between 1024 and 65535, got ${cfg.port}`)
@@ -1669,14 +1721,14 @@ app.whenReady().then(async () => {
           ? lanHost
           : runningServerState.host
 
-        // Only compare port/tls/token when at least one side has server mode enabled.
-        // When both are disabled, the running port is random — comparing it to the
-        // saved default (9100) would always produce a false "restart required" banner.
-        // A port fallback (bindError) is intentional, so it does not imply a restart.
+        // Only compare saved vs running when config.json is the source. A headless hub reads the
+        // environment on every start, so a saved config can neither apply nor be edited — there
+        // is no pending change to report.
         const portChanged = !runningServerState.bindError && saved.port !== runningServerState.port
         const allowExternalChanged = (saved.allowExternal ?? true) !== runningServerState.allowExternal
         const publicWsUrlChanged = (saved.publicWsUrl ?? '') !== (runningServerState.publicWsUrl ?? '')
-        const needsRestart = saved.enabled !== runningServerState.enabled
+        const needsRestart = configSource === 'config' && (
+          saved.enabled !== runningServerState.enabled
           || ((saved.enabled || runningServerState.enabled) && (
             portChanged
             || allowExternalChanged
@@ -1686,6 +1738,7 @@ app.whenReady().then(async () => {
             // comparing it to the minted token would flag a restart that never converges.
             || (!!saved.token && saved.token !== runningServerState.token)
           ))
+        )
 
         return {
           running: true,
@@ -1699,6 +1752,7 @@ app.whenReady().then(async () => {
           lanHost,
           bindError: runningServerState.bindError,
           publicWsUrl: runningServerState.publicWsUrl,
+          configSource,
         }
       })
 

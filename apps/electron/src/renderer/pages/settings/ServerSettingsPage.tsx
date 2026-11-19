@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Copy, Eye, EyeOff, AlertTriangle, RotateCw, Pencil, Trash2, MoreHorizontal, Plus } from 'lucide-react'
+import { Copy, Eye, EyeOff, AlertTriangle, RotateCw, Pencil, Trash2, MoreHorizontal, Plus, Info } from 'lucide-react'
 import { toast } from 'sonner'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
@@ -84,10 +84,12 @@ function IconAction({
   icon: Icon,
   title,
   onClick,
+  disabled,
 }: {
   icon: React.ComponentType<{ className?: string }>
   title: string
   onClick: () => void
+  disabled?: boolean
 }) {
   return (
     <Button
@@ -97,6 +99,7 @@ function IconAction({
       title={title}
       aria-label={title}
       onClick={onClick}
+      disabled={disabled}
     >
       <Icon className="h-3.5 w-3.5" />
     </Button>
@@ -373,6 +376,18 @@ export default function ServerSettingsPage() {
   const clientModeKnown = isWebUI || clientMode !== null
   // A headless hub does not register the handler: there is no process to relaunch through Electron.
   const canRestartServer = window.electronAPI.isChannelAvailable(RPC_CHANNELS.server.RESTART)
+  /**
+   * A hub without a restart channel reads its listener settings from the service environment.
+   * Showing them still matters — the addresses and credentials are what gets handed out — but
+   * editing them here could only fail, so the fields stay read-only.
+   */
+  const configReadOnly = isRemoteServer && !canRestartServer
+  /**
+   * A headless hub reads every listener value from its environment; nothing on this page can be
+   * applied, so the whole server section is read-only.
+   */
+  const envManaged = status?.configSource === 'env'
+  const settingsReadOnly = configReadOnly || envManaged
   const devicesVisible = form.enabled
   /** Slots created for a machine that has not connected yet. */
   const pendingTokens = (deviceTokens ?? []).filter((token) => token.deviceId === null)
@@ -642,6 +657,7 @@ export default function ServerSettingsPage() {
                 label={t("settings.server.enableServerMode")}
                 description={t("settings.server.allowRemoteConnections")}
                 checked={form.enabled}
+                disabled={settingsReadOnly}
                 onCheckedChange={(enabled) => setForm(f => ({
                   ...f,
                   enabled,
@@ -716,12 +732,19 @@ export default function ServerSettingsPage() {
           {/* What to hand out, and to whom — only visible when server mode is on. */}
           {showServerDetails && (
             <SettingsSection title={t("settings.server.connectionSection")}>
+              {settingsReadOnly && (
+                <div className="flex items-start gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>{t("settings.server.envManagedNotice")}</span>
+                </div>
+              )}
               <SettingsCard>
                 <SettingsInputRow
                   label={t("settings.server.port")}
                   value={form.port}
                   onChange={(port) => setForm(f => ({ ...f, port }))}
                   placeholder="9100"
+                  disabled={settingsReadOnly}
                 />
 
                 <SettingsRow label={t("settings.server.browserUrl")}>
@@ -762,6 +785,7 @@ export default function ServerSettingsPage() {
                   <IconAction
                     icon={RotateCw}
                     title={t("settings.server.regenerateWebuiPassword")}
+                    disabled={settingsReadOnly}
                     onClick={() => {
                       setForm(f => ({ ...f, webuiPassword: generateToken() }))
                       setWebuiPasswordVisible(true)
@@ -790,7 +814,7 @@ export default function ServerSettingsPage() {
                   <span className="max-w-[220px] truncate text-sm text-muted-foreground">
                     {form.tlsCertPath || t("settings.server.notConfigured")}
                   </span>
-                  <RowButton onClick={() => { void handleBrowse("cert") }}>
+                  <RowButton onClick={() => { void handleBrowse("cert") }} disabled={settingsReadOnly}>
                     {t("common.choose")}
                   </RowButton>
                 </SettingsRow>
@@ -799,7 +823,7 @@ export default function ServerSettingsPage() {
                   <span className="max-w-[220px] truncate text-sm text-muted-foreground">
                     {form.tlsKeyPath || t("settings.server.notConfigured")}
                   </span>
-                  <RowButton onClick={() => { void handleBrowse("key") }}>
+                  <RowButton onClick={() => { void handleBrowse("key") }} disabled={settingsReadOnly}>
                     {t("common.choose")}
                   </RowButton>
                 </SettingsRow>
@@ -812,6 +836,7 @@ export default function ServerSettingsPage() {
                   value={form.publicWsUrl}
                   onChange={(publicWsUrl) => setForm(f => ({ ...f, publicWsUrl }))}
                   placeholder="https://agents.example.com"
+                  disabled={settingsReadOnly}
                 />
               </SettingsCard>
 

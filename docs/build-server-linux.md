@@ -3,6 +3,8 @@
 > 目标：在构建机上产出一个**不依赖 Docker** 的 tar 包，解压后即可在另一台 Linux（glibc x86_64）上运行。目标机不需要安装 Bun、Node、Chromium 或 Office 组件。
 >
 > 开发环境本身（依赖模型、各子组件构建方式、Electron dev）见 [dev-environment.md](./dev-environment.md)。
+>
+> 目标机安装、systemd、TLS、反向代理、升级与排障见 **[Linux 服务端部署指南](deployment.md)**。
 
 ## 1. 产物
 
@@ -34,6 +36,7 @@ tar 内只有一个版本化顶层目录 `craft-server-<version>/`（和安装�
 - Node 22
 - `git`、`unzip`（`server:build` 下载 Bun 时解压用）、`ar`、`tar`
 - 首次构建需要网络：GitHub（Bun/uv/GenOffice release）、npm registry；drawio 的目录列表走 GitHub API，匿名 60 次/小时，超限需 `GITHUB_TOKEN`
+- Bun 与 uv 会缓存在 `apps/electron/vendor/bun/`、`apps/electron/resources/bin/<platform>-<arch>/`，之后重复打包直接复用（只校验平台/架构），不会重新下载；删掉缓存可强制更新
 
 ## 3. 一条命令构建
 
@@ -171,8 +174,11 @@ cp -a "$(readlink -f "$(which node)")" vendor/node/bin/node
 
 ```bash
 cd /path/to/repo
+# flags=rh：r 只改成员名（不改符号链接目标），h 同步改写硬链接目标。
+# 缺 r 会把 @craft-agent/* -> craft-server-<ver>/../../packages/* 写坏；
+# 缺 h 则硬链接指向未加前缀的成员，解压时找不到目标。
 tar -czf dist/craft-server-<ver>-linux-x64.tar.gz \
-  --transform 's,^,craft-server-<ver>/,' \
+  --transform 'flags=rh;s,^,craft-server-<ver>/,' \
   --sort=name --owner=0 --group=0 --numeric-owner \
   -C dist/server $(ls -A dist/server)
 (cd dist && sha256sum craft-server-<ver>-linux-x64.tar.gz > craft-server-<ver>-linux-x64.tar.gz.sha256)
@@ -213,272 +219,17 @@ rm -rf @github/copilot-linuxmusl-x64 \
 
 > 因此该包只适用于 **linux-x64 + glibc**（Ubuntu/Debian）。Alpine（musl）或 arm64 需要另建。
 
-## 7. 部署指南
+## 7. 部署
 
-下面以 Ubuntu 22.04/24.04、单个实例、`/opt/craft` 为例。其他发行版/目录同理替换。
+打包只是第一步。目标机的安装、systemd、TLS、反向代理、升级、多实例与排障见 **[Linux 服务端部署指南](deployment.md)**。
 
-### 7.1 前置条件
-
-- **linux-x64 + glibc**（Ubuntu/Debian；Alpine 不行）
-- 建议 2 核 / 2 GB 内存 / 5 GB 空闲磁盘（解压约 2.1 GB）
-- 一个非 root 运行用户（下文用 `craft`），以及可写的 HOME（默认数据目录是 `~/.craft-agent`）
-- 端口：默认 `9100`（HTTP 与 WebSocket 共用同一个端口）
-- 需要 PDF / 画图渲染时，见第 8 节的系统库和 CJK 字体
-
-```bash
-sudo useradd --create-home --shell /bin/bash craft
-```
-
-### 7.2 安装
-
-```bash
-sudo mkdir -p /opt/craft
-# 先校验，两个文件放在同一目录
-sha256sum -c craft-server-<ver>-linux-x64.tar.gz.sha256
-sudo tar xzf craft-server-<ver>-linux-x64.tar.gz -C /opt/craft --strip-components=1
-sudo chown -R craft:craft /opt/craft
-
-cd /opt/craft
-sudo -u craft ./install.sh        # 生成 .env（含 CRAFT_SERVER_TOKEN），打印启动命令
-```
-
-`install.sh` 不启动服务；它只：
-
-1. 给 `bin/craft-server`、`start.sh`、`vendor/bun/bun`、`resources/bin/*` 加执行位；
-2. 若未提供 `CRAFT_SERVER_TOKEN`，生成 32 字节 hex 写入 `/opt/craft/.env`；
-3. 若带 `--systemd`，额外安装 systemd 单元。
-
-### 7.3 运行
-
-**前台（调试）**
-
-```bash
-cd /opt/craft
-set -a; . ./.env; set +a
-CRAFT_RPC_HOST=0.0.0.0 ./start.sh
-```
-
-**systemd（推荐常驻）**
-
-```bash
-sudo CRAFT_USER=craft ./install.sh --systemd
-sudo systemctl start craft-server
-sudo systemctl status craft-server
-sudo journalctl -u craft-server -f
-```
-
-生成的单元（`/etc/systemd/system/craft-server.service`）关键项：
-
-```ini
-[Service]
-Type=simple
-User=craft
-WorkingDirectory=/opt/craft
-EnvironmentFile=/opt/craft/.env
-Environment=CRAFT_RPC_HOST=127.0.0.1
-Environment=CRAFT_RPC_PORT=9100
-ExecStart=/opt/craft/bin/craft-server
-Restart=on-failure
-RestartSec=5
-```
-
-需要监听所有网卡时不要改包里的文件，用 drop-in：
-
-```bash
-sudo systemctl edit craft-server
-# 写入：
-# [Service]
-# Environment=CRAFT_RPC_HOST=0.0.0.0
-sudo systemctl restart craft-server
-```
-
-启动横幅（`journalctl` 或前台输出）会给出：
-
-```
-CRAFT_SERVER_URL=ws://<ip>:9100
-CRAFT_SERVER_TOKEN=...
-CRAFT_WEBUI_URL=http://0.0.0.0:9100
-CRAFT_WEBUI_PASSWORD=...
-```
-
-### 7.4 对外访问与 TLS
-
-服务端没有独立的 HTTP/WS 端口，`9100` 一个口同时提供 Web UI、`/api/*` 和 WebSocket RPC。
-
-**直接用内置 TLS**（`wss://`）：
-
-```bash
-# 自签（测试用）
-openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-  -keyout /opt/craft/certs/key.pem -out /opt/craft/certs/cert.pem \
-  -subj "/CN=craft.example.com"
-
-systemctl edit craft-server
-# [Service]
-# Environment=CRAFT_RPC_HOST=0.0.0.0
-# Environment=CRAFT_RPC_TLS_CERT=/opt/craft/certs/cert.pem
-# Environment=CRAFT_RPC_TLS_KEY=/opt/craft/certs/key.pem
-```
-
-也可以用 `scripts/generate-dev-cert.sh` 生成开发证书（仓库内）。
-
-**生产推荐**：保持服务只监听 `127.0.0.1`，由 nginx/Caddy 终止 TLS。
-
-nginx：
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name craft.example.com;
-
-    ssl_certificate     /etc/letsencrypt/live/craft.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/craft.example.com/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:9100;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_read_timeout 3600s;   # 长连接会话
-    }
-}
-```
-
-Caddy（自动证书 + WebSocket）：
-
-```
-craft.example.com {
-    reverse_proxy 127.0.0.1:9100
-}
-```
-
-反向代理场景下如果浏览器看到的地址与 `/api/config` 返回的不一致，显式指定：
-
-```ini
-Environment=CRAFT_WEBUI_WS_URL=wss://craft.example.com
-Environment=CRAFT_WEBUI_SECURE_COOKIE=true
-```
-
-防火墙只开放代理端口：
-
-```bash
-sudo ufw allow 443/tcp
-# 不要对公网开放 9100
-```
-
-### 7.5 客户端接入
-
-- **浏览器**：打开 `https://craft.example.com/`（或 `http://<ip>:9100/`），用 `CRAFT_WEBUI_PASSWORD` 登录。它不是 `CRAFT_SERVER_TOKEN`。
-- **桌面客户端**：菜单 → Connect to Server… → 填 `wss://craft.example.com`（或 `ws://<ip>:9100`）+ `CRAFT_SERVER_TOKEN`。连接成功后窗口的会话、工具、浏览器都跑在服务器上。
-- **CLI**：
-
-  ```bash
-  CRAFT_SERVER_URL=ws://127.0.0.1:9100 CRAFT_SERVER_TOKEN=<token> \
-    bun run apps/cli/src/index.ts ping
-  ```
-
-### 7.6 数据、备份、升级与回滚
-
-- 数据目录：默认运行用户 HOME 下的 `~/.craft-agent`（配置、会话、workspace、凭据）。`CRAFT_CONFIG_DIR` 可改，但部分路径仍按 HOME 解析（见 [dev-environment §6.3](./dev-environment.md#63-踩过的坑前两条已修附机制与测试)），所以**换目录不如换用户/换 HOME 干净**。
-- 备份（停机或低峰）：
-
-  ```bash
-  sudo systemctl stop craft-server
-  sudo tar czf /backup/craft-data-$(date +%F).tar.gz -C /home/craft .craft-agent
-  sudo systemctl start craft-server
-  ```
-
-- 升级（保留回滚点）：
-
-  ```bash
-  sudo tar xzf craft-server-<new>-linux-x64.tar.gz -C /opt/craft-<new> --strip-components=1
-  sudo cp /opt/craft/.env /opt/craft-<new>/.env          # token 沿用
-  sudo chown -R craft:craft /opt/craft-<new>
-  sudo ln -sfn /opt/craft-<new> /opt/craft               # 或改 systemd 的 WorkingDirectory
-  sudo systemctl restart craft-server
-  ```
-
-  数据目录不随包移动；回滚只需把软链/`WorkingDirectory` 指回旧目录再重启。
-
-- 版本检查：包根 `package.json` 的 `version`；CLI 的 `versions` 命令会显示服务端运行时版本。
-
-### 7.7 多实例
-
-同一个包可以跑多个实例，互不干扰：
-
-```bash
-CRAFT_CONFIG_DIR=/home/craft/instances/a \
-CRAFT_RPC_PORT=9200 \
-CRAFT_SERVER_TOKEN=<token-a> \
-/opt/craft/bin/craft-server
-```
-
-注意同一 `CRAFT_CONFIG_DIR` 只能跑一个实例（`.server.lock` 会报占用者 PID）。作为 systemd 服务时用模板单元或复制一份 service 文件。
-
-### 7.8 日志与排障
-
-- `journalctl -u craft-server -f`；`CRAFT_DEBUG=true` 打开详细日志。
-- 启动日志应有三行：
-
-  ```
-  [webui] drawio editor: .../resources/drawio
-  [webui] office editors: .../resources/office
-    Printing host: .../resources/render-host/craft-headless-export
-  ```
-
-  缺行说明对应资源没进包（重新构建）。
-- 健康检查：`curl -I http://127.0.0.1:9100/login` → 200。
-- 常见报错见第 10 节。
-
-### 7.9 安全检查清单
-
-- [ ] 公网只暴露 TLS 端口（443），`9100` 只监听 `127.0.0.1`
-- [ ] `CRAFT_SERVER_TOKEN` 为 32 字节随机 hex，且未写入 shell history / 仓库
-- [ ] `.env` 权限 `600`，属主为运行用户
-- [ ] 用专用非 root 用户运行，不要用 root
-- [ ] 反向代理启用 TLS 时设置 `CRAFT_WEBUI_SECURE_COOKIE=true`
-- [ ] 定期备份 `~/.craft-agent`
-
-
-## 8. 目标机依赖（仅 PDF / 渲染需要）
-
-启动和聊天不需要额外安装；PDF 导出、drawio 渲染需要 Chromium 的系统库与 CJK 字体：
-
-```bash
-# Ubuntu 24.04
-sudo apt install -y fonts-noto-cjk fontconfig libnss3 libnspr4 libatk1.0-0 \
-  libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libasound2t64 libxkbcommon0 \
-  libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libpango-1.0-0 libcairo2 \
-  libx11-6 libxcb1 libxext6
-# Ubuntu 22.04 把 libasound2t64 换成 libasound2
-```
-
-少了 CJK 字体不会报错，只是 PDF 里中文会按替代字体重新排版。
-
-## 9. 验收
-
-```bash
-# 启动日志应有三行
-[webui] drawio editor: .../resources/drawio
-[webui] office editors: .../resources/office
-  Printing host: .../resources/render-host/craft-headless-export
-
-curl -I http://127.0.0.1:9100/login          # 200
-# 打印机自检（不经过 UI）
-PATH="$PWD/vendor/node/bin:$PATH" \
-PLAYWRIGHT_BROWSERS_PATH="$PWD/resources/playwright" \
-  ./resources/render-host/craft-headless-export --probe --json   # {"status":"ok"}
-```
-
-RPC 可用 `craft-cli`（仓库内）验证：`bun run apps/cli/src/index.ts --url ws://127.0.0.1:9100 --token <t> ping`。
-
-## 10. 常见问题
+## 8. 构建常见问题
 
 1. **`bun: command not found: unzip`**：构建机缺 `unzip`，`server:build` 下载 Bun 时要用。
 2. **drawio 403 rate limit**：GitHub 匿名 API 60 次/小时，设 `GITHUB_TOKEN` 后重跑。
 3. **`playwright: Executable doesn't exist ... chromium_headless_shell-XXXX`**：`playwright-core` 版本与已下载浏览器不一致。脚本会按 `browsers.json` 校验；手工流程中要保证两者匹配（本仓库为 1.64.1 ↔ revision 1248）。
 4. **Chromium 起不来：`libatspi.so.0: undefined symbol: g_once_init_leave_pointer`**：`LD_LIBRARY_PATH` 被 IDE 注入的旧 glib 覆盖。构建/运行前 `unset LD_LIBRARY_PATH`。
 5. **`Cannot find module '@craft-agent/office-host'` / `fast-uri` / `gray-matter` / `tar`**：`dist/server` 没做第 4 步补齐，或依赖安装用了整棵 workspace。
-6. **服务拒绝启动：`Weak server token`**：`CRAFT_SERVER_TOKEN` 至少 16 字符，用 `openssl rand -hex 32`。
-7. **想换 Node / Bun 版本**：`vendor/node` 与 `vendor/bun` 是随包拷贝的；Dockerfile 里对应 `NODE_MAJOR` 与 `oven/bun:<ver>-slim` 也要同步，保持两边一致。
+6. **想换 Node / Bun 版本**：`vendor/node` 与 `vendor/bun` 是随包拷贝的；Dockerfile 里对应 `NODE_MAJOR` 与 `oven/bun:<ver>-slim` 也要同步，保持两边一致。
+
+部署侧的运行期报错（token、端口、TLS、反代、字体）见 [deployment.md 的排障一节](deployment.md#10-日志与排障)。

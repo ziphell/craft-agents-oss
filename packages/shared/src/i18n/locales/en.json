@@ -2380,6 +2380,7 @@
   "settings.server.deviceTokenHint": "Paste this token in Connect to Server on the device.",
   "settings.server.deviceTokenWaitingSince": "Created {{time}}",
   "settings.server.enableServerMode": "Enable Server Mode",
+  "settings.server.envManagedNotice": "Listener settings come from the service environment (CRAFT_RPC_*). Change them there and restart the service — this page only shows them.",
   "settings.server.externalBrowserUrl": "External browser URL",
   "settings.server.externalWsUrl": "External WebSocket URL",
   "settings.server.failedToSave": "Failed to save: {{message}}",

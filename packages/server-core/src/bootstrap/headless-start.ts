@@ -20,6 +20,11 @@ interface ModelRefreshServiceLike {
 export interface ServerBootstrapOptions<TSessionManager, THandlerDeps> {
   serverToken?: string
   /**
+   * The effective Web UI password. Passed in because a hub may generate one at startup when the
+   * environment does not provide it; the settings page shows the value the listener actually uses.
+   */
+  webuiPassword?: string
+  /**
    * Registry to fill with this hub's credentials. Callers that wire HTTP endpoints before the
    * server starts (the Web UI's export downloads) pass their own; otherwise one is created.
    */
@@ -76,6 +81,8 @@ export interface ServerHandlerContext {
   startedAt: number
   /** Slots and the server token; device handlers create and delete records here. */
   tokens: ServerTokenRegistry
+  /** The Web UI password the listener actually uses (environment value or one minted at startup). */
+  webuiPassword?: string
   /** Drop every live connection authenticated with one credential. */
   disconnectTokenClients: (tokenId: string, reason?: string) => number
   /** Apply a changed credential scope to the connections already holding it. */
@@ -503,6 +510,7 @@ export async function bootstrapServer<TSessionManager, THandlerDeps>(
     serverId: options.serverId ?? 'headless',
     startedAt,
     tokens,
+    webuiPassword: options.webuiPassword ?? process.env.CRAFT_WEBUI_PASSWORD,
     disconnectTokenClients: (tokenId, reason) => wsServer.disconnectTokenClients(tokenId, reason),
     applyTokenScope: (tokenId, scope) => wsServer.applyTokenScope(tokenId, scope),
     revalidateTokenClients: (tokenId, stillPermitted, reason) =>
