@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { isEscapeDuringComposition, RichTextInput, textToHTML } from '../rich-text-input'
+import { isEscapeDuringComposition, isCompositionInput, RichTextInput, textToHTML } from '../rich-text-input'
 import { buildElementMention } from '@craft-agent/shared/mentions'
 
 it('merges caller sizing styles without dropping the default editor line-height', () => {
@@ -43,6 +43,27 @@ describe('isEscapeDuringComposition', () => {
 
   it('returns false for non-Escape keys even if composing', () => {
     expect(isEscapeDuringComposition({ key: 'Enter', isComposing: true }, true)).toBe(false)
+  })
+})
+
+describe('isCompositionInput', () => {
+  it('treats an event flagged as composing as an in-flight composition', () => {
+    expect(isCompositionInput({ isComposing: true }, false)).toBe(true)
+  })
+
+  it('lets a plain keystroke through even when the latch is stuck on', () => {
+    // A composition that ended without `compositionend` leaves the latch true;
+    // the next plain keystroke must still reach `value` (send button lights up).
+    expect(isCompositionInput({ isComposing: false }, true)).toBe(false)
+  })
+
+  it('treats a plain keystroke with no latch as committed input', () => {
+    expect(isCompositionInput({ isComposing: false }, false)).toBe(false)
+  })
+
+  it('falls back to the latch when there is no event (compositionend)', () => {
+    expect(isCompositionInput(undefined, false)).toBe(false)
+    expect(isCompositionInput(undefined, true)).toBe(true)
   })
 })
 

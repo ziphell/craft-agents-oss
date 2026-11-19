@@ -43,6 +43,30 @@ export function isEscapeDuringComposition(
   return Boolean(isComposingRefActive || event.isComposing || event.nativeEvent?.isComposing)
 }
 
+export interface CompositionInputEventLike {
+  isComposing?: boolean
+}
+
+/**
+ * Returns true when an `input` event is an in-flight IME composition update.
+ *
+ * The signal has to come from the event itself. A latch kept on the element can
+ * stay `true` after a composition ends without a `compositionend` (blur, IME
+ * switch, a DOM rebuild while composing), and gating input on it swallows every
+ * later keystroke: the text stays in the DOM while `value` never changes, so
+ * the composer's send button never lights.
+ *
+ * `compositionend` calls the same handler without an event; the caller has just
+ * cleared the latch, so the persisted value is committed text.
+ */
+export function isCompositionInput(
+  event: CompositionInputEventLike | undefined,
+  latchActive: boolean
+): boolean {
+  if (event) return event.isComposing === true
+  return latchActive
+}
+
 export interface RichTextInputProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onChange' | 'onInput' | 'onPaste'> {
   /** Current text value */
   value: string
@@ -592,9 +616,25 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
     }), [])
 
     // Handle input events
-    const handleInput = React.useCallback(() => {
-      if (isComposing.current) return
+    //
+    // Whether an input event belongs to an IME composition is a property of the
+    // event itself (`InputEvent.isComposing`), not of the element — see
+    // `isCompositionInput` for why the latch alone must never gate a keystroke.
+    const handleInput = React.useCallback((event?: React.FormEvent<HTMLDivElement>) => {
       if (!divRef.current) return
+
+      const nativeEvent = event?.nativeEvent as InputEvent | undefined
+      if (isCompositionInput(nativeEvent, isComposing.current)) {
+        isComposing.current = true
+        setIsComposingState(true)
+        return
+      }
+
+      // A plain keystroke proves composition is over, even when its
+      // `compositionend` never reached us. Heal the latch here so a stale flag
+      // can never gate the next input again.
+      isComposing.current = false
+      setIsComposingState(false)
 
       const newText = getTextFromElement(divRef.current)
       const cursorPos = getCursorPosition(divRef.current, cursorPositionRef.current)
@@ -681,6 +721,10 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
     // Handle blur
     const handleBlur = React.useCallback((e: React.FocusEvent<HTMLDivElement>) => {
       setIsFocused(false)
+      // Losing focus can abandon an IME composition without a `compositionend`;
+      // clear the latch so it cannot swallow the next keystrokes after refocusing.
+      isComposing.current = false
+      setIsComposingState(false)
       onBlur?.(e)
     }, [onBlur])
 
@@ -688,6 +732,9 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
     React.useEffect(() => {
       if (!divRef.current) return
       if (isInternalUpdate.current) return
+      // Never rewrite the editor under an in-flight composition: replacing the
+      // DOM detaches the IME's composition node and can drop its `compositionend`.
+      if (isComposingState) return
       if (lastValueRef.current === safeValue) return
 
       // External value change - update content
@@ -707,7 +754,7 @@ export const RichTextInput = React.forwardRef<RichTextInputHandle, RichTextInput
         setCursorPosition(divRef.current, cursorPos)
         pendingCursorRef.current = null // Clear after use
       }
-    }, [safeValue, skills, sources, skillSlugs, sourceSlugs, workspaceId])
+    }, [safeValue, skills, sources, skillSlugs, sourceSlugs, workspaceId, isComposingState])
 
     // Initialize content on mount
     React.useEffect(() => {
