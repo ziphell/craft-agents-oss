@@ -1,0 +1,10 @@
+{
+  "hub": "ws://192.168.1.20:9100",
+  "token": "<device slot token from the hub's Add device>",
+  "name": "build-box",
+  "allowedRoots": ["/home/craft/work"],
+  "grants": {
+    "shell": true,
+    "files": true
+  }
+}

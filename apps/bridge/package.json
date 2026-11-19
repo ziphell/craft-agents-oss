@@ -1,0 +1,25 @@
+{
+  "name": "@craft-agent/bridge",
+  "version": "0.14.1",
+  "license": "Apache-2.0",
+  "private": true,
+  "description": "Lightweight device bridge: lend this machine's shell and files to a Craft Agent hub",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "craft-bridge": "src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@craft-agent/server-core": "workspace:*",
+    "@craft-agent/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "@types/node": "^22.0.0",
+    "@types/bun": "latest"
+  }
+}

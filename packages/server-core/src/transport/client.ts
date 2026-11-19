@@ -115,6 +115,14 @@ export interface WsRpcClientOptions {
   maxReconnectDelay?: number
   /** Whether to auto-reconnect on disconnect. Default: true */
   autoReconnect?: boolean
+  /**
+   * Keep retrying after the hub announces a graceful shutdown.
+   *
+   * A window treats that announcement as final (the process is going away). A long-running service
+   * — a device bridge — must instead keep trying: the hub restarting is routine, not an ending.
+   * Default: false.
+   */
+  reconnectAfterServerShutdown?: boolean
   /** Handshake/connect timeout in ms. Default: 10_000 */
   connectTimeout?: number
   /** Capabilities to advertise on handshake. Handlers must be registered via handleCapability(). */
@@ -171,6 +179,7 @@ export class WsRpcClient implements RpcClient {
   private readonly requestTimeout: number
   private readonly maxReconnectDelay: number
   private readonly autoReconnect: boolean
+  private readonly reconnectAfterServerShutdown: boolean
   private readonly connectTimeout: number
   private readonly mode: TransportMode
   private readonly tlsRejectUnauthorized: boolean
@@ -185,6 +194,7 @@ export class WsRpcClient implements RpcClient {
     this.requestTimeout = opts?.requestTimeout ?? REQUEST_TIMEOUT_MS
     this.maxReconnectDelay = opts?.maxReconnectDelay ?? 30_000
     this.autoReconnect = opts?.autoReconnect ?? true
+    this.reconnectAfterServerShutdown = opts?.reconnectAfterServerShutdown ?? false
     this.connectTimeout = opts?.connectTimeout ?? 10_000
     this.mode = opts?.mode ?? this.inferMode(url)
     this.tlsRejectUnauthorized = opts?.tlsRejectUnauthorized ?? true
@@ -678,9 +688,10 @@ export class WsRpcClient implements RpcClient {
             const next = envelope.args?.[0]
             if (next === 'client' || next === 'device' || next === 'both') this._tokenScope = next
           }
-          // Server is shutting down — stop reconnection before dispatching
+          // Server is shutting down — stop reconnection before dispatching. A service that opted
+          // into `reconnectAfterServerShutdown` keeps its retry loop: its hub will be back.
           if (envelope.channel === 'server:shuttingDown') {
-            this.permanentlyClosed = true
+            if (!this.reconnectAfterServerShutdown) this.permanentlyClosed = true
             this.setConnectionState({
               status: 'disconnected',
               lastError: { kind: 'server', message: 'Server is shutting down', code: 'SERVER_SHUTDOWN' },
