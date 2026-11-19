@@ -9194,6 +9194,13 @@ export class SessionManager implements ISessionManager {
       this.applyExternalSessionMetadata(managed, pendingHeader)
     }
 
+    // Text that arrived in the last delta batch must reach the client before the
+    // completion notice. A batch still sitting on its flush timer would otherwise
+    // land *after* `complete`: the renderer has already closed the turn, so the
+    // late delta opens a second, never-finalized assistant message (the streamed
+    // reply stops mid-sentence while the completion notification arrives).
+    this.flushDelta(sessionId, managed.workspace.id)
+
     // 5. Emit the turn-complete event to the UI / messaging gateway
     //    UNCONDITIONALLY — exactly once per turn, before dispatching any queued
     //    message.

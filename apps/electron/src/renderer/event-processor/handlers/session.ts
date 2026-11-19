@@ -88,6 +88,26 @@ export function handleComplete(
     })
   }
 
+  // Same fail-safe for assistant text: `complete` means the turn is over, so a
+  // message still marked streaming/pending can never receive its
+  // `text_complete`. That pairing happens when the final event was dropped (the
+  // completion notice still arrives, the transcript just stops mid-sentence).
+  // Leave it pending and the turn keeps a live "Thinking…" row forever, with
+  // the streamed fragment rendered as an intermediate step. Finalize it here so
+  // the accumulated text becomes the response, exactly like a turn that ended
+  // without a final text_complete.
+  const hasUnfinishedAssistantText = updatedMessages.some(
+    m => m.role === 'assistant' && (m.isStreaming || m.isPending)
+  )
+
+  if (hasUnfinishedAssistantText) {
+    updatedMessages = updatedMessages.map(m =>
+      m.role === 'assistant' && (m.isStreaming || m.isPending)
+        ? { ...m, isStreaming: false, isPending: false }
+        : m
+    )
+  }
+
   // Queued bubbles stay queued until the backend says otherwise: either a
   // 'processing' event when the message is replayed, or an 'accepted' event
   // when the user steers it into the running turn. Clearing here would mark
