@@ -133,6 +133,25 @@ async function build(name: string, cmd: string[]): Promise<void> {
   if (code !== 0) fail(`${name} failed with exit code ${code}`)
 }
 
+/**
+ * Assert that a directory holds everything the package needs.
+ *
+ * The Windows and macOS builds verify their staged binaries (`Test-Path` on the SDK, renderer
+ * `index.html`) rather than trusting that a copy step ran. The same rule here: a missing editor or
+ * runtime must fail the build, not surface as a missing feature on the deployed host.
+ */
+function requirePaths(
+  baseDir: string,
+  entries: ReadonlyArray<readonly [path: string, label: string]>,
+): void {
+  const missing = entries
+    .filter(([rel]) => !existsSync(join(baseDir, rel)))
+    .map(([rel, label]) => `${rel} (${label})`)
+  if (missing.length > 0) {
+    fail(`Missing required files in ${baseDir}:\n  - ${missing.join('\n  - ')}`)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Preflight
 // ---------------------------------------------------------------------------
@@ -150,6 +169,11 @@ requireExecutable('unzip')
 requireExecutable('ar')
 console.log(`  ✓ node ${nodePath}`)
 console.log(`  ✓ bun ${process.execPath}`)
+
+// The distribution keeps one archive name. Start clean so a stale copy from an
+// earlier run — including a thin `server:build --compress` output, which uses the
+// same name but is not deployable — can never be mistaken for this build.
+rmSync(join(DIST_DIR, `craft-server-${VERSION}-linux-x64.tar.gz`), { force: true })
 
 // ---------------------------------------------------------------------------
 // Assets (built only when missing)
@@ -262,6 +286,23 @@ if (browserDir && existsSync(browserDir)) {
   await build('Chromium', ['node', 'node_modules/playwright-core/cli.js', 'install', 'chromium-headless-shell'])
 }
 
+step('Verify inputs')
+requirePaths(ROOT, [
+  ['apps/webui/dist/index.html', 'Web UI'],
+  ['packages/render-host/dist/cli.mjs', 'render host bundle'],
+  ['apps/electron/resources/drawio/index.html', 'drawio editor'],
+  ['apps/electron/resources/office/docs/index.html', 'office editor'],
+  ['apps/electron/resources/office-engine/pptx.cjs', 'office engine'],
+  ['apps/electron/resources/cli/genoffice.cjs', 'GenOffice CLI'],
+  ['apps/electron/resources/office-native/xlsx-sidecar', 'xlsx sidecar'],
+  ['apps/electron/resources/cli-tools/dist/img-tool.mjs', 'command-line tools'],
+  ['apps/electron/resources/models/silero_vad.onnx', 'ASR VAD model'],
+])
+if (expectedRevision) {
+  requirePaths(PLAYWRIGHT_CACHE, [[`chromium_headless_shell-${expectedRevision}`, 'Chromium']])
+}
+console.log('  ✓ all build inputs present')
+
 // ---------------------------------------------------------------------------
 // Skeleton build
 // ---------------------------------------------------------------------------
@@ -370,7 +411,12 @@ cpSync(PLAYWRIGHT_CACHE, join(OUT, 'resources', 'playwright'), { recursive: true
 mkdirSync(join(OUT, 'vendor', 'node', 'bin'), { recursive: true })
 cpSync(nodePath, join(OUT, 'vendor', 'node', 'bin', 'node'))
 chmodSync(join(OUT, 'vendor', 'node', 'bin', 'node'), 0o755)
-console.log('  ✓ webui, render-host, Chromium, node')
+
+// License files travel with the artifact, the way the installers carry them.
+for (const file of ['LICENSE', 'NOTICE']) {
+  if (existsSync(join(ROOT, file))) cpSync(join(ROOT, file), join(OUT, file))
+}
+console.log('  ✓ webui, render-host, Chromium, node, licenses')
 
 step('Trim other platforms')
 for (const rel of FOREIGN_ARTIFACTS) {
@@ -390,22 +436,76 @@ if (launcher.includes('CRAFT_WEBUI_DIR')) {
   console.log('  ✓ injected CRAFT_WEBUI_DIR / PLAYWRIGHT_BROWSERS_PATH / Node paths')
 }
 
+step('Verify distribution')
+requirePaths(OUT, [
+  ['bin/craft-server', 'launcher'],
+  ['start.sh', 'entry script'],
+  ['install.sh', 'installer'],
+  ['package.json', 'manifest'],
+  ['vendor/bun/bun', 'Bun runtime'],
+  ['vendor/node/bin/node', 'Node runtime'],
+  ['webui/index.html', 'Web UI'],
+  ['resources/render-host/craft-headless-export', 'printing host'],
+  ['resources/drawio/index.html', 'drawio editor'],
+  ['resources/office/docs/index.html', 'office editor'],
+  ['resources/office-engine/pptx.cjs', 'office engine'],
+  ['resources/cli/genoffice.cjs', 'GenOffice CLI'],
+  ['resources/office-native/xlsx-sidecar', 'xlsx sidecar'],
+  ['resources/cli-tools/dist/img-tool.mjs', 'command-line tools'],
+  ['resources/models/silero_vad.onnx', 'ASR VAD model'],
+  ['node_modules/@craft-agent/office-host', 'office-host package'],
+  ['packages/messaging-whatsapp-worker/dist/worker.cjs', 'WhatsApp worker'],
+])
+if (expectedRevision) {
+  requirePaths(OUT, [[`resources/playwright/chromium_headless_shell-${expectedRevision}`, 'Chromium']])
+}
+console.log('  ✓ every required file is in place')
+
 // ---------------------------------------------------------------------------
 // Archive
 // ---------------------------------------------------------------------------
 
 step('Archive')
-const archive = join(DIST_DIR, `craft-server-${VERSION}-linux-x64-full.tar.gz`)
+const archive = join(DIST_DIR, `craft-server-${VERSION}-linux-x64.tar.gz`)
+const topLevel = `craft-server-${VERSION}`
 rmSync(archive, { force: true })
+// Name the members explicitly instead of passing `.`: that keeps the archive free
+// of a bare `./` entry alongside the versioned root.
+const topEntries = readdirSync(OUT)
 const tar = Bun.spawn({
-  cmd: ['env', '-u', 'LD_LIBRARY_PATH', 'tar', '-czf', archive, '-C', OUT, '.'],
+  cmd: [
+    'env',
+    '-u',
+    'LD_LIBRARY_PATH',
+    'tar',
+    '-czf',
+    archive,
+    // One versioned root directory, like an installer: extracting into a shared
+    // directory must not scatter `bin/ resources/ node_modules/` across it.
+    '--transform',
+    `s,^,${topLevel}/,`,
+    '--sort=name',
+    '--owner=0',
+    '--group=0',
+    '--numeric-owner',
+    '-C',
+    OUT,
+    ...topEntries,
+  ],
   stdout: 'inherit',
   stderr: 'inherit',
 })
 if ((await tar.exited) !== 0) fail('tar failed')
 
+const checksumFile = `${archive}.sha256`
+const checksum = Bun.spawnSync({ cmd: ['sha256sum', archive.split('/').pop()!], cwd: DIST_DIR })
+if (checksum.exitCode !== 0) fail('sha256sum failed')
+const digest = checksum.stdout.toString().split(/\s+/)[0]!
+writeFileSync(checksumFile, checksum.stdout)
+
 console.log(`\n✓ ${archive}`)
 console.log(`  ${(statSync(archive).size / 1024 / 1024).toFixed(0)} MB archive · ${dirSize(OUT)} unpacked`)
+console.log(`  sha256 ${digest}`)
 console.log(`\nRun:`)
-console.log(`  mkdir -p /opt/craft && tar xzf ${archive} -C /opt/craft`)
+console.log(`  mkdir -p /opt/craft && tar xzf ${archive} -C /opt/craft --strip-components=1`)
 console.log(`  cd /opt/craft && ./install.sh && ./start.sh`)

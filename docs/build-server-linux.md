@@ -7,9 +7,12 @@
 ## 1. 产物
 
 ```
-dist/craft-server-<version>-linux-x64-full.tar.gz   # 约 660 MB
-dist/server/                                        # 解压后约 2.1 GB
+dist/craft-server-<version>-linux-x64.tar.gz          # 约 660 MB
+dist/craft-server-<version>-linux-x64.tar.gz.sha256   # 校验和
+dist/server/                                          # 解压后约 2.1 GB
 ```
+
+tar 内只有一个版本化顶层目录 `craft-server-<version>/`（和安装包一样，解压不会把 `bin/ resources/ node_modules/` 撒到当前目录）；部署时用 `--strip-components=1` 解到目标目录。
 
 包内自带：
 
@@ -109,7 +112,9 @@ node node_modules/playwright-core/cli.js install chromium-headless-shell
 ### 5.2 骨架
 
 ```bash
-bun run server:build:linux-x64
+# 不带 --compress：`server:build:linux-x64`（带 --compress）会产出与最终包同名的骨架 tar。
+# 出过 full 包后不要再跑它，否则会覆盖成不可部署的骨架。
+bun run server:build --platform=linux --arch=x64
 ```
 
 `server:build` 产出的目录**不完整**：没有 Web UI、打印宿主、Node，`packages/` 缺 `office-host`，`node_modules` 缺运行期依赖（根 `dependencies`、`tar` 这类 devDependency、`fast-uri` 这类传递依赖）。在仓库内启动 `dist/server` 时 Bun 会向上解析到仓库根 `node_modules`，所以“看起来能跑”；换台机器就报 `Cannot find module`。
@@ -166,7 +171,11 @@ cp -a "$(readlink -f "$(which node)")" vendor/node/bin/node
 
 ```bash
 cd /path/to/repo
-tar -czf dist/craft-server-<ver>-linux-x64-full.tar.gz -C dist/server .
+tar -czf dist/craft-server-<ver>-linux-x64.tar.gz \
+  --transform 's,^,craft-server-<ver>/,' \
+  --sort=name --owner=0 --group=0 --numeric-owner \
+  -C dist/server $(ls -A dist/server)
+(cd dist && sha256sum craft-server-<ver>-linux-x64.tar.gz > craft-server-<ver>-linux-x64.tar.gz.sha256)
 ```
 
 ## 6. 体积与裁剪
@@ -224,7 +233,9 @@ sudo useradd --create-home --shell /bin/bash craft
 
 ```bash
 sudo mkdir -p /opt/craft
-sudo tar xzf craft-server-<ver>-linux-x64-full.tar.gz -C /opt/craft
+# 先校验，两个文件放在同一目录
+sha256sum -c craft-server-<ver>-linux-x64.tar.gz.sha256
+sudo tar xzf craft-server-<ver>-linux-x64.tar.gz -C /opt/craft --strip-components=1
 sudo chown -R craft:craft /opt/craft
 
 cd /opt/craft
@@ -381,7 +392,7 @@ sudo ufw allow 443/tcp
 - 升级（保留回滚点）：
 
   ```bash
-  sudo tar xzf craft-server-<new>-linux-x64-full.tar.gz -C /opt/craft-<new>
+  sudo tar xzf craft-server-<new>-linux-x64.tar.gz -C /opt/craft-<new> --strip-components=1
   sudo cp /opt/craft/.env /opt/craft-<new>/.env          # token 沿用
   sudo chown -R craft:craft /opt/craft-<new>
   sudo ln -sfn /opt/craft-<new> /opt/craft               # 或改 systemd 的 WorkingDirectory
