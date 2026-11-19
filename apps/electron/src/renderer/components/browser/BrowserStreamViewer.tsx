@@ -67,6 +67,7 @@ import type {
   BrowserStreamFrame,
   BrowserStreamInput,
 } from '../../../shared/types'
+import { getBrowserLiveFxCornerRadii } from '../../../shared/browser-live-fx'
 
 type BrowserTabSummary = NonNullable<BrowserInstanceInfo['tabs']>[number]
 
@@ -167,6 +168,15 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   const lastClickRef = useRef({ at: 0, x: 0, y: 0, count: 0 })
 
   const stageRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * The whole viewer (bar, rail, page): automatic focus moves are only ever allowed when the
+   * keyboard is already in here.
+   *
+   * This is a remote window's own document — the same one the chat lives in — so focusing the
+   * page on a state push would take the person's keyboard away from whatever they were using.
+   * A remote browser window never does that; only a gesture inside this viewer re-seats it.
+   */
+  const viewerRef = useRef<HTMLDivElement | null>(null)
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   /**
    * The pane's editable target, invisible.
@@ -368,6 +378,44 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   }, [clearPicture, clearStallTimer, enterPhase])
 
   /**
+   * Where the keyboard belongs once a tab is on screen.
+   *
+   * The same rule the browser window follows (`wantsAddressBarFocus`): into the page, and into
+   * the address bar only for a tab nobody has pointed anywhere — the new-tab page or
+   * `about:blank` — where there is nothing in the page to type into. Chrome that acts on the
+   * page is not a place the keyboard stays: clicking reload, back or a rail tab must leave the
+   * keys going to the page, like it does in the window on the hub.
+   *
+   * Nothing happens while the person is typing in the address bar: that focus is theirs.
+   * `ignoreHold` is for the takeover itself: the dismissal that just happened is what makes
+   * the tab the person's, and the state push saying so may not have arrived yet.
+   */
+  const focusShownPage = useCallback((ignoreHold = false) => {
+    if (document.activeElement instanceof HTMLInputElement) return
+    const target = selectedRef.current
+    const shown = visibleInstancesRef.current
+      .find((instance) => instance.id === target?.instanceId)
+      ?.tabs?.find((tab) => tab.id === target?.tabId)
+    // A held tab takes no keyboard: parking the pane's keyboard in the page's invisible
+    // input would make every keystroke look like input the server has to refuse.
+    if (!ignoreHold && shown && shown.lockedBy !== null && !shown.overlayDismissed) return
+    const nothingToTypeInto = !shown || !shown.url || shown.url === 'about:blank' || shown.url === 'about:newtab'
+    if (nothingToTypeInto) addressRef.current?.focus()
+    else inputRef.current?.focus()
+  }, [])
+
+  /**
+   * Whether the keyboard is already in this viewer. Automatic focus moves never leave it:
+   * the viewer shares a document with the chat, and a state push must not take the person's
+   * focus out of what they were doing.
+   */
+  const keyboardIsInsideViewer = useCallback(() => {
+    const root = viewerRef.current
+    const active = document.activeElement
+    return !!root && !!active && root.contains(active)
+  }, [])
+
+  /**
    * Ask the server for input on this stream.
    *
    * Control is taken when the tab is free, so watching a free tab is the same as operating it.
@@ -382,6 +430,9 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       await window.electronAPI.browserPane.streamControl(streamId, true)
       if (streamRef.current === streamId) {
         controlRef.current = true
+        // The server grants control only when nothing holds the tab (or the person has
+        // dismissed their half), so the held state is over even before its push lands.
+        heldRef.current = false
         setNotice(null)
       }
     } catch (err) {
@@ -410,10 +461,14 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       // leaves the lock in place rather than starting a retry fight with it.
       controlRef.current = false
       await acquireControl(streamId)
+      // Unlocking is taking the wheel, so the keyboard comes with it — the same hand-over the
+      // local window's lock makes. Only from a gesture inside this viewer: focus is never
+      // taken out of the chat or another field, even though the click made this pane ours.
+      if (controlRef.current && keyboardIsInsideViewer()) focusShownPage(true)
     } catch (err) {
       setNotice(err instanceof Error ? err.message : String(err))
     }
-  }, [acquireControl])
+  }, [acquireControl, focusShownPage, keyboardIsInsideViewer])
 
   /**
    * Paint one frame of this panel's stream, and take it as proof the stream is real.
@@ -738,34 +793,16 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     return () => observer.disconnect()
   }, [open])
 
-  /**
-   * Where the keyboard belongs once a tab is on screen.
-   *
-   * The same rule the browser window follows (`wantsAddressBarFocus`): into the page, and into
-   * the address bar only for a tab nobody has pointed anywhere — the new-tab page or
-   * `about:blank` — where there is nothing in the page to type into. Chrome that acts on the
-   * page is not a place the keyboard stays: clicking reload, back or a rail tab must leave the
-   * keys going to the page, like it does in the window on the hub.
-   *
-   * Nothing happens while the person is typing in the address bar: that focus is theirs.
-   */
-  const focusShownPage = useCallback(() => {
-    if (document.activeElement instanceof HTMLInputElement) return
-    const target = selectedRef.current
-    const shown = visibleInstancesRef.current
-      .find((instance) => instance.id === target?.instanceId)
-      ?.tabs?.find((tab) => tab.id === target?.tabId)
-    const nothingToTypeInto = !shown || !shown.url || shown.url === 'about:blank' || shown.url === 'about:newtab'
-    if (nothingToTypeInto) addressRef.current?.focus()
-    else inputRef.current?.focus()
-  }, [])
-
   // The keyboard belongs to the page once there is a page — including after a tab switch, which
   // is why the target is part of this: the stream may not have left `live` to get here.
   useEffect(() => {
     if (!open || phase !== 'live') return
+    // Only from inside the viewer. The shown tab can change from a host-side state push, and a
+    // remote browser window must never take the person's physical focus out of the chat (or any
+    // other field) that they are using.
+    if (!keyboardIsInsideViewer()) return
     focusShownPage()
-  }, [open, phase, selected?.instanceId, selected?.tabId, focusShownPage])
+  }, [open, phase, selected?.instanceId, selected?.tabId, focusShownPage, keyboardIsInsideViewer])
 
   // Escape closes the viewer, as it does every other fullscreen overlay. It is not forwarded to
   // the page: the overlay is what a person is looking at, and "leave" has to be one keystroke.
@@ -833,10 +870,13 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
   const send = useCallback((events: BrowserStreamInput[]) => {
     const streamId = streamRef.current
     if (!streamId || events.length === 0) return
+    // A held tab takes no input from the person, whatever the last frame said: a gesture
+    // that started before the agent claimed the tab keeps delivering to this element, and
+    // forwarding it would be refused server-side (and flash the notice) for every event.
+    if (heldRef.current) return
     if (!controlRef.current) {
-      // A held tab is not typed into, and not taken over by typing either: the lock is the
-      // gesture. A free tab is claimed on the first input that beats the control request.
-      if (!heldRef.current) void acquireControl(streamId)
+      // A free tab is claimed on the first input that beats the control request.
+      void acquireControl(streamId)
       return
     }
     void window.electronAPI.browserPane.streamInput(streamId, events).catch((err) => {
@@ -1169,6 +1209,14 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     : undefined
   const currentTabs = currentInstance?.tabs ?? []
   const currentTab = currentTabs.find((tab) => tab.id === selected?.tabId)
+  /**
+   * The watched tab is an agent's right now and the person has not taken their half back.
+   *
+   * The local browser window draws this as a purple ring, a dim and an input shield over the
+   * page; a remote window only has the stream, so it draws the same shield here. Without it a
+   * click just disappears — or comes back as "control was released" — and nothing says why.
+   */
+  const watchedHeld = !!currentTab && currentTab.lockedBy !== null && !currentTab.overlayDismissed
   const currentUrl = currentTab?.url || currentInstance?.url || ''
 
   /**
@@ -1185,6 +1233,25 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     setAddress(currentUrl)
   }, [currentUrl, editingAddress])
 
+  /**
+   * The agent taking the watched tab takes the keyboard with it.
+   *
+   * The pane's input is an invisible textarea parked in the page: leaving focus there (or an
+   * IME composition in flight) would make every keystroke look like input to forward, which
+   * the host then refuses. Drop both, and stop treating the stream as controlled, so the
+   * shield is the only thing between the person and the page.
+   */
+  useEffect(() => {
+    if (!watchedHeld) return
+    controlRef.current = false
+    composingRef.current = false
+    const input = inputRef.current
+    if (input) {
+      input.value = ''
+      input.blur()
+    }
+  }, [watchedHeld])
+
   /** The list after an action, for the state the push has not described yet (a new tab's id). */
   const reloadList = useCallback(async () => {
     const next = await window.electronAPI.browserPane.list()
@@ -1198,6 +1265,10 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     await window.electronAPI.browserPane
       .tabAction({ instanceId, action: 'activate', tabId })
       .catch((err) => setNotice(err instanceof Error ? err.message : String(err)))
+    // Opening the tab is the acknowledgement: the "driven, not working here" dot goes.
+    void window.electronAPI.browserPane
+      .tabAction({ instanceId, action: 'acknowledge', tabId })
+      .catch(() => {})
     // The window's own state push may have moved the viewer already (`onStateChanged`); a second
     // watch here would stop the stream it just started.
     const current = selectedRef.current
@@ -1256,11 +1327,12 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
     void call
       .then(() => {
         // The button that was clicked is not where the keyboard goes: the page is. (Stop swaps
-        // itself for reload, which would otherwise drop the focus on the floor.)
-        focusShownPage()
+        // itself for reload, which would otherwise drop the focus on the floor.) Only while the
+        // keyboard is still in this viewer — the navigation may finish after the person moved on.
+        if (keyboardIsInsideViewer()) focusShownPage()
       })
       .catch((err) => setNotice(err instanceof Error ? err.message : String(err)))
-  }, [currentInstance?.id, focusShownPage])
+  }, [currentInstance?.id, focusShownPage, keyboardIsInsideViewer])
 
   const goToAddress = useCallback(async () => {
     // The window the stream is on, not a lookup that can be a beat behind a new tab.
@@ -1272,14 +1344,16 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       // As typed: the server normalises, and a bare word is a search there.
       await window.electronAPI.browserPane.navigate(instanceId, target)
       // The address was typed, so the page it opened is where the keyboard goes next — whatever
-      // the list still says about that tab being blank.
-      inputRef.current?.focus()
+      // the list still says about that tab being blank. Never out of another field, though,
+      // and never into a tab an agent is holding: the navigation may land after the person
+      // has moved to the chat.
+      if (!heldRef.current && keyboardIsInsideViewer()) inputRef.current?.focus()
     } catch (err) {
       navigatingRef.current = false
       setAddress(currentUrl)
       setNotice(err instanceof Error ? err.message : String(err))
     }
-  }, [address, currentInstance?.id, selected?.instanceId, currentUrl])
+  }, [address, currentInstance?.id, selected?.instanceId, currentUrl, keyboardIsInsideViewer])
 
   /**
    * Android WebView 的软键盘“前往 / 回车”不一定产生 keydown('Enter')（IME 可能报
@@ -1393,6 +1467,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
       for this overlay's own header would be read by the OS as a click on the title bar.
     */
     <div
+      ref={viewerRef}
       role="dialog"
       aria-modal="true"
       aria-label={t('browser.viewerTitle')}
@@ -1682,6 +1757,7 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
               <textarea
                 ref={inputRef}
                 aria-label={t('browser.viewerTitle')}
+                tabIndex={watchedHeld ? -1 : 0}
                 autoComplete="off"
                 autoCorrect="off"
                 autoCapitalize="off"
@@ -1737,6 +1813,49 @@ export function BrowserStreamViewer({ workspaceId }: BrowserStreamViewerProps) {
                 }}
               />
             </div>
+
+            {/*
+              The agent's frame, the same shape the local browser window draws: a 1.5px
+              accent line around the page's rectangle with the glow inside it, and what the
+              conversation is doing in the top-right corner. The layer also takes input —
+              a tab an agent holds takes none from the person — and lifting it is the chip
+              (the same take-over the rail's lock performs).
+            */}
+            {watchedHeld && currentInstance && currentTab && (
+              <div className="absolute inset-0 z-20 cursor-not-allowed touch-none" aria-label={t('browser.tabInUse')}>
+                {fit && (
+                  <div
+                    className="browser-live-fx-frame pointer-events-none absolute left-1/2 top-1/2"
+                    style={{
+                      width: fit.width,
+                      height: fit.height,
+                      transform: 'translate(-50%, -50%)',
+                      borderRadius: getBrowserLiveFxCornerRadii().topLeft,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => { void takeOver(currentInstance.id, currentTab.id) }}
+                      title={t('browser.takeOverTab')}
+                      aria-label={t('browser.takeOverTab')}
+                      className="pointer-events-auto absolute right-2 top-2 flex max-w-[calc(100%-16px)] items-center gap-1.5 rounded-[7px] bg-[rgba(2,6,23,0.82)] py-1 pl-2 pr-1 text-[11px] leading-[1.2] transition-colors hover:bg-[rgba(2,6,23,0.92)]"
+                      style={{
+                        color: 'rgba(236, 254, 255, 0.95)',
+                        backdropFilter: 'blur(4px)',
+                      }}
+                    >
+                      <Lock className="h-3 w-3 shrink-0 text-accent" />
+                      <span className="min-w-0 truncate">{currentInstance.agentControlLabel || t('browser.tabInUse')}</span>
+                      {/* The action says itself: this chip *is* the unlock, so it has to read
+                          as a button rather than as a caption. */}
+                      <span className="shrink-0 whitespace-nowrap rounded-[5px] bg-accent/20 px-1.5 py-0.5 font-medium text-accent">
+                        {t('browser.takeOverTab')}
+                      </span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* A refusal from the server is news about the session, not a reason to hide the page. */}
             {notice && (

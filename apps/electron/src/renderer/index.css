@@ -1193,6 +1193,17 @@ html.dark[data-scenic] .fullscreen-overlay-background {
   }
 }
 
+/* The agent's frame over a streamed page (remote browser window / web UI): the same
+   1.5px accent line and inner glow the local browser window's overlay draws, plus the
+   dim it puts under the ink, so a held tab reads the same in both places. */
+.browser-live-fx-frame {
+  border: 1.5px solid var(--accent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--accent) 45%, transparent),
+    inset 0 0 20px color-mix(in oklab, var(--accent) 28%, transparent);
+  background: rgba(2, 6, 23, 0.03);
+}
+
 /* Text shimmer - subtle opacity pulse for inline text (title regeneration, etc.) */
 .animate-shimmer-text {
   animation: shimmer-text 1.2s ease-in-out infinite;

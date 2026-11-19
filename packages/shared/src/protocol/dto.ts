@@ -1485,6 +1485,15 @@ export interface BrowserInstanceInfo {
    */
   isMinimized?: boolean
   agentControlActive: boolean
+  /**
+   * What the conversation working in this window is doing, in words — the label the browser
+   * window paints in the page's top-right corner while a tab is held.
+   *
+   * Optional, and only present while somebody is at the wheel: a remote viewer has no access to
+   * the host's control map, so the label travels with the window's state. Missing means "nothing
+   * to name", exactly what an older host would have said.
+   */
+  agentControlLabel?: string | null
   themeColor: string | null
   /**
    * The workspace whose browser window this is, or `null` for a window opened

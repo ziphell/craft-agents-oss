@@ -2455,6 +2455,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * to a tab comes back to where they were. A command no longer comes
    * through here — it records the tab it works from and leaves the window where it is
    * ({@link setSessionTab}), because moving the person's view is not a command's to do.
+   *
+   * The keyboard hand-over is guarded by the window being focused: it never raises the window
+   * or takes the focus of this machine, but once the person is *in* this window, a switch must
+   * not leave their keyboard on the page that just went behind.
    */
   activateTab(instanceId: string, tabId: string): void {
     const instance = this.requireAliveInstance(instanceId)
@@ -6008,13 +6012,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private clearControlInInstance(instance: BrowserInstance, sessionId: string): void {
     let changed = instance.controlBy.delete(sessionId)
+    let releasedShownTab = false
     for (const tab of instance.tabs) {
       if (tab.heldBy !== sessionId) continue
       this.setHeldBy(tab, null)
+      if (tab.id === instance.activeTabId) releasedShownTab = true
       changed = true
     }
     if (!changed) return
     this.updateNativeOverlayState(instance)
+    // The shield is gone and the page is the person's again. If they are in this window, the
+    // keyboard comes back to the page rather than staying on a shield that no longer takes
+    // input (`focusShownTab` no-ops when the window is not focused, so nothing is taken).
+    if (releasedShownTab) this.focusShownTab(instance, activeTab(instance))
     this.pushToolbarState(instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] Released session ${sessionId}'s overlay and holds on ${instance.id}`)
@@ -7855,6 +7865,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           // conversations are still kept out), the ring/dim/shield they see go. The tab is
           // the row the lock was drawn on, not whichever tab the window happens to show.
           const result = this.clearAgentControlForInstance(inst.id, undefined, tabId)
+          // Unlocking from this window's own rail is taking the wheel here, so the keyboard
+          // comes with it — the click left it on the rail button. Scoped to this channel on
+          // purpose: a release asked for by a remote window (the RPC path) must never move
+          // the focus of this machine's window.
+          const released = tabId ? tabById(inst, tabId) : activeTab(inst)
+          if (result.released && released && released.id === inst.activeTabId) {
+            this.focusShownTab(inst, released)
+          }
           mainLog.info(
             `[browser-pane] person dismissed the tab lock instance=${inst.id} tab=${tabId ?? 'unstated'} released=${result.released}${result.reason ? ` reason=${result.reason}` : ''}`,
           )
@@ -8673,6 +8691,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // other conversations are still refused it, and the person can click and type again.
     tab.overlayDismissedByPerson = true
     this.updateNativeOverlayState(instance)
+    // Taking the wheel means the keyboard comes with it — but only for the window the person is
+    // already in: `focusShownTab` does nothing unless that window is focused, so a request from
+    // another machine can never take this machine's focus. What it prevents is the keyboard
+    // dangling on the dismiss button (or on the shield that just went) while the page is theirs.
+    if (tab.id === instance.activeTabId) this.focusShownTab(instance, tab)
     // Two audiences, two pushes: the rail inside the browser window hears IPC, everyone else
     // (the main renderer, remote windows, webui) hears the state broadcast.
     this.pushToolbarState(instance)
@@ -10015,6 +10038,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private toInfo(instance: BrowserInstance): BrowserInstanceInfo {
+    // What the page's corner chip names: the label of whoever holds the tab on screen, and
+    // otherwise any conversation at the wheel in this window. A remote viewer cannot read the
+    // host's control map, so the words travel with the window's state.
+    const heldBy = activeTab(instance).heldBy
+    const controlLabel = heldBy
+      ? instance.controlBy.get(heldBy)
+      : instance.controlBy.values().next().value
     return {
       id: instance.id,
       url: activeTab(instance).currentUrl,
@@ -10030,6 +10060,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // Any conversation working in this window at all — the window-level indicator. Which
       // tab each one holds is the tab's own answer (`lockedBy`, per tab).
       agentControlActive: instance.controlBy.size > 0,
+      agentControlLabel: controlLabel ? this.getAgentControlLabel(controlLabel) : null,
       themeColor: activeTab(instance).themeColor,
       workspaceId: instance.workspaceId,
       profileId: instance.profileId,

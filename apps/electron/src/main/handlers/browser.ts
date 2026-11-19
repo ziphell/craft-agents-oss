@@ -338,6 +338,9 @@ export function registerBrowserHandlers(server: RpcServer, deps: HandlerDeps): v
       if (!input || !input.instanceId) return
 
       if (input.action === 'activate') {
+        // The switch writes the window's state; its keyboard hand-over (`focusShownTab`) is
+        // guarded by the window already being focused, so this moves nothing on a machine whose
+        // person is elsewhere — but never leaves their keyboard on the page that went behind.
         if (input.tabId) browserPaneManager.activateTab(input.instanceId, input.tabId)
         return
       }
