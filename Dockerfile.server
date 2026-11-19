@@ -23,16 +23,17 @@
 #     craft-agent-server
 # =============================================================================
 
-FROM oven/bun:1.3-slim
+FROM oven/bun:1.3.14-slim
 
 LABEL org.opencontainers.image.source="https://github.com/lukilabs/craft-agents-oss"
 LABEL org.opencontainers.image.description="Craft Agents Server — headless AI workflow server"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 # Install system deps + Node.js (required by the WhatsApp worker subprocess;
-# Bun cannot run Baileys' crypto deps). Pin Node to a major via NodeSource so
-# upgrades are explicit — must match the --target in scripts/build-wa-worker.ts.
-ARG NODE_MAJOR=20
+# Bun cannot run Baileys' crypto deps). The major is pinned to match the Node
+# bundled into the standalone server package (vendor/node) so both runtimes
+# stay on the same line.
+ARG NODE_MAJOR=22
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates git ripgrep curl gnupg && \
     curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - && \
@@ -97,6 +98,8 @@ COPY packages/craft-cli/package.json packages/craft-cli/
 COPY packages/ui/package.json packages/ui/
 COPY packages/messaging-gateway/package.json packages/messaging-gateway/
 COPY packages/messaging-whatsapp-worker/package.json packages/messaging-whatsapp-worker/
+COPY packages/render-host/package.json packages/render-host/
+COPY packages/office-host/package.json packages/office-host/
 COPY apps/electron/package.json apps/electron/
 COPY apps/cli/package.json apps/cli/
 COPY apps/marketing/package.json apps/marketing/
@@ -109,38 +112,50 @@ RUN bun install --frozen-lockfile
 # Copy source
 COPY . .
 
+# The Bun-bundled command-line tools (img/asr/ical) are built from
+# apps/electron/resources/cli-tools/*.ts, and their OCR / VAD models are fetched
+# rather than committed. `build:cli-tools` stages the models beside the bundles.
+RUN bun run fetch:ocr-models && \
+    bun run fetch:sherpa-vad && \
+    bun run build:cli-tools
+
 # Stage the bundled assets the runtime reads on launch (docs → ~/.craft-agent/docs,
-# plus themes, permissions, tool-icons, release-notes, config-defaults.json) into the
-# distribution's own resources/ — the same layout scripts/build-server.ts produces.
+# plus themes, permissions, tool-icons, release-notes, config-defaults.json,
+# command-line tools and speech models) into the distribution's own resources/ —
+# the same layout scripts/build-server.ts produces.
 # Without this the assets root would have to point at apps/electron/resources, which
 # is an Electron packaging detail the server does not otherwise depend on.
 #
-# The drawio editor is fetched rather than committed (`bun apps/electron/scripts/fetch-drawio-assets.ts`
-# on the build host). When fetched, it is staged too and the web UI serves it at `/drawio/`;
-# when it is not, the editor reports itself as not installed.
-#
-# The office feature is part of the server too — the hub serves the editors at `/office/` and the
-# agent's `office_tool` spawns `resources/cli/genoffice.cjs` with Bun. Like drawio, these are
-# vendored artifacts (`bun scripts/build-office-assets.ts`, `build-office-engine.ts`): absent, the
-# editor reports itself as not installed rather than failing the build. `xlsx-sidecar` is the
-# Linux binary (`bun scripts/build-office-native.ts` compiles it from the vendored Rust source);
-# without it a workbook still opens and saves in the editor, but formula/range reads fail.
+# The editors and the xlsx sidecar are fetched/compiled on the packaging host and
+# gitignored, so they are checked below: a clean checkout must fail the build rather
+# than ship an image whose documents, diagrams or printing are silently missing.
+RUN for path in \
+      apps/electron/resources/drawio \
+      apps/electron/resources/office \
+      apps/electron/resources/office-engine \
+      apps/electron/resources/cli \
+      apps/electron/resources/office-native/xlsx-sidecar; do \
+      test -e "/app/$path" || { \
+        echo "Missing $path — build it on the packaging host first (docs/build-server-linux.md §5)"; \
+        exit 1; \
+      }; \
+    done
 RUN mkdir -p /app/resources && \
     cp -R /app/apps/electron/resources/docs \
           /app/apps/electron/resources/themes \
           /app/apps/electron/resources/permissions \
           /app/apps/electron/resources/tool-icons \
           /app/apps/electron/resources/release-notes \
+          /app/apps/electron/resources/cli-tools \
+          /app/apps/electron/resources/models \
           /app/resources/ && \
     cp /app/apps/electron/resources/config-defaults.json /app/resources/ && \
-    if [ -d /app/apps/electron/resources/drawio ]; then cp -R /app/apps/electron/resources/drawio /app/resources/; fi && \
-    if [ -d /app/apps/electron/resources/office ]; then cp -R /app/apps/electron/resources/office /app/resources/; fi && \
-    if [ -d /app/apps/electron/resources/office-engine ]; then cp -R /app/apps/electron/resources/office-engine /app/resources/; fi && \
-    if [ -d /app/apps/electron/resources/cli ]; then cp -R /app/apps/electron/resources/cli /app/resources/; fi && \
-    if [ -f /app/apps/electron/resources/office-native/xlsx-sidecar ]; then \
-        mkdir -p /app/resources/office-native && \
-        cp /app/apps/electron/resources/office-native/xlsx-sidecar /app/resources/office-native/; \
-    fi
+    cp -R /app/apps/electron/resources/drawio /app/resources/ && \
+    cp -R /app/apps/electron/resources/office /app/resources/ && \
+    cp -R /app/apps/electron/resources/office-engine /app/resources/ && \
+    cp -R /app/apps/electron/resources/cli /app/resources/ && \
+    mkdir -p /app/resources/office-native && \
+    cp /app/apps/electron/resources/office-native/xlsx-sidecar /app/resources/office-native/
 
 # The hub's own printing host: the bundle the engine spawns, and the browser it drives.
 RUN node node_modules/playwright-core/cli.js install chromium-headless-shell && \
@@ -182,6 +197,8 @@ ENV CRAFT_WEBUI_DIR=/app/apps/webui/dist
 # apps/electron/resources — same layout as the tarball from scripts/build-server.ts.
 ENV CRAFT_BUNDLED_ASSETS_ROOT=/app
 ENV CRAFT_RESOURCES_PATH=/app/resources
+# Command-line tools (img/asr/ical bundles) and their models, staged above.
+ENV CRAFT_CLI_TOOLS=/app/resources/cli-tools/dist
 # WhatsApp worker — Bun cannot run the CJS worker, so we point the adapter at
 # system `node` (installed above). This now matches the path packages/server
 # derives from CRAFT_BUNDLED_ASSETS_ROOT, and stays explicit so it is visible here.

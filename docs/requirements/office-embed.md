@@ -142,8 +142,9 @@ Two things are injected rather than imported, and they are the whole difference 
 hosts:
 
 - **`setOfficeRuntime`** — which binary runs `resources/cli/genoffice.cjs`. The app passes itself
-  with `ELECTRON_RUN_AS_NODE=1`; a hub passes Bun (`CRAFT_OFFICE_RUNTIME` overrides, for a compiled
-  single binary whose `process.execPath` cannot run a script).
+  with `ELECTRON_RUN_AS_NODE=1`; a hub passes Node (`node` from PATH — the standalone package ships
+  one at `vendor/node`; `CRAFT_OFFICE_RUNTIME` overrides, for a compiled single binary whose
+  `process.execPath` cannot run a script).
 - **`setOfficePrint`** — printing to PDF needs a Chromium and the editor as the top document, so it
   exists in the app (`office-export.ts`); a hub answers with the launcher in `resources/render-host`,
   which drives a headless Chromium over Playwright (`page.pdf()`) — spawned, not launched in the

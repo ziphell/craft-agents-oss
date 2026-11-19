@@ -669,7 +669,7 @@ dist/resources 里：office 80M / office-engine 40M / office-native 8.4M / cli 4
 搬完的形态：
 - `packages/office-host/src/{runtime,deck,workbook,pdf,guard,index}.ts`（1032 行原样 + 两类注入）
 - **`setOfficeRuntime()`** —— 谁跑 `resources/cli/genoffice.cjs`：桌面 = `electronRuntime()`（自己 + `ELECTRON_RUN_AS_NODE=1`），
-  hub = `hostRuntime()`（`CRAFT_OFFICE_RUNTIME` > bun 的 `process.execPath` > `bun`）。写成"值"而不是 spawn 里的分支。
+  hub = `hostRuntime()`（`CRAFT_OFFICE_RUNTIME` > PATH 上的 `node`；此记录成文时默认是 bun，2026-11 起改为 node）。写成"值"而不是 spawn 里的分支。
 - **`setOfficePrint()`** —— 打印 PDF 是唯一不可移植的能力（要 Chromium + 编辑器当顶层文档）。桌面注入 `writeOfficePdf`；
   hub 不注入 → 幻灯片"导出 PDF"回一句 `This host has no renderer to print with`，而不是以后莫名失败。
 - `apps/electron/src/main/office-host.ts` → **`office-origin.ts`**（避免与包同名；它只管 `craft-local://` 托管与导出令牌）。

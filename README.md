@@ -173,6 +173,20 @@ CRAFT_SERVER_TOKEN=<generated-token>
 
 Copy these values and use them to connect the desktop app.
 
+### Running from a Source Checkout
+
+The server entry is TypeScript, but it reads build output at runtime. Before the first start:
+
+```bash
+bun install
+bun run server:build:subprocess   # packages/pi-agent-server/dist
+bun run webui:build               # apps/webui/dist (served on the RPC port)
+```
+
+Optional assets — drawio, the Office editors, the headless-Chromium printer, and the WhatsApp worker — are built separately and are not required to boot. Without them those features report themselves as not installed (PDF export is refused by name). Build steps for each are in [docs/dev-environment.md §4.6](docs/dev-environment.md#46-服务端静态资源drawio--office--render-host--wa-worker).
+
+For a self-contained Linux tarball that runs without Docker (Bun, Node and Chromium included), see [docs/build-server-linux.md](docs/build-server-linux.md) — it also contains the deployment guide (systemd, TLS, reverse proxy, upgrades).
+
 ### Connecting the Desktop App
 
 Open the app menu (top-left logo) and choose **Connect to Server…**, then enter the server URL and token printed above. **Connect** tests the connection and opens a window whose sessions, tools and browser run on that server. The dialog keeps every server you add — a second one is one click away — and the star marks the server new windows open on.
@@ -189,6 +203,9 @@ Connection is a property of the window, not of the app: a remote window renders 
 | `CRAFT_RPC_TLS_CERT` | No | — | Path to PEM certificate file (enables `wss://`) |
 | `CRAFT_RPC_TLS_KEY` | No | — | Path to PEM private key file (required with cert) |
 | `CRAFT_RPC_TLS_CA` | No | — | Path to PEM CA chain file (optional, for client cert verification) |
+| `CRAFT_WEBUI_DIR` | No | — | Built Web UI directory (`apps/webui/dist`); without it only the RPC protocol is served |
+| `CRAFT_BUNDLED_ASSETS_ROOT` | No | — | Monorepo root holding `resources/` (source checkouts: `apps/electron`) |
+| `CRAFT_OFFICE_RUNTIME` | No | `node` | Binary used to run document conversions (`resources/cli/genoffice.cjs`) |
 | `CRAFT_DEBUG` | No | `false` | Enable debug logging |
 
 ### TLS (Recommended for Remote Access)

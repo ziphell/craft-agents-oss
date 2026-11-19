@@ -34,20 +34,19 @@ export function electronRuntime(): OfficeRuntime {
 /**
  * A hub's runtime.
  *
- * Order, and each step is a real deployment:
- *
  * 1. `CRAFT_OFFICE_RUNTIME` — an explicit path, for a host that knows better. A compiled single
  *    binary is this case: `process.execPath` would be the server itself, and handing it a script
  *    path does not run the script.
- * 2. `process.execPath` under Bun — the normal hub (`bun packages/server/src/index.ts`); that
- *    binary runs a CommonJS bundle happily, which is how the CLI was verified off-Electron.
- * 3. `bun` from `PATH`, when neither holds.
+ * 2. `node` from `PATH` — the normal hub. The CLI bundle is CommonJS with a jsdom dependency built
+ *    for Node, and a hub already carries Node for the WhatsApp worker and the printing launcher
+ *    (`vendor/node` in the standalone package, the system Node in the image). It used to run on
+ *    the Bun that hosts the server; Node is the runtime this bundle targets, so that is the
+ *    default now. A host without Node fails at the first document conversion with a spawn error.
  */
 export function hostRuntime(): OfficeRuntime {
   const explicit = process.env.CRAFT_OFFICE_RUNTIME?.trim()
   if (explicit) return { command: explicit, env: {} }
-  if (process.versions.bun) return { command: process.execPath, env: {} }
-  return { command: 'bun', env: {} }
+  return { command: 'node', env: {} }
 }
 
 let current: OfficeRuntime | null = null

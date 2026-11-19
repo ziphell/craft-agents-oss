@@ -18,6 +18,8 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { Buffer } from 'node:buffer'
+import { existsSync } from 'node:fs'
+import { delimiter, join } from 'node:path'
 import {
   encodeMessage,
   parseFrames,
@@ -42,6 +44,29 @@ const NOOP_LOGGER: MessagingLogger = {
   warn: () => {},
   error: () => {},
   child: () => NOOP_LOGGER,
+}
+
+/**
+ * Resolve an executable name against PATH (absolute paths are checked as-is).
+ *
+ * The WhatsApp worker is spawned on a host-provided Node, so "is Node installed"
+ * has to be answerable *before* spawning: on Bun a missing binary surfaces as an
+ * async `error` event, after the adapter has already sent its `start` command.
+ */
+function resolveExecutable(bin: string): string | null {
+  if (bin.includes('/') || bin.includes('\\')) return existsSync(bin) ? bin : null
+  const exts =
+    process.platform === 'win32'
+      ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')
+      : ['']
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    if (!dir) continue
+    for (const ext of exts) {
+      const candidate = join(dir, bin + ext)
+      if (existsSync(candidate)) return candidate
+    }
+  }
+  return null
 }
 
 /**
@@ -159,7 +184,22 @@ export class WhatsAppAdapter implements PlatformAdapter {
       nodeBin,
     })
 
-    this.proc = spawn(nodeBin, [cfg.workerEntry], {
+    // The worker is not bundled with a Node runtime: a headless host runs this
+    // adapter under Bun, and the worker needs a real Node. Resolve the binary
+    // first — `spawn` reports ENOENT asynchronously on Bun, which would race the
+    // `start` command below and surface as "worker is not running".
+    const resolvedNode = resolveExecutable(nodeBin)
+    if (!resolvedNode) {
+      const message = `Node.js is required to run the WhatsApp worker, but "${nodeBin}" was not found on this host (the worker is not bundled). Install Node.js 20+ or point CRAFT_MESSAGING_NODE_BIN at one.`
+      this.log.error('WhatsApp worker failed to start', {
+        event: 'whatsapp_worker_spawn_failed',
+        error: message,
+      })
+      this.fireEvent({ type: 'unavailable', reason: 'node_missing', message })
+      return
+    }
+
+    this.proc = spawn(resolvedNode, [cfg.workerEntry], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     })

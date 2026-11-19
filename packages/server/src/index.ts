@@ -247,8 +247,8 @@ const instance = await (async () => {
     })
 
     // Before any host is asked for anything: which binary runs the bundled GenOffice CLI here.
-    // No Electron in this process, so it is Bun itself (or `CRAFT_OFFICE_RUNTIME` when a compiled
-    // single binary is the host and `process.execPath` cannot run a script).
+    // A hub runs it on Node (`hostRuntime`), the runtime its CommonJS bundle and jsdom target;
+    // `CRAFT_OFFICE_RUNTIME` overrides that when a compiled single binary is the host.
     setOfficeRuntime(hostRuntime())
 
     /**

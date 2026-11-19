@@ -124,6 +124,59 @@ bun run typecheck:all                    # 全仓类型检查（根执行）
 bun run validate:dev                     # 全量校验：typecheck + shared 测试 + doc-tools 测试
 ```
 
+### 4.6 服务端静态资源（drawio / office / render-host / WA worker）
+
+headless server 在运行期从 `CRAFT_RESOURCES_PATH`（默认 `CRAFT_BUNDLED_ASSETS_ROOT/resources`，本仓库即 `apps/electron/resources`）读取这几个目录。`Dockerfile.server` 只负责把已有产物拷进镜像，**产物本身要在本机/CI 构建**；缺哪个，对应功能会以"未安装"降级而不是构建失败。
+
+```bash
+# 1) drawio 编辑器（约 74 MB）。列目录走 GitHub API，匿名配额 60 次/小时，超了要 GITHUB_TOKEN
+GITHUB_TOKEN=... bun run electron:fetch:drawio
+
+# 2) GenOffice 源码 + 依赖（一次性；patches 由脚本自动应用）
+bun run scripts/fetch-genoffice-source.ts
+(cd vendor/genoffice && npm install)
+
+# 3) 编辑器 renderer。docs/pdf/slides 可一次构建；sheets 要进子目录（electron-vite 5 去掉了 -w）
+(cd vendor/genoffice && npm run build -w @genoffice/docs -w @genoffice/pdf -w @genoffice/slides)
+(cd vendor/genoffice/apps/sheets && npx electron-vite build)
+(cd vendor/genoffice && npm run build -w @genoffice/cli)
+
+# 4) 引擎 bundle → resources/office-engine（pptx/xlsx/pdf/html2docx + pdfium/jszip）
+bun run scripts/build-office-engine.ts
+
+# 5) 拷贝编辑器与 CLI → resources/office、resources/cli；--check 用于验收
+bun run scripts/build-office-assets.ts
+bun run scripts/build-office-assets.ts --check
+
+# 6) xlsx sidecar。没有 Rust 时用 GenOffice 发行包里的预编译产物
+curl -LO https://github.com/genspark-ai/genoffice/releases/download/v0.13.18/genoffice_0.13.18_amd64.deb
+ar x genoffice_0.13.18_amd64.deb && tar xf data.tar.xz
+bun run scripts/build-office-native.ts --from opt/GenOffice
+
+# 7) 打印宿主：render-host bundle + Playwright Chromium（PDF 导出 / 画图渲染）
+bun run --cwd packages/render-host build:cli
+node node_modules/playwright-core/cli.js install chromium-headless-shell
+mkdir -p apps/electron/resources/render-host
+cp packages/render-host/dist/cli.mjs packages/render-host/dist/craft-headless-export apps/electron/resources/render-host/
+chmod +x apps/electron/resources/render-host/craft-headless-export
+apps/electron/resources/render-host/craft-headless-export --probe --json   # 期望 {"status":"ok"}
+
+# 8) WhatsApp worker（CJS，必须用 node 校验产物）
+bun run build:wa-worker
+```
+
+启动日志应出现三行，缺哪行就是对应产物没就位：
+
+```
+[webui] drawio editor: <repo>/apps/electron/resources/drawio
+[webui] office editors: <repo>/apps/electron/resources/office
+  Printing host: <repo>/apps/electron/resources/render-host/craft-headless-export
+```
+
+Chromium 的运行时库（libnss3/libgbm/libasound/libatspi 等）Ubuntu 24.04 已自带，不需要再 apt 安装；真正会挡住它的是第 5 节的 `LD_LIBRARY_PATH` 问题。
+
+运行期分工：主服务由 Bun 执行；打印宿主（launcher 是 `exec node`）、WhatsApp worker、文档转换（`resources/cli/genoffice.cjs`，`hostRuntime()` 默认返回 `node`，可用 `CRAFT_OFFICE_RUNTIME` 覆盖）都跑在 Node 上——standalone 包里是 `vendor/node`，Docker 里是系统 Node。drawio 渲染和 PDF 打印共用同一个打印宿主。
+
 ## 5. 常见坑（依赖相关）
 
 1. **改了 shared / core 等 TS 源包**：普通 bundle 方（electron main、server）重启即生效；但 **pi-agent-server** 有独立 dist，必须重新构建（`electron:dev` 会自动做；手动：`bun run server:build:subprocess`）。
@@ -132,6 +185,22 @@ bun run validate:dev                     # 全量校验：typecheck + shared 测
 4. **`.env`**：electron-dev / electron-build-main 会自动读取根 `.env`（不存在则跳过）；OAuth ID/Secret 通过 esbuild `--define` 注入构建。
 5. **端口冲突**：5173/5174/5175 被占用时 dev 会失败，先停掉旧进程。
 6. **渲染层从共享包 barrel 取「值」**：会把 node-only 依赖（Claude Agent SDK 等）顺链条拖进浏览器包——`electron:dev` 照跑不误，`electron:build` 才炸在 `sdk.mjs` 上。规矩、链路与自查命令见[渲染层的导入边界](./renderer-imports.md)。
+7. **WSL/Linux 下 `bun` 指向 Windows 版**：PATH 里 `/mnt/c/.../nvm4w/nodejs/bun` 是给 Windows 用的 shell shim，WSL 里跑它会读错路径、拉不起子进程（`build:wa-worker` 里 spawn 的是裸 `bun`）。装 Linux 版并放到 PATH 前部：
+
+   ```bash
+   # 有 unzip 时；没有就用 bun-linux-x64.zip 直接解压到 ~/.bun/bin
+   curl -fsSL https://bun.sh/install | bash
+   ln -sf ~/.bun/bin/bun ~/.local/bin/bun    # ~/.local/bin 在 PATH 中先于 /mnt/c/...
+   file "$(which bun)"                       # 必须是 ELF，而不是 shell script
+   ```
+
+   否则症状是 `bun install` 能跑但 `bun run <script>` 里的子进程/路径全错，或者干脆报 "Exec format error"。
+
+8. **`LD_LIBRARY_PATH` 被 IDE/Agent 注入**：有的开发环境会把自带的 `lib/nss`、`libglib-2.0.so.0`、`liblzma.so.5` 塞进 `LD_LIBRARY_PATH`。症状是**每条命令**都打印 `libselinux.so.1: no version information available`，并且：
+   - Playwright Chromium 起不来：`libatspi.so.0: undefined symbol: g_once_init_leave_pointer`（旧 glib 盖住系统 2.80），`--probe` 回 `renderer_unavailable`；
+   - 解压 `.tar.xz` 时报 `version 'XZ_5.4' not found`；TLS 相关偶发 `no version information` 也来自这里。
+
+   系统库本身是齐的，**不要**去 apt 装/降级。构建和服务启动前清掉即可：`unset LD_LIBRARY_PATH` 或 `env -u LD_LIBRARY_PATH <cmd>`。
 
 ## 6. 远程模式（headless server + Web UI）
 
@@ -151,8 +220,9 @@ bun run packages/server/src/index.ts
 ```
 
 - 现成脚本 `server:dev:webui` 会构建子进程 + webui 并设好 env；上面是手工等价路线（Windows/PowerShell 下我用的就是它）。注意那个脚本设的 `CRAFT_WEBUI_PORT=3100` **没人读**——Web UI 实际服务在 `CRAFT_RPC_PORT` 上（入口只认后者）。
+- **Linux/WSL** 等价：`export CRAFT_WEBUI_DIR=$PWD/apps/webui/dist`、`export CRAFT_BUNDLED_ASSETS_ROOT=$PWD/apps/electron`，然后 `env -u LD_LIBRARY_PATH bun run packages/server/src/index.ts`（去掉 IDE 注入的库路径，见第 5 节第 8 条）。drawio / office / PDF 导出这些资源按 4.6 节准备。
 - **锁**：第二个实例会撞 `CONFIG_DIR/.server.lock`（`headless-start.ts`）并报出占用者 PID。不要删那个锁，改用 `CRAFT_CONFIG_DIR` 起并行实例（提示里也是这么写的）。
-- 启动横幅给出 `CRAFT_SERVER_URL` / `CRAFT_SERVER_TOKEN` / `CRAFT_WEBUI_URL`。
+- 启动横幅给出 `CRAFT_SERVER_URL` / `CRAFT_SERVER_TOKEN` / `CRAFT_WEBUI_URL`；Web UI 的登录口令是同一段输出里的 `CRAFT_WEBUI_PASSWORD`（不是 `CRAFT_SERVER_TOKEN`）。
 
 ### 6.2 验什么（不依赖 Electron）
 
@@ -171,3 +241,12 @@ bun run packages/server/src/index.ts
    - 同一个坑的第二副面孔：这两个 handler 是**逐字重复的两份**（只差 import 路径与这个参数），改一处必须改两处。是否合并成一份是独立决定，目前没做。
 2. **「默认位置」建 workspace 绕过 `CRAFT_CONFIG_DIR`**：三处各算各的——`workspaces/storage.ts` 有自己的 `CONFIG_DIR = join(homedir(), '.craft-agent')`（无视 env）、server-core 的 `CHECK_SLUG` 手搓同一路径、**渲染层用 `getHomeDir()` 自己拼 `${homeDir}/.craft-agent/workspaces` 当创建参数**。于是设了 `CRAFT_CONFIG_DIR` 的实例仍把 workspace 数据写进真实 home——而 `checkSlug` 的返回值里本来就有服务端算好的路径（隔壁"连接远程服务器"那条流程一直在用它）。现在 CONFIG_DIR 统一取 `config/paths.ts` 那一份、`CHECK_SLUG` 用 `getDefaultWorkspacesDir()`（校验路径 = 创建路径）、UI 采用服务端返回的路径。测试：`packages/server-core/src/handlers/__tests__/workspace-default-location.test.ts`。
 3. **`CRAFT_CONFIG_DIR` 目前只是"部分隔离"**：以下位置仍硬编码 `homedir()/.craft-agent`，设了 env 也不会跟着走——日志（`apps/electron/src/main/logger.ts`）、窗口状态（`main/window-state.ts`）、文档与更新日志目录（`shared/src/docs`、`shared/src/release-notes`）、凭据目录（`shared/src/credentials/backends/secure-storage.ts`）、`shared/src/interceptor-common.ts` 的 config/log 路径、`shared/src/agent/core/prerequisite-manager.ts` 的 browser-tools 文档路径、两个入口里按 workspace 拼的 messaging 目录、`session-tools-core` 的 config 校验、`shared/src/utils/logo.ts`。**workspace 数据这一条已经归位**；"换个 config dir 就彻底干净"还差这些。
+
+### 6.4 打成不依赖 Docker 的发行包（Linux x64）
+
+`bun run server:dist:linux` 一条命令产出可移植的 tar 包：自带 Bun / Node / Chromium / Office / drawio，去掉开发依赖与非本平台制品，目标机解压即用。
+
+完整的构建机要求、脚本步骤、手工等价命令、裁剪与部署排错见 **[Linux 服务端构建与打包指南](build-server-linux.md)**。
+
+单项资源（drawio / office / 打印宿主）的构建命令见 [§4.6](#46-服务端静态资源drawio--office--render-host--wa-worker)。
+

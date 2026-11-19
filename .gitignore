@@ -91,6 +91,9 @@ apps/electron/resources/office-engine/
 # The xlsx sidecar the workbook host spawns (native, per platform).
 apps/electron/resources/office-native/
 
+# The printing host staged from packages/render-host/dist (PDF export / drawio rendering).
+apps/electron/resources/render-host/
+
 # Built command-line tools (bun run build:cli-tools)
 apps/electron/resources/cli-tools/dist/
 
