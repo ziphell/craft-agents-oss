@@ -116,7 +116,10 @@ Configuration
 Notes:
   The bridge opens no port: it connects out to the hub and reconnects with exponential backoff
   (1s, 2s, 4s … capped at 30s), including across hub restarts. A rejected token stops it until
-  the token is replaced.`);
+  the token is replaced.
+
+  One instance per config file: a second "run" for the same config fails with exit code 78,
+  which the unit treats as final instead of retrying. Use a different --config to run more.`);
 }
 
 function die(message: string): never {
@@ -165,7 +168,7 @@ async function commandRun(args: string[]): Promise<void> {
     saveConfig(configPath, config)
     log(`Saved device identity to ${configPath}`)
   }
-  await startBridge(config)
+  await startBridge(config, configPath)
 }
 
 function commandInstall(args: string[]): void {
@@ -405,5 +408,5 @@ async function main(): Promise<void> {
 
 main().catch((error) => {
   console.error(`craft-bridge: ${error instanceof Error ? error.message : String(error)}`)
-  process.exit(1)
+  process.exit((error as { exitCode?: number })?.exitCode ?? 1)
 })

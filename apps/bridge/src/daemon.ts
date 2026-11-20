@@ -15,6 +15,7 @@ import {
 } from '@craft-agent/server-core/transport'
 import { runExec, runFs } from '@craft-agent/server-core/device'
 import { HUB_ROOT_BASE } from '@craft-agent/shared/config/device'
+import { acquireInstanceLock } from './lock'
 import type { BridgeConfig, BridgeProxy } from './config'
 
 export function log(message: string): void {
@@ -75,8 +76,16 @@ function capabilitiesFor(config: BridgeConfig): string[] {
   ]
 }
 
-/** Run until SIGINT/SIGTERM. Reconnects on its own otherwise. */
-export async function startBridge(config: BridgeConfig): Promise<void> {
+/**
+ * Run until SIGINT/SIGTERM. Reconnects on its own otherwise.
+ *
+ * `configPath` scopes the instance lock: one process per config, so a forgotten foreground run
+ * or a second service unit cannot connect with the same device identity.
+ */
+export async function startBridge(config: BridgeConfig, configPath: string): Promise<void> {
+  const lock = acquireInstanceLock(configPath)
+  process.once('exit', lock.release)
+
   const name = config.name || hostname()
   const allowedRoots = config.allowedRoots ?? []
   const shell = config.grants?.shell !== false
@@ -138,6 +147,7 @@ export async function startBridge(config: BridgeConfig): Promise<void> {
     const shutdown = (signal: string) => {
       log(`${signal} — disconnecting`)
       client.destroy()
+      lock.release()
       resolve()
     }
     process.once('SIGINT', () => shutdown('SIGINT'))

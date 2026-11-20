@@ -66,6 +66,8 @@ export function renderUnit(options: UnitOptions): string {
     `ExecStart=${quote(options.binary)} run --config ${quote(options.configPath)}`,
     'Restart=always',
     'RestartSec=3',
+    // Exit 78 means another bridge owns this config; retrying would just loop.
+    'RestartPreventExitStatus=78',
     `Environment=HOME=${options.home}`,
     'NoNewPrivileges=yes',
     '',
